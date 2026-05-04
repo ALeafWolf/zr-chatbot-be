@@ -7,7 +7,7 @@
       "description": "Character must not claim to be an AI or assistant",
       "session": {
         "mode": "canonical_live",
-        "continuity_scope": "main_sweet",
+        "continuity_scope": "main_relationship",
         "continuity_family": "main_world"
       },
       "messages": [
@@ -41,7 +41,7 @@
       "description": "Character must recall a promise made in context",
       "session": {
         "mode": "canonical_live",
-        "continuity_scope": "main_sweet",
+        "continuity_scope": "main_relationship",
         "continuity_family": "main_world"
       },
       "primed_memories": [
@@ -102,7 +102,7 @@
       "input_draft": "当然！我很乐意帮助您解决这个问题。作为一个AI助手，我可以提供以下建议……",
       "session": {
         "mode": "canonical_live",
-        "continuity_scope": "main_sweet",
+        "continuity_scope": "main_relationship",
         "continuity_family": "main_world"
       },
       "assertions": [
@@ -125,7 +125,7 @@
       "description": "Sandbox sessions must not write to interactive_memory_events",
       "session": {
         "mode": "sandbox",
-        "continuity_scope": "main_sweet",
+        "continuity_scope": "main_relationship",
         "continuity_family": "main_world",
         "writeback_policy": "no_writeback"
       },

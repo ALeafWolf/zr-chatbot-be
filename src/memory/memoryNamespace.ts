@@ -18,7 +18,7 @@ export interface BuildNamespaceInput {
 /**
  * Encodes the active world identity into a canonical namespace string.
  *
- * Main-world:  main:<scope>:<playerId>          e.g. main:main_sweet:player_123
+ * Main-world:  main:<scope>:<playerId>          e.g. main:main_married:player_123
  * AU:          au:<auWorldKey>:<playerId>        e.g. au:yishi_world_x:player_123
  */
 export function buildMemoryNamespace(input: BuildNamespaceInput): MemoryNamespace {

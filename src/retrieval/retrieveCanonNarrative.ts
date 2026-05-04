@@ -52,7 +52,7 @@ export async function retrieveCanonNarrative(input: {
     JOIN story_chapters sc ON su.chapter_id = sc.id
     JOIN relationship_arcs ra ON sc.relationship_arc_id = ra.id
     WHERE su.character_id = ${characterId}
-      AND ra.arc_key = ANY(${arcKeys})
+      AND ra.arc_key = ANY(ARRAY[${sql.join(arcKeys.map((k) => sql`${k}`), sql`, `)}]::text[])
       AND su.embedding IS NOT NULL
     ORDER BY rank_score DESC
     LIMIT ${limit}

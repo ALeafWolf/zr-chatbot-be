@@ -11,10 +11,12 @@ import { AVAILABLE_SCOPES } from "../retrieval/resolveContinuityScope";
 import { listCharacters } from "../character/characterProfiles";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 
+const MainWorldScopeZodEnum = AVAILABLE_SCOPES as unknown as [string, ...string[]];
+
 const CreateSessionBody = z.object({
   character_id: z.string().default(env.DEFAULT_CHARACTER_ID),
   mode: z.enum(["canonical_live", "pinned_scenario", "sandbox"]),
-  continuity_scope: z.string().default("main_sweet"),
+  continuity_scope: z.enum(MainWorldScopeZodEnum).default("main_married"),
   pinned_time: z.string().optional(),
   pinned_location: z.string().optional(),
 });

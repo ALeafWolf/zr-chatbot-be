@@ -113,7 +113,7 @@ async function runScenario(scenario: Scenario): Promise<{
 }> {
   console.log(`\n▶ ${scenario.id}: ${scenario.description}`);
 
-  const overlay = loadPersonaOverlay("main_sweet");
+  const overlay = loadPersonaOverlay(scenario.session.continuity_scope);
   let reply = "";
   let validatorResult: ValidationResult | undefined;
 

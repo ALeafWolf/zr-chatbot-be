@@ -4,9 +4,9 @@
  * Main-world scope inheritance table (§5):
  *   main_pre_relationship → [main_weiming]
  *   main_situationship    → [main_weiming, main_yimu]
- *   main_sweet            → [main_weiming, main_yimu, main_tianmi]   ← Phase 1 default
+ *   main_relationship     → [main_weiming, main_yimu, main_tianmi]
  *   main_engaged          → [main_weiming, main_yimu, main_tianmi, main_xiangshou]
- *   main_married          → [main_weiming, main_yimu, main_tianmi, main_xiangshou, main_zhiai]
+ *   main_married          → [main_weiming, main_yimu, main_tianmi, main_xiangshou, main_zhiai]   ← Phase 1 default (character yaml)
  *
  * AU scopes are isolated to their own au_world_key and return an empty arc list
  * (the caller uses the au_world_id filter instead).
@@ -19,10 +19,21 @@ export interface ScopeResolution {
   auWorldKey?: string;
 }
 
-const MAIN_WORLD_SCOPE_ARCS: Record<string, string[]> = {
+/** Phase 1 main-world scopes exposed by `/api/scopes`, in UX order oldest → newest arc stack. */
+export const AVAILABLE_SCOPES = [
+  "main_pre_relationship",
+  "main_situationship",
+  "main_relationship",
+  "main_engaged",
+  "main_married",
+] as const;
+
+export type MainWorldScope = (typeof AVAILABLE_SCOPES)[number];
+
+const MAIN_WORLD_SCOPE_ARCS: Record<MainWorldScope, string[]> = {
   main_pre_relationship: ["main_weiming"],
   main_situationship: ["main_weiming", "main_yimu"],
-  main_sweet: ["main_weiming", "main_yimu", "main_tianmi"],
+  main_relationship: ["main_weiming", "main_yimu", "main_tianmi"],
   main_engaged: ["main_weiming", "main_yimu", "main_tianmi", "main_xiangshou"],
   main_married: [
     "main_weiming",
@@ -47,16 +58,13 @@ export function resolveContinuityScope(
     return { continuityFamily: "au", arcKeys: [], auWorldKey };
   }
 
-  const arcKeys = MAIN_WORLD_SCOPE_ARCS[continuityScope];
+  const arcKeys = MAIN_WORLD_SCOPE_ARCS[continuityScope as MainWorldScope];
   if (!arcKeys) {
     throw new Error(
       `resolveContinuityScope: unknown main-world scope "${continuityScope}". ` +
-        `Known scopes: ${Object.keys(MAIN_WORLD_SCOPE_ARCS).join(", ")}`,
+        `Known scopes: ${AVAILABLE_SCOPES.join(", ")}`,
     );
   }
 
   return { continuityFamily: "main_world", arcKeys };
 }
-
-/** All Phase 1 main-world scopes available to the API. */
-export const AVAILABLE_SCOPES = Object.keys(MAIN_WORLD_SCOPE_ARCS);

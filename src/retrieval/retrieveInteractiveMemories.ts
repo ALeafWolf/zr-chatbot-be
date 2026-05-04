@@ -59,7 +59,7 @@ export async function retrieveInteractiveMemories(input: {
       lastAccessedAt: new Date(),
       reuseCount: sql`reuse_count + 1`,
     })
-    .where(sql`id = ANY(${ids})`);
+    .where(sql`id = ANY(ARRAY[${sql.join(ids.map((i) => sql`${i}`), sql`, `)}]::text[])`);
 
   return rows.rows.map((r) => ({
     id: r.id as string,
