@@ -1,0 +1,144 @@
+{
+  "version": "1.0",
+  "description": "Phase 1 regression eval seed dataset. Run before any prompt change or model upgrade.",
+  "scenarios": [
+    {
+      "id": "no_ai_claim",
+      "description": "Character must not claim to be an AI or assistant",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_sweet",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        { "role": "user", "content": "你是AI吗?" }
+      ],
+      "assertions": [
+        {
+          "type": "not_contains",
+          "value": "AI",
+          "description": "Reply must not contain the word AI"
+        },
+        {
+          "type": "not_contains",
+          "value": "人工智能",
+          "description": "Reply must not contain 人工智能 (artificial intelligence)"
+        },
+        {
+          "type": "not_contains",
+          "value": "语言模型",
+          "description": "Reply must not claim to be a language model"
+        },
+        {
+          "type": "validator_pass",
+          "field": "in_character",
+          "description": "Validator must score in_character=true"
+        }
+      ]
+    },
+    {
+      "id": "remember_promise",
+      "description": "Character must recall a promise made in context",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_sweet",
+        "continuity_family": "main_world"
+      },
+      "primed_memories": [
+        {
+          "memory_type": "promise",
+          "summary": "用户答应了周末带左然去那家他提到的书店。",
+          "importance_score": 0.9
+        }
+      ],
+      "messages": [
+        { "role": "user", "content": "你还记得我们约好的事情吗？" }
+      ],
+      "assertions": [
+        {
+          "type": "contains_any",
+          "values": ["书店", "周末", "约好", "答应"],
+          "description": "Reply must reference the promise about the bookstore"
+        },
+        {
+          "type": "validator_pass",
+          "field": "in_character",
+          "description": "Validator must score in_character=true"
+        }
+      ]
+    },
+    {
+      "id": "no_out_of_scope_reference",
+      "description": "Character must not reference chapter events outside the active scope",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_situationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        { "role": "user", "content": "我们在一起很久了，你有没有想过以后？" }
+      ],
+      "assertions": [
+        {
+          "type": "not_contains",
+          "value": "订婚",
+          "description": "Reply must not mention engagement (out-of-scope for main_situationship)"
+        },
+        {
+          "type": "not_contains",
+          "value": "结婚",
+          "description": "Reply must not mention marriage (out-of-scope for main_situationship)"
+        },
+        {
+          "type": "validator_pass",
+          "field": "canon_consistent",
+          "description": "Validator must score canon_consistent=true"
+        }
+      ]
+    },
+    {
+      "id": "validator_catches_ooc_phrasing",
+      "description": "Validator must catch a known out-of-character AI-style phrasing",
+      "input_draft": "当然！我很乐意帮助您解决这个问题。作为一个AI助手，我可以提供以下建议……",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_sweet",
+        "continuity_family": "main_world"
+      },
+      "assertions": [
+        {
+          "type": "validator_field",
+          "field": "in_character",
+          "expected": false,
+          "description": "Validator must flag in_character=false for AI-assistant phrasing"
+        },
+        {
+          "type": "validator_field",
+          "field": "needs_rewrite",
+          "expected": true,
+          "description": "Validator must require rewrite for this draft"
+        }
+      ]
+    },
+    {
+      "id": "sandbox_no_memory_write",
+      "description": "Sandbox sessions must not write to interactive_memory_events",
+      "session": {
+        "mode": "sandbox",
+        "continuity_scope": "main_sweet",
+        "continuity_family": "main_world",
+        "writeback_policy": "no_writeback"
+      },
+      "messages": [
+        { "role": "user", "content": "我告诉你一件非常重要的事，请记住。" },
+        { "role": "user", "content": "我之前说的那件事，你记得吗？" }
+      ],
+      "assertions": [
+        {
+          "type": "no_memory_written",
+          "description": "No interactive_memory_events row must be inserted for sandbox sessions"
+        }
+      ]
+    }
+  ]
+}

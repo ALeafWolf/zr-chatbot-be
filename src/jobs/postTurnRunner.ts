@@ -1,0 +1,100 @@
+import { extractPostTurnSignals } from "../llm/extractPostTurnSignals";
+import { writeInteractiveMemory } from "../memory/writeInteractiveMemory";
+import { summarizeSession } from "../memory/summarizeSession";
+import type { ChatSession } from "../db/schema/chat";
+import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
+import type { DerivedState } from "../state/sessionStateRepo";
+import type { MemoryNamespace } from "../memory/memoryNamespace";
+import { traceStage } from "../observability/langsmithTracing";
+
+export interface PostTurnJob {
+  sessionId: string;
+  userMessage: string;
+  assistantReply: string;
+  session: ChatSession;
+  memories: RetrievedMemory[];
+  derivedState: DerivedState;
+  shouldWriteMemory: boolean;
+}
+
+/**
+ * Queue-shaped post-turn runner (Phase 1: in-process, single-flight).
+ *
+ * The interface deliberately mirrors a job queue so Phase 2 can swap in
+ * BullMQ / PG-boss without touching call sites in runCharacterTurn.
+ *
+ * All enqueued jobs are tracked so graceful shutdown can drain them.
+ */
+class PostTurnRunner {
+  private pending: Promise<void>[] = [];
+
+  enqueue(job: PostTurnJob): void {
+    const task = this.run(job).catch((err) => {
+      console.error(
+        `[postTurnRunner] job failed for session ${job.sessionId}:`,
+        err,
+      );
+    });
+    this.pending.push(task);
+    // Cleanup resolved promises to avoid memory growth on long-lived servers
+    task.finally(() => {
+      this.pending = this.pending.filter((p) => p !== task);
+    });
+  }
+
+  /** Await all pending jobs — called on graceful shutdown. */
+  async drain(): Promise<void> {
+    await Promise.allSettled(this.pending);
+  }
+
+  private async run(job: PostTurnJob): Promise<void> {
+    const {
+      sessionId,
+      userMessage,
+      assistantReply,
+      session,
+      memories,
+      derivedState,
+      shouldWriteMemory,
+    } = job;
+
+    // Extract post-turn signals (memory facts + emotionalDelta=null in Phase 1)
+    const recentMemoriesStr = memories
+      .slice(0, 3)
+      .map((m) => m.summary)
+      .join("\n");
+
+    const signals = await tracedExtract({
+      userMessage,
+      assistantReply,
+      sessionMode: session.mode,
+      recentMemories: recentMemoriesStr,
+      sessionState: JSON.stringify(derivedState),
+    });
+
+    // Write memory facts (skipped for no_writeback sessions)
+    if (shouldWriteMemory) {
+      for (const candidate of signals.memoryFacts) {
+        await writeInteractiveMemory({
+          candidate,
+          characterId: session.characterId,
+          playerId: session.playerId,
+          sessionId,
+          continuityScope: session.continuityScope,
+          continuityFamily: session.continuityFamily as "main_world" | "au",
+          memoryNamespace: session.memoryNamespace as MemoryNamespace,
+        });
+      }
+    }
+
+    // Refresh session archive
+    await summarizeSession(sessionId);
+  }
+}
+
+const tracedExtract = traceStage(
+  "llm.extract_post_turn_signals",
+  extractPostTurnSignals,
+);
+
+export const postTurnRunner = new PostTurnRunner();
