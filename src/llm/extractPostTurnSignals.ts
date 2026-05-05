@@ -1,5 +1,6 @@
-import { getProvider } from "./providers";
+import { z } from "zod";
 import { models } from "../config/models";
+import { chatJson } from "./providers";
 import { scoreMemoryImportance } from "../memory/scoreMemoryImportance";
 import type { MemoryCandidate } from "../memory/writeInteractiveMemory";
 import type { RawImportanceComponents } from "../memory/scoreMemoryImportance";
@@ -22,20 +23,28 @@ export interface ExtractSignalsInput {
   sessionState: string;
 }
 
-interface RawMemoryCandidate {
-  memory_type: MemoryCandidate["memoryType"];
-  summary: string;
-  emotional_weight: number;
-  plot_relevance: number;
-  cross_session_durability: number;
-  emotion_score: number;
-  tags?: string[];
-}
+const MemoryTypeSchema = z.enum([
+  "promise",
+  "relationship_transition",
+  "preference",
+  "habit",
+  "banter",
+]);
 
-interface ExtractorOutput {
-  memory_candidates: RawMemoryCandidate[];
-  confidence: number;
-}
+const ExtractorOutputSchema = z.object({
+  memory_candidates: z.array(
+    z.object({
+      memory_type: MemoryTypeSchema,
+      summary: z.string(),
+      emotional_weight: z.coerce.number().default(0),
+      plot_relevance: z.coerce.number().default(0),
+      cross_session_durability: z.coerce.number().default(0),
+      emotion_score: z.coerce.number().default(0),
+      tags: z.array(z.string()).optional(),
+    }),
+  ),
+  confidence: z.coerce.number().default(0),
+});
 
 const EXTRACTOR_SYSTEM = `You are a memory extraction classifier for a character roleplay system.
 Given the last user message and the character's reply, extract any events worth storing as long-term memories.
@@ -68,8 +77,6 @@ If nothing worth storing occurred, return an empty memory_candidates array.`;
 export async function extractPostTurnSignals(
   input: ExtractSignalsInput,
 ): Promise<PostTurnSignals> {
-  const provider = getProvider(models.extractor);
-
   const userMessage = `
 Session mode: ${input.sessionMode}
 
@@ -87,23 +94,35 @@ Character reply:
 
 Extract memory candidates.`.trim();
 
-  const response = await provider.chat(
+  const result = await chatJson(
+    models.extractor,
     [
       { role: "system", content: EXTRACTOR_SYSTEM },
       { role: "user", content: userMessage },
     ],
-    { maxTokens: 1024, temperature: 0.3, jsonMode: true },
+    ExtractorOutputSchema,
+    { maxTokens: 1024, temperature: 0.3 },
   );
 
-  let parsed: ExtractorOutput = { memory_candidates: [], confidence: 0 };
-  try {
-    parsed = JSON.parse(response.content) as ExtractorOutput;
-  } catch {
-    // silently discard parse failures — no memory written
+  if (!result.ok) {
+    console.warn(
+      "[extractPostTurnSignals] chatJson failed; no memories extracted.",
+      result.error,
+    );
+    return {
+      memoryFacts: [],
+      emotionalDelta: null,
+      modelReportedConfidence: {
+        memoryFacts: 0,
+        emotionalDelta: 0,
+      },
+    };
   }
 
+  const parsed = result.data;
+
   const memoryFacts: MemoryCandidate[] = await Promise.all(
-    (parsed.memory_candidates ?? []).map(async (raw) => {
+    parsed.memory_candidates.map(async (raw) => {
       const components: RawImportanceComponents = {
         emotionalWeight: raw.emotional_weight ?? 0,
         plotRelevance: raw.plot_relevance ?? 0,

@@ -7,6 +7,16 @@ import type { PersonaOverlayDefaults } from "../character/characterDefaults";
 import { loadCharacterDefaults } from "../character/characterDefaults";
 import { traceStage, traceLLMStage } from "../observability/langsmithTracing";
 
+/** System/transport issues from the validator — not actionable for the drafter. */
+function isMetaValidatorIssue(issue: string): boolean {
+  return /\b(json|parse|validator|schema|zod)\b/i.test(issue);
+}
+
+/** Issues the character model can try to fix (excludes validator parse/schema noise). */
+function filterDrafterFacingIssues(issues: string[]): string[] {
+  return issues.filter((i) => !isMetaValidatorIssue(i));
+}
+
 export interface GenerateAndValidateResult {
   content: string;
   validatorResult: ValidationResult;
@@ -73,12 +83,31 @@ export async function generateAndValidate(input: {
     };
   }
 
+  const drafterIssues1 = filterDrafterFacingIssues(validation1.issues);
+  if (drafterIssues1.length === 0) {
+    console.warn(
+      "[generateAndValidate] Validator asked for rewrite but only meta/system issues were present; keeping original draft.",
+    );
+    return {
+      content: draft.content,
+      validatorResult: {
+        ...validation1,
+        needs_rewrite: false,
+        issues: [],
+      },
+      wasRewritten: false,
+      wasDeflected: false,
+      inputTokens: draft.inputTokens,
+      outputTokens: draft.outputTokens,
+    };
+  }
+
   // Step 3: Rewrite once — inject issues into a new system prompt addendum
   const rewriteSystemPrompt =
     promptContext.systemPrompt +
     `\n\n[REWRITE INSTRUCTION]\n` +
     `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
-    validation1.issues.map((issue) => `- ${issue}`).join("\n");
+    drafterIssues1.map((issue) => `- ${issue}`).join("\n");
 
   const rewrite = await tracedGenerate({
     systemPrompt: rewriteSystemPrompt,
@@ -96,6 +125,25 @@ export async function generateAndValidate(input: {
     return {
       content: rewrite.content,
       validatorResult: validation2,
+      wasRewritten: true,
+      wasDeflected: false,
+      inputTokens: draft.inputTokens + rewrite.inputTokens,
+      outputTokens: draft.outputTokens + rewrite.outputTokens,
+    };
+  }
+
+  const drafterIssues2 = filterDrafterFacingIssues(validation2.issues);
+  if (drafterIssues2.length === 0) {
+    console.warn(
+      "[generateAndValidate] Second validation failed only with meta/system issues; keeping rewrite draft.",
+    );
+    return {
+      content: rewrite.content,
+      validatorResult: {
+        ...validation2,
+        needs_rewrite: false,
+        issues: [],
+      },
       wasRewritten: true,
       wasDeflected: false,
       inputTokens: draft.inputTokens + rewrite.inputTokens,

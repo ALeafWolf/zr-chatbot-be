@@ -1,5 +1,6 @@
-import { getProvider } from "./providers";
+import { z } from "zod";
 import { models } from "../config/models";
+import { chatJson } from "./providers";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -20,6 +21,25 @@ export interface ValidatorInput {
   outOfScopeChapterBehavior: string;
   recentContext: string;
 }
+
+const ValidationResultSchema = z.object({
+  in_character: z.boolean(),
+  canon_consistent: z.boolean(),
+  session_state_consistent: z.boolean(),
+  nsfw_within_bounds: z.boolean(),
+  issues: z.array(z.string()),
+  needs_rewrite: z.boolean(),
+});
+
+/** When the validator model output cannot be parsed, accept the draft (fail-open). */
+export const VALIDATOR_FAIL_OPEN: ValidationResult = {
+  in_character: true,
+  canon_consistent: true,
+  session_state_consistent: true,
+  nsfw_within_bounds: true,
+  issues: [],
+  needs_rewrite: false,
+};
 
 const VALIDATOR_SYSTEM_PROMPT = `You are a strict character consistency validator for a character roleplay system.
 Analyze the given draft response and return a JSON object — nothing else.
@@ -45,8 +65,6 @@ Return ONLY valid JSON in this exact shape:
 export async function runResponseValidator(
   input: ValidatorInput,
 ): Promise<ValidationResult> {
-  const provider = getProvider(models.validator);
-
   const userMessage = `
 Character: ${input.characterId}
 Continuity scope: ${input.continuityScope}
@@ -65,26 +83,23 @@ ${input.draft}
 
 Return the JSON validation result.`.trim();
 
-  const response = await provider.chat(
+  const result = await chatJson(
+    models.validator,
     [
       { role: "system", content: VALIDATOR_SYSTEM_PROMPT },
       { role: "user", content: userMessage },
     ],
-    { maxTokens: 512, temperature: 0.1, jsonMode: true },
+    ValidationResultSchema,
+    { maxTokens: 512, temperature: 0.1 },
   );
 
-  try {
-    const parsed = JSON.parse(response.content) as ValidationResult;
-    return parsed;
-  } catch {
-    // If the model fails to produce valid JSON, treat the draft as invalid
-    return {
-      in_character: false,
-      canon_consistent: false,
-      session_state_consistent: false,
-      nsfw_within_bounds: true,
-      issues: ["Validator failed to parse its own output — treating as invalid"],
-      needs_rewrite: true,
-    };
+  if (!result.ok) {
+    console.warn(
+      "[runResponseValidator] chatJson failed; fail-open (accept draft).",
+      result.error,
+    );
+    return VALIDATOR_FAIL_OPEN;
   }
+
+  return result.data;
 }

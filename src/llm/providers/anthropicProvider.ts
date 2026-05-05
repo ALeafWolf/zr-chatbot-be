@@ -19,21 +19,38 @@ export function createAnthropicProvider(model: string): LLMProvider {
     ): Promise<LLMResponse> {
       const systemMessages = messages.filter((m) => m.role === "system");
       const nonSystemMessages = messages.filter((m) => m.role !== "system");
-      const systemText = systemMessages.map((m) => m.content).join("\n\n");
+      const jsonHint =
+        options.jsonMode === true
+          ? `\nReturn a single JSON object only: no markdown fences, preamble, commentary, or keys outside the requested schema.`
+          : "";
+
+      let systemText = systemMessages.map((m) => m.content).join("\n\n") + jsonHint;
+
+      let apiMessages = nonSystemMessages.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
+
+      if (options.jsonMode === true && apiMessages.length > 0) {
+        apiMessages.push({ role: "assistant", content: "{" });
+      }
 
       const response = await getClient().messages.create({
         model,
         max_tokens: options.maxTokens ?? 2048,
         temperature: options.temperature ?? 1.0,
-        system: systemText || undefined,
-        messages: nonSystemMessages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
+        system: systemText.trim().length ? systemText.trim() : undefined,
+        messages: apiMessages,
       });
 
-      const text =
-        response.content[0].type === "text" ? response.content[0].text : "";
+      const textChunks = response.content
+        .filter((b): b is Anthropic.Messages.TextBlock => b.type === "text")
+        .map((b) => b.text);
+      let text = textChunks.join("");
+      if (options.jsonMode === true) {
+        text = `{${text}`;
+      }
+
       return {
         content: text,
         inputTokens: response.usage.input_tokens,
