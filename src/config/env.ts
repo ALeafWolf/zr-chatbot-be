@@ -29,6 +29,9 @@ const envSchema = z.object({
     .string()
     .default("https://api.smith.langchain.com"),
 
+  /** LangSmith dataset name for Phase 1 regression examples (push + evaluate). */
+  LANGSMITH_EVAL_DATASET: z.string().default("zuoran-phase1-eval"),
+
   PORT: z
     .string()
     .default("4000")
