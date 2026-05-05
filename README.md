@@ -36,9 +36,9 @@ curl http://localhost:4000/health
 
 | Script | Purpose |
 |--------|---------|
-| `npm run dev` | `tsx watch` on `src/server.ts` |
+| `npm run dev` | Hot reload: `tsx watch` on `src/server.ts` and `src/**/*.yaml` (character/overlays). Use this for local API work — not `start`. |
 | `npm run build` | Bundle to `dist/` with `tsup` |
-| `npm run start` | Run `dist/server.js` (after `build`) |
+| `npm run start` | Run `dist/server.js` (after `build`; no file watcher) |
 | `npm run db:generate` | Generate Drizzle migrations from schema |
 | `npm run db:migrate` | Apply migrations via Drizzle Kit |
 | `npm run db:init` | Apply `drizzle/migrations/0000_init.sql` directly with `pg` (alternative path) |
