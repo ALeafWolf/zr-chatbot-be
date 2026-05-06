@@ -51,6 +51,8 @@ export const chatMessages = pgTable(
     turnIndex: integer("turn_index").notNull(),
     role: text("role").notNull(), // user | assistant
     content: text("content").notNull(),
+    /** Character-voiced thought chain (streamed + persisted on assistant rows). */
+    thoughts: jsonb("thoughts").$type<unknown>(),
     validatorResult: jsonb("validator_result"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

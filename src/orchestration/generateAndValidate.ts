@@ -1,11 +1,23 @@
-import { generateCharacterReply } from "../llm/generateCharacterReply";
-import { runResponseValidator } from "../llm/runResponseValidator";
-import type { ValidationResult } from "../llm/runResponseValidator";
+import { generateCharacterReplyStream } from "../llm/generateCharacterReply";
+import {
+  runResponseValidator,
+  VALIDATOR_FAIL_OPEN,
+  type ValidationResult,
+} from "../llm/runResponseValidator";
 import type { PromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../character/characterDefaults";
 import { loadCharacterDefaults } from "../character/characterDefaults";
-import { traceStage, traceLLMStage } from "../observability/langsmithTracing";
+import { traceStage } from "../observability/langsmithTracing";
+import type { ToolChatMessage } from "../llm/providers";
+import {
+  generateWithToolsStream,
+  ToolLoopExceededError,
+} from "./generateWithTools";
+import type { ToolCtx } from "../llm/tools/types";
+import { generateThoughtSummary } from "../llm/generateThoughtSummary";
+import type { Thought } from "./thoughtTypes";
+import type { OrchestrationStreamEvent } from "./thoughtTypes";
 
 /** System/transport issues from the validator — not actionable for the drafter. */
 function isMetaValidatorIssue(issue: string): boolean {
@@ -26,23 +38,84 @@ export interface GenerateAndValidateResult {
   outputTokens: number;
 }
 
-const tracedGenerate = traceLLMStage("llm.generate_character_reply", generateCharacterReply);
+export type GenerateAndValidateYield =
+  | OrchestrationStreamEvent
+  | { type: "_complete"; result: GenerateAndValidateResult };
+
+/** Chunk size when replaying validated first-draft prose to SSE (~UTF-16 code units). */
+const VALIDATED_REPLY_REPLAY_SLICE = 96;
+
+async function* replayValidatedDraftDeltas(
+  text: string,
+  signal?: AbortSignal,
+): AsyncGenerator<Extract<OrchestrationStreamEvent, { type: "delta" }>> {
+  for (let i = 0; i < text.length; ) {
+    if (signal?.aborted) {
+      throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+    }
+    const j = Math.min(i + VALIDATED_REPLY_REPLAY_SLICE, text.length);
+    yield { type: "delta", text: text.slice(i, j) };
+    i = j;
+  }
+}
+
 const tracedValidate = traceStage("llm.run_response_validator", runResponseValidator);
 
+function buildToolMessages(
+  promptContext: PromptContext,
+  userMessage: string,
+): ToolChatMessage[] {
+  return [
+    { role: "system", content: promptContext.systemPrompt },
+    ...promptContext.conversationHistory.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    })),
+    { role: "user", content: userMessage },
+  ];
+}
+
+function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
+  const s = characterDefaults.speech_style;
+  return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
+    "；",
+  );
+}
+
 /**
- * Draft → validate → rewrite-once → validate again → safe deflection ladder (§7/§12).
- *
- * All failure paths are logged through the caller's LangSmith trace span
- * (validator result is always returned as part of the result).
+ * Draft → validate → rewrite-once → validate again → safe deflection ladder,
+ * yielding orchestration events incrementally. Ends with a `_complete` sentinel.
  */
-export async function generateAndValidate(input: {
+export async function* generateAndValidateStream(input: {
   promptContext: PromptContext;
   userMessage: string;
   session: ChatSession;
   personaOverlay: PersonaOverlayDefaults;
-}): Promise<GenerateAndValidateResult> {
-  const { promptContext, userMessage, session, personaOverlay } = input;
+  signal?: AbortSignal;
+  thoughtSummaryCache?: Map<string, string>;
+  thoughtsOut?: Thought[];
+}): AsyncGenerator<GenerateAndValidateYield> {
+  const {
+    promptContext,
+    userMessage,
+    session,
+    personaOverlay,
+    signal,
+    thoughtSummaryCache,
+    thoughtsOut,
+  } = input;
+
   const characterDefaults = loadCharacterDefaults(session.characterId);
+  const voiceHints = voiceHintsFrom(characterDefaults);
+  const cache = thoughtSummaryCache ?? new Map<string, string>();
+  const thoughtsAcc = thoughtsOut ?? [];
+
+  async function* emitThought(
+    thought: Thought,
+  ): AsyncGenerator<OrchestrationStreamEvent> {
+    thoughtsAcc.push(thought);
+    yield { type: "thought", thought };
+  }
 
   const recentContextStr = promptContext.conversationHistory
     .slice(-4)
@@ -57,30 +130,140 @@ export async function generateAndValidate(input: {
     escalationRule: personaOverlay.escalation_rule,
     outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior,
     recentContext: recentContextStr,
+    signal,
   };
 
-  // Step 1: Generate draft
-  const draft = await tracedGenerate({
-    systemPrompt: promptContext.systemPrompt,
-    conversationHistory: promptContext.conversationHistory,
-    userMessage,
-  });
+  const toolCtx: ToolCtx = {
+    sessionId: session.sessionId,
+    signal: signal ?? new AbortController().signal,
+  };
 
-  // Step 2: Validate draft
+  let draft!: { content: string; inputTokens: number; outputTokens: number };
+
+  try {
+    let completed = false;
+    for await (const ev of generateWithToolsStream({
+      messages: buildToolMessages(promptContext, userMessage),
+      ctx: toolCtx,
+      signal,
+      enableTools: true,
+    })) {
+      if (ev.type === "delta") {
+        // Draft prose is withheld from SSE until after validation; native reasoning streams as thoughts.
+        if (ev.reasoning) {
+          const thought: Thought = {
+            kind: "native",
+            text: ev.reasoning,
+            ts: Date.now(),
+          };
+          yield* emitThought(thought);
+        }
+      }
+      if (ev.type === "before_tool") {
+        const summary = await generateThoughtSummary(
+          {
+            characterName: characterDefaults.name,
+            stage: "tool_decision",
+            context: { tool: ev.name, args: ev.args },
+            voiceHints,
+          },
+          cache,
+        );
+        yield* emitThought({
+          kind: "tool_decision",
+          text: summary,
+          ts: Date.now(),
+          meta: { tool: ev.name },
+        });
+        yield {
+          type: "tool_call",
+          id: ev.id,
+          name: ev.name,
+          args: ev.args,
+        };
+      }
+      if (ev.type === "after_tool") {
+        yield {
+          type: "tool_result",
+          id: ev.id,
+          name: ev.name,
+          summary: ev.summary,
+        };
+        const voiceSummary = await generateThoughtSummary(
+          {
+            characterName: characterDefaults.name,
+            stage: "tool_result",
+            context: { tool: ev.name, summary: ev.summary },
+            voiceHints,
+          },
+          cache,
+        );
+        yield* emitThought({
+          kind: "tool_result",
+          text: voiceSummary,
+          ts: Date.now(),
+          meta: { tool: ev.name },
+        });
+      }
+      if (ev.type === "done") {
+        draft = {
+          content: ev.content,
+          inputTokens: ev.inputTokens,
+          outputTokens: ev.outputTokens,
+        };
+        completed = true;
+      }
+    }
+    if (!completed) {
+      throw new Error("Draft generation ended without completion");
+    }
+  } catch (e) {
+    if (e instanceof ToolLoopExceededError) {
+      const line = await generateThoughtSummary(
+        {
+          characterName: characterDefaults.name,
+          stage: "deflect",
+          context: { reason: "tool_loop_exceeded" },
+          voiceHints,
+        },
+        cache,
+      );
+      yield* emitThought({ kind: "deflect", text: line, ts: Date.now() });
+      yield {
+        type: "_complete",
+        result: {
+          content: characterDefaults.safe_deflection,
+          validatorResult: VALIDATOR_FAIL_OPEN,
+          wasRewritten: false,
+          wasDeflected: true,
+          inputTokens: 0,
+          outputTokens: 0,
+        },
+      };
+      return;
+    }
+    throw e;
+  }
+
   const validation1 = await tracedValidate({
     ...validatorInput,
     draft: draft.content,
   });
 
   if (!validation1.needs_rewrite) {
-    return {
-      content: draft.content,
-      validatorResult: validation1,
-      wasRewritten: false,
-      wasDeflected: false,
-      inputTokens: draft.inputTokens,
-      outputTokens: draft.outputTokens,
+    yield* replayValidatedDraftDeltas(draft.content, signal);
+    yield {
+      type: "_complete",
+      result: {
+        content: draft.content,
+        validatorResult: validation1,
+        wasRewritten: false,
+        wasDeflected: false,
+        inputTokens: draft.inputTokens,
+        outputTokens: draft.outputTokens,
+      },
     };
+    return;
   }
 
   const drafterIssues1 = filterDrafterFacingIssues(validation1.issues);
@@ -88,48 +271,86 @@ export async function generateAndValidate(input: {
     console.warn(
       "[generateAndValidate] Validator asked for rewrite but only meta/system issues were present; keeping original draft.",
     );
-    return {
-      content: draft.content,
-      validatorResult: {
-        ...validation1,
-        needs_rewrite: false,
-        issues: [],
+    yield* replayValidatedDraftDeltas(draft.content, signal);
+    yield {
+      type: "_complete",
+      result: {
+        content: draft.content,
+        validatorResult: {
+          ...validation1,
+          needs_rewrite: false,
+          issues: [],
+        },
+        wasRewritten: false,
+        wasDeflected: false,
+        inputTokens: draft.inputTokens,
+        outputTokens: draft.outputTokens,
       },
-      wasRewritten: false,
-      wasDeflected: false,
-      inputTokens: draft.inputTokens,
-      outputTokens: draft.outputTokens,
     };
+    return;
   }
 
-  // Step 3: Rewrite once — inject issues into a new system prompt addendum
+  const rewriteIntro = await generateThoughtSummary(
+    {
+      characterName: characterDefaults.name,
+      stage: "rewrite",
+      context: { issues: drafterIssues1 },
+      voiceHints,
+    },
+    cache,
+  );
+  yield* emitThought({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
+
   const rewriteSystemPrompt =
     promptContext.systemPrompt +
     `\n\n[REWRITE INSTRUCTION]\n` +
     `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
     drafterIssues1.map((issue) => `- ${issue}`).join("\n");
 
-  const rewrite = await tracedGenerate({
-    systemPrompt: rewriteSystemPrompt,
-    conversationHistory: promptContext.conversationHistory,
-    userMessage,
-  });
+  let rewrite!: { content: string; inputTokens: number; outputTokens: number };
 
-  // Step 4: Validate rewrite
+  for await (const ev of generateCharacterReplyStream(
+    {
+      systemPrompt: rewriteSystemPrompt,
+      conversationHistory: promptContext.conversationHistory,
+      userMessage,
+    },
+    { signal },
+  )) {
+    if (ev.type === "delta") {
+      yield { type: "delta", text: ev.text };
+    }
+    if (ev.type === "done") {
+      rewrite = {
+        content: ev.content,
+        inputTokens: ev.inputTokens,
+        outputTokens: ev.outputTokens,
+      };
+    }
+  }
+
+  if (!rewrite) {
+    throw new Error("Rewrite stream ended without completion");
+  }
+
   const validation2 = await tracedValidate({
     ...validatorInput,
     draft: rewrite.content,
   });
 
   if (!validation2.needs_rewrite) {
-    return {
-      content: rewrite.content,
-      validatorResult: validation2,
-      wasRewritten: true,
-      wasDeflected: false,
-      inputTokens: draft.inputTokens + rewrite.inputTokens,
-      outputTokens: draft.outputTokens + rewrite.outputTokens,
+    yield {
+      type: "_complete",
+      result: {
+        content: rewrite.content,
+        validatorResult: validation2,
+        wasRewritten: true,
+        wasDeflected: false,
+        inputTokens: draft.inputTokens + rewrite.inputTokens,
+        outputTokens: draft.outputTokens + rewrite.outputTokens,
+      },
     };
+    return;
   }
 
   const drafterIssues2 = filterDrafterFacingIssues(validation2.issues);
@@ -137,28 +358,59 @@ export async function generateAndValidate(input: {
     console.warn(
       "[generateAndValidate] Second validation failed only with meta/system issues; keeping rewrite draft.",
     );
-    return {
-      content: rewrite.content,
-      validatorResult: {
-        ...validation2,
-        needs_rewrite: false,
-        issues: [],
+    yield {
+      type: "_complete",
+      result: {
+        content: rewrite.content,
+        validatorResult: {
+          ...validation2,
+          needs_rewrite: false,
+          issues: [],
+        },
+        wasRewritten: true,
+        wasDeflected: false,
+        inputTokens: draft.inputTokens + rewrite.inputTokens,
+        outputTokens: draft.outputTokens + rewrite.outputTokens,
       },
-      wasRewritten: true,
-      wasDeflected: false,
-      inputTokens: draft.inputTokens + rewrite.inputTokens,
-      outputTokens: draft.outputTokens + rewrite.outputTokens,
     };
+    return;
   }
 
-  // Step 5: Safe in-character deflection
+  const deflectLine = await generateThoughtSummary(
+    {
+      characterName: characterDefaults.name,
+      stage: "deflect",
+      context: { issues: drafterIssues2 },
+      voiceHints,
+    },
+    cache,
+  );
+  yield* emitThought({ kind: "deflect", text: deflectLine, ts: Date.now() });
+
   const deflection = characterDefaults.safe_deflection;
-  return {
-    content: deflection,
-    validatorResult: validation2,
-    wasRewritten: true,
-    wasDeflected: true,
-    inputTokens: draft.inputTokens + rewrite.inputTokens,
-    outputTokens: draft.outputTokens + rewrite.outputTokens,
+  yield {
+    type: "_complete",
+    result: {
+      content: deflection,
+      validatorResult: validation2,
+      wasRewritten: true,
+      wasDeflected: true,
+      inputTokens: draft.inputTokens + rewrite.inputTokens,
+      outputTokens: draft.outputTokens + rewrite.outputTokens,
+    },
   };
+}
+
+/** Non-streaming wrapper — drains {@link generateAndValidateStream}. */
+export async function generateAndValidate(
+  input: Parameters<typeof generateAndValidateStream>[0],
+): Promise<GenerateAndValidateResult> {
+  let result: GenerateAndValidateResult | undefined;
+  for await (const ev of generateAndValidateStream(input)) {
+    if (ev.type === "_complete") result = ev.result;
+  }
+  if (!result) {
+    throw new Error("generateAndValidate completed without a result");
+  }
+  return result;
 }

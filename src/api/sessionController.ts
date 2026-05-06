@@ -163,6 +163,9 @@ export const sessionController = {
         content: m.content,
         turn_index: m.turnIndex,
         created_at: m.createdAt,
+        thoughts: Array.isArray(m.thoughts)
+          ? (m.thoughts as unknown[])
+          : [],
       })),
     });
   },

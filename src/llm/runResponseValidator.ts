@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../config/models";
-import { chatJson } from "./providers";
+import { chatJsonStream } from "./providers";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -20,6 +20,7 @@ export interface ValidatorInput {
   escalationRule: string;
   outOfScopeChapterBehavior: string;
   recentContext: string;
+  signal?: AbortSignal;
 }
 
 const ValidationResultSchema = z.object({
@@ -83,19 +84,19 @@ ${input.draft}
 
 Return the JSON validation result.`.trim();
 
-  const result = await chatJson(
+  const result = await chatJsonStream(
     models.validator,
     [
       { role: "system", content: VALIDATOR_SYSTEM_PROMPT },
       { role: "user", content: userMessage },
     ],
     ValidationResultSchema,
-    { maxTokens: 512, temperature: 0.1 },
+    { maxTokens: 512, temperature: 0.1, signal: input.signal },
   );
 
   if (!result.ok) {
     console.warn(
-      "[runResponseValidator] chatJson failed; fail-open (accept draft).",
+      "[runResponseValidator] validator JSON parse failed; fail-open (accept draft).",
       result.error,
     );
     return VALIDATOR_FAIL_OPEN;

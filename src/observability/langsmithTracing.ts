@@ -46,4 +46,24 @@ export function traceLLMStage<TInput extends unknown[], TOutput>(
   }) as unknown as (...args: TInput) => Promise<TOutput>;
 }
 
+/** LangSmith tracing for streaming LLM steps (async generator). */
+export function traceStreamingLLM<
+  TInput extends unknown[],
+  TYield,
+  TReturn,
+  TNext,
+>(
+  name: string,
+  fn: (...args: TInput) => AsyncGenerator<TYield, TReturn, TNext>,
+  metadata?: Record<string, unknown>,
+): (...args: TInput) => AsyncGenerator<TYield, TReturn, TNext> {
+  return traceable(fn, {
+    name,
+    run_type: "llm",
+    project_name: env.LANGSMITH_PROJECT,
+    tags: ["phase1", "llm", "stream", ...(metadata?.tags as string[] ?? [])],
+    metadata: metadata ?? {},
+  }) as unknown as (...args: TInput) => AsyncGenerator<TYield, TReturn, TNext>;
+}
+
 export { wrapOpenAI };

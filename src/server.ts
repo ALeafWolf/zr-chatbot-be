@@ -32,6 +32,10 @@ async function bootstrap(): Promise<void> {
     "/api/sessions/:id/messages",
     chatController.sendMessage,
   );
+  server.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/messages/stream",
+    chatController.streamMessage,
+  );
 
   // Health check
   server.get("/health", async () => ({ status: "ok" }));

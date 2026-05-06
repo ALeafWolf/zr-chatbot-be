@@ -10,6 +10,9 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
   DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
 
+  /** Optional — web search tool degrades gracefully when unset. */
+  TAVILY_API_KEY: z.string().optional(),
+
   GENERATION_MODEL: z.string().default("anthropic:claude-sonnet-4-5"),
   VALIDATOR_MODEL: z.string().default("anthropic:claude-haiku-4-5"),
   EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-chat"),

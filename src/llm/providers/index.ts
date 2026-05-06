@@ -4,24 +4,24 @@ import { createDeepSeekProvider } from "./deepseekProvider";
 import type { ModelBinding } from "../../config/models";
 import { z } from "zod";
 import { parseJsonOutput } from "../parseJsonOutput";
+import type {
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+  ChatOptions,
+  ToolChatMessage,
+  LLMStreamEvent,
+} from "./providerTypes";
 
-export interface LLMMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-export interface LLMResponse {
-  content: string;
-  inputTokens: number;
-  outputTokens: number;
-}
-
-export interface LLMProvider {
-  chat(
-    messages: LLMMessage[],
-    options?: { maxTokens?: number; temperature?: number; jsonMode?: boolean },
-  ): Promise<LLMResponse>;
-}
+export type {
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+  ChatOptions,
+  ToolChatMessage,
+  LLMStreamEvent,
+  OpenAIToolCall,
+} from "./providerTypes";
 
 export type ChatJsonOk<T> = {
   ok: true;
@@ -84,6 +84,75 @@ export async function chatJson<T>(
     raw: response.content,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
+  };
+}
+
+/**
+ * Like {@link chatJson}, but consumes a streaming completion, concatenates assistant
+ * output, then runs the same parse + Zod path.
+ */
+export async function chatJsonStream<T>(
+  binding: ModelBinding,
+  messages: LLMMessage[],
+  schema: z.ZodType<T>,
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    signal?: AbortSignal;
+  },
+): Promise<ChatJsonOk<T> | ChatJsonErr> {
+  const provider = getProvider(binding);
+  const msgs: ToolChatMessage[] = messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  let raw = "";
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  for await (const ev of provider.streamChat(msgs, {
+    maxTokens: options?.maxTokens,
+    temperature: options?.temperature,
+    jsonMode: true,
+    toolChoice: "none",
+    signal: options?.signal,
+  })) {
+    if (ev.type === "assistant_done") {
+      raw = ev.content;
+      inputTokens = ev.usage.inputTokens;
+      outputTokens = ev.usage.outputTokens;
+    }
+  }
+
+  const extracted = parseJsonOutput(raw);
+  if (!extracted.ok) {
+    return {
+      ok: false,
+      raw,
+      error: extracted.error,
+      inputTokens,
+      outputTokens,
+    };
+  }
+
+  const zResult = schema.safeParse(extracted.data);
+  if (!zResult.success) {
+    return {
+      ok: false,
+      raw,
+      error: zResult.error.message,
+      inputTokens,
+      outputTokens,
+    };
+  }
+
+  return {
+    ok: true,
+    data: zResult.data,
+    raw,
+    inputTokens,
+    outputTokens,
   };
 }
 

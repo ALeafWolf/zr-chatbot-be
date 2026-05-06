@@ -1,6 +1,13 @@
 import OpenAI from "openai";
 import { env } from "../../config/env";
-import type { LLMMessage, LLMResponse, LLMProvider } from "./index";
+import type {
+  LLMMessage,
+  LLMResponse,
+  LLMProvider,
+  ChatOptions,
+  ToolChatMessage,
+} from "./providerTypes";
+import { streamOpenAICompatibleChat } from "./openaiStream";
 
 let client: OpenAI | null = null;
 
@@ -18,7 +25,7 @@ export function createDeepSeekProvider(model: string): LLMProvider {
   return {
     async chat(
       messages: LLMMessage[],
-      options: { maxTokens?: number; temperature?: number; jsonMode?: boolean } = {},
+      options: ChatOptions = {},
     ): Promise<LLMResponse> {
       const response = await getClient().chat.completions.create({
         model,
@@ -31,12 +38,23 @@ export function createDeepSeekProvider(model: string): LLMProvider {
         })),
       });
 
-      const content = response.choices[0]?.message?.content ?? "";
+      const msg = response.choices[0]?.message as
+        | { content?: string | null; reasoning_content?: string | null }
+        | undefined;
+      const content = msg?.content ?? "";
       return {
         content,
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
+        reasoningContent:
+          typeof msg?.reasoning_content === "string"
+            ? msg.reasoning_content
+            : undefined,
       };
+    },
+
+    async *streamChat(messages: ToolChatMessage[], options: ChatOptions = {}) {
+      yield* streamOpenAICompatibleChat(getClient(), model, messages, options);
     },
   };
 }
