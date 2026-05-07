@@ -23,8 +23,16 @@ const CreateSessionBody = z.object({
 
 const GetSessionParams = z.object({ id: z.string() });
 const GetMessagesQuery = z.object({
-  page: z.string().default("0").transform(Number),
-  page_size: z.string().default("50").transform(Number),
+  page: z
+    .string()
+    .default("0")
+    .transform(Number)
+    .pipe(z.number().int().min(0)),
+  page_size: z
+    .string()
+    .default("50")
+    .transform(Number)
+    .pipe(z.number().int().min(1).max(200)),
 });
 
 export const sessionController = {
@@ -127,7 +135,7 @@ export const sessionController = {
     const { id } = GetSessionParams.parse((req as FastifyRequest<{ Params: { id: string } }>).params);
     const query = GetMessagesQuery.parse(req.query);
 
-    const [sessionRows, messages] = await Promise.all([
+    const [sessionRows, messageRowsNewestFirst] = await Promise.all([
       db
         .select()
         .from(chatSessions)
@@ -137,10 +145,13 @@ export const sessionController = {
         .select()
         .from(chatMessages)
         .where(eq(chatMessages.sessionId, id))
-        .orderBy(chatMessages.turnIndex)
+        .orderBy(desc(chatMessages.turnIndex))
         .limit(query.page_size)
         .offset(query.page * query.page_size),
     ]);
+
+    /** Chronological order for the client (newest page fetched first; offset advances into older history). */
+    const messages = [...messageRowsNewestFirst].reverse();
 
     if (!sessionRows[0]) {
       reply.status(404).send({ error: "Session not found" });
