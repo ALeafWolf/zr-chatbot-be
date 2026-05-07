@@ -28,7 +28,7 @@ export async function retrieveInteractiveMemories(input: {
   characterId: string;
   limit?: number;
 }): Promise<RetrievedMemory[]> {
-  const { queryEmbedding, memoryNamespace, characterId, limit = RETRIEVAL_LIMITS.memories } = input;
+  const { queryEmbedding, memoryNamespace, characterId, limit = RETRIEVAL_LIMITS.durableMemoryTopK } = input;
   const embeddingStr = `[${queryEmbedding.join(",")}]`;
 
   const rows = await db.execute(sql`

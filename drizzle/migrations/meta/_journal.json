@@ -22,6 +22,13 @@
       "when": 1749292800000,
       "tag": "0002_rename_character_zou_to_zuo",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1749388800000,
+      "tag": "0003_add_session_summaries",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { db } from "../db/client";
 import { chatMessages } from "../db/schema/chat";
-import { eq, desc, asc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { RETRIEVAL_LIMITS } from "../character/canonRules";
 
 export interface ConversationTurn {
@@ -10,14 +10,15 @@ export interface ConversationTurn {
 }
 
 /**
- * Return the last N turns of a session ordered chronologically.
- * Used for the [RECENT CHAT] prompt block and for post-turn extractor context.
+ * Return the last `pairCount` user+assistant pairs as individual message rows, chronologically.
+ * A pair is two rows (user + assistant); we fetch up to pairCount * 2 messages.
  */
 export async function getRecentConversationWindow(
   sessionId: string,
-  limit: number = RETRIEVAL_LIMITS.recentTurns,
+  pairCount: number = RETRIEVAL_LIMITS.recentTurnPairs,
 ): Promise<ConversationTurn[]> {
-  // Fetch the last N messages descending, then re-sort ascending for prompt order
+  const rowLimit = pairCount * 2;
+
   const rows = await db
     .select({
       role: chatMessages.role,
@@ -27,7 +28,7 @@ export async function getRecentConversationWindow(
     .from(chatMessages)
     .where(eq(chatMessages.sessionId, sessionId))
     .orderBy(desc(chatMessages.turnIndex))
-    .limit(limit);
+    .limit(rowLimit);
 
   return rows
     .reverse()

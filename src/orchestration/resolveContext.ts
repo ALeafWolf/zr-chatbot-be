@@ -12,6 +12,7 @@ import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
 import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
 import type { DerivedState } from "../state/sessionStateRepo";
 import { traceStage } from "../observability/langsmithTracing";
+import { getSessionSummary, type SessionSummaryRecord } from "../memory/sessionSummaryRepo";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -19,15 +20,16 @@ export interface ResolvedContext {
   recentTurns: ConversationTurn[];
   derivedState: DerivedState;
   queryEmbedding: number[];
+  sessionSummary: SessionSummaryRecord;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
 const tracedRetrieveCanon = traceStage("retrieval.canon_narrative", retrieveCanonNarrative);
 const tracedRetrieveTurns = traceStage("retrieval.recent_turns", getRecentConversationWindow);
+const tracedSessionSummary = traceStage("retrieval.session_summary", getSessionSummary);
 
 /**
- * Parallel retrieval + derived_state computation (§7 steps 3–4).
- * All three retrieval calls are fired concurrently.
+ * Parallel retrieval + session summary + derived_state (§7).
  */
 export async function resolveContext(input: {
   session: ChatSession;
@@ -43,7 +45,7 @@ export async function resolveContext(input: {
 
   const queryEmbedding = await embedText(userMessage);
 
-  const [memories, canonChunks, recentTurns] = await Promise.all([
+  const [memories, canonChunks, recentTurns, sessionSummary] = await Promise.all([
     tracedRetrieveMemories({
       queryEmbedding,
       memoryNamespace: session.memoryNamespace as MemoryNamespace,
@@ -55,6 +57,7 @@ export async function resolveContext(input: {
       arcKeys: scopeResolution.arcKeys,
     }),
     tracedRetrieveTurns(session.sessionId),
+    tracedSessionSummary(session.sessionId),
   ]);
 
   const derivedState = computeDerivedState(
@@ -63,5 +66,12 @@ export async function resolveContext(input: {
     characterDefaults,
   );
 
-  return { memories, canonChunks, recentTurns, derivedState, queryEmbedding };
+  return {
+    memories,
+    canonChunks,
+    recentTurns,
+    derivedState,
+    queryEmbedding,
+    sessionSummary,
+  };
 }

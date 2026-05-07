@@ -106,6 +106,7 @@ export async function* runCharacterTurnStream(
       memories: context.memories,
       canonChunks: context.canonChunks,
       recentTurns: context.recentTurns,
+      sessionSummary: context.sessionSummary,
     });
 
     const thoughtSummaryCache = new Map<string, string>();
@@ -247,6 +248,7 @@ export async function* runCharacterTurnStream(
       memories: context.memories,
       derivedState: context.derivedState,
       shouldWriteMemory,
+      latestTurnIndex: nextTurnIndex + 1,
     });
 
     yield {

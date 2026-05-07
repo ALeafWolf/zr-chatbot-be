@@ -9,6 +9,7 @@ import {
   index,
   customType,
 } from "drizzle-orm/pg-core";
+import { chatSessions } from "./chat";
 
 const vectorCol = customType<{
   data: number[];
@@ -66,6 +67,34 @@ export const interactiveMemoryEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// session_summaries — structured, incrementally merged session memory (Phases 1–2)
+// ---------------------------------------------------------------------------
+export const sessionSummaries = pgTable(
+  "session_summaries",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .unique()
+      .references(() => chatSessions.sessionId, { onDelete: "cascade" }),
+    characterId: text("character_id").notNull(),
+    playerId: text("player_id").notNull(),
+    lastSummarizedTurnIndex: integer("last_summarized_turn_index")
+      .notNull()
+      .default(-1),
+    summaryJson: jsonb("summary_json").notNull().$type<unknown>(),
+    summaryText: text("summary_text").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [index("session_summaries_session_idx").on(t.sessionId)],
+);
+
+// ---------------------------------------------------------------------------
 // session_archive
 // ---------------------------------------------------------------------------
 export const sessionArchive = pgTable("session_archive", {
@@ -98,3 +127,5 @@ export type NewInteractiveMemoryEvent =
   typeof interactiveMemoryEvents.$inferInsert;
 export type SessionArchive = typeof sessionArchive.$inferSelect;
 export type PlayerProfile = typeof playerProfile.$inferSelect;
+export type SessionSummary = typeof sessionSummaries.$inferSelect;
+export type NewSessionSummary = typeof sessionSummaries.$inferInsert;

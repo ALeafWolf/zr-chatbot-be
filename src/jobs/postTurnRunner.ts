@@ -1,6 +1,6 @@
 import { extractPostTurnSignals } from "../llm/extractPostTurnSignals";
 import { writeInteractiveMemory } from "../memory/writeInteractiveMemory";
-import { summarizeSession } from "../memory/summarizeSession";
+import { maybeCompactSessionSummary } from "../memory/compactSessionSummary";
 import type { ChatSession } from "../db/schema/chat";
 import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
 import type { DerivedState } from "../state/sessionStateRepo";
@@ -15,6 +15,8 @@ export interface PostTurnJob {
   memories: RetrievedMemory[];
   derivedState: DerivedState;
   shouldWriteMemory: boolean;
+  /** Assistant message turn_index just written for this turn. */
+  latestTurnIndex: number;
 }
 
 /**
@@ -56,6 +58,7 @@ class PostTurnRunner {
       memories,
       derivedState,
       shouldWriteMemory,
+      latestTurnIndex,
     } = job;
 
     // Extract post-turn signals (memory facts + emotionalDelta=null in Phase 1)
@@ -87,8 +90,11 @@ class PostTurnRunner {
       }
     }
 
-    // Refresh session archive
-    await summarizeSession(sessionId);
+    // Merge older transcript into structured session summary (async; replaces session_archive tail)
+    await maybeCompactSessionSummary({
+      session,
+      latestTurnIndex,
+    });
   }
 }
 

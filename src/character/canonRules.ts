@@ -20,11 +20,20 @@ export const WRITEBACK_POLICY_BY_MODE: Record<string, string> = {
 /** Minimum composite importance score to persist a memory event. */
 export const MEMORY_IMPORTANCE_THRESHOLD = 0.5;
 
-/** Retrieval limits per turn (§8). */
+/** Retrieval limits per turn (§8) + session summary compaction. */
 export const RETRIEVAL_LIMITS = {
+  /** Last N user+assistant pairs in raw transcript (fetches up to 2*N message rows). */
+  recentTurnPairs: 12,
+  /** @deprecated Prefer recentTurnPairs — pairs are canonical; name was ambiguous. */
+  recentTurns: 12,
+  durableMemoryTopK: 5,
+  /** Phase 3 session-local RAG top-K (reserved). */
+  sessionRecallTopK: 4,
+  /** @deprecated Use durableMemoryTopK — interactive memory retrieval top-K. */
   memories: 5,
   canonChunks: 3,
-  recentTurns: 12,
+  compactEveryTurns: 8,
+  minTurnsBeforeSummary: 16,
 } as const;
 
 /** Ranking weights for canon retrieval (§8 formula). */

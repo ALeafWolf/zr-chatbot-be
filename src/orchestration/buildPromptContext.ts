@@ -7,6 +7,7 @@ import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
 import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
 import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
 import type { ChatSession } from "../db/schema/chat";
+import type { SessionSummary } from "../db/schema/memory";
 
 /** Appended last in the system prompt: how to interpret ()/（） stage directions and 【】 meta. */
 const USER_MESSAGE_ANNOTATION_RULES = `用户消息中可能包含非对白标注。
@@ -24,7 +25,7 @@ export interface PromptContext {
  *
  * [SYSTEM] [BASE PERSONA] [CONTINUITY OVERLAY] [RELATIONSHIP EXPRESSION]
  * [CHARACTER DEFAULTS]
- * [SESSION STATE] [DERIVED STATE] [INTERACTIVE MEMORY] [CANON NARRATIVE]
+ * [SESSION STATE] [DERIVED STATE] [SESSION SUMMARY] [INTERACTIVE MEMORY] [CANON NARRATIVE]
  * [USER MESSAGE ANNOTATIONS]
  * [RECENT CHAT]   ← history passed separately to provider
  */
@@ -36,6 +37,7 @@ export function buildPromptContext(input: {
   memories: RetrievedMemory[];
   canonChunks: RetrievedCanonChunk[];
   recentTurns: ConversationTurn[];
+  sessionSummary?: SessionSummary | null;
 }): PromptContext {
   const {
     characterDefaults,
@@ -45,6 +47,7 @@ export function buildPromptContext(input: {
     memories,
     canonChunks,
     recentTurns,
+    sessionSummary,
   } = input;
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
@@ -75,7 +78,9 @@ export function buildPromptContext(input: {
   const systemPrompt = [
     buildBlock("SYSTEM", `你是${characterDefaults.name}，一个虚构角色扮演系统中的角色。
 严格保持角色扮演。以下规则必须始终遵守：
-${hardRules}`),
+${hardRules}
+
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > INTERACTIVE MEMORY > CANON NARRATIVE。SESSION SUMMARY 仅概括已离开 Raw 窗口的更旧内容；以 RECENT CHAT 为准。`),
 
     buildBlock("BASE PERSONA", basePersonaBody),
 
@@ -105,6 +110,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     buildBlock("DERIVED STATE", `推断情绪：${derivedState.inferredMood}
 推断活动：${derivedState.inferredActivity}
 对话立场：${derivedState.conversationalStance}`),
+
+    ...(sessionSummary?.summaryText?.trim()
+      ? [
+          buildBlock(
+            "SESSION SUMMARY",
+            `本段概括当前场次中已离开「最近 Raw 窗口」的更早回合，用于连续性。若与 RECENT CHAT 冲突，以 RECENT CHAT 为准。\n\n${sessionSummary.summaryText.trim()}`,
+          ),
+        ]
+      : []),
 
     buildBlock("INTERACTIVE MEMORY", formatMemories(memories)),
 

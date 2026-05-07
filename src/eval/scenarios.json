@@ -139,6 +139,25 @@
           "description": "No interactive_memory_events row must be inserted for sandbox sessions"
         }
       ]
+    },
+    {
+      "id": "session_summary_structured_manual",
+      "description": "Structured session summary (Phases 1–2): compacted older-than-recent-window text is merged into session_summaries.summary_json, rendered to summary_text, and injected as [SESSION SUMMARY]. Full E2E (16+ turns, compaction, recall) requires live API keys and is not covered by the stub eval runner; verify manually after migrating 0003_add_session_summaries.sql.",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_relationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        { "role": "user", "content": "（占位：长会话后问一个只出现在早期回合的细节。）" }
+      ],
+      "assertions": [
+        {
+          "type": "not_contains",
+          "value": "__SESSION_SUMMARY_STUB_MARKER__",
+          "description": "Stub eval placeholder — replace with live-run assertions when full turn replay is enabled"
+        }
+      ]
     }
   ]
 }
