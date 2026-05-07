@@ -15,6 +15,13 @@
       "when": 1746462261000,
       "tag": "0001_add_chat_message_thoughts",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1749292800000,
+      "tag": "0002_rename_character_zou_to_zuo",
+      "breakpoints": true
     }
   ]
 }

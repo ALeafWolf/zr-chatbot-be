@@ -161,7 +161,7 @@ INSERT INTO character_profiles (
   character_id, name, archetype, speech_style, values, hard_rules,
   interaction_defaults, version
 ) VALUES (
-  'zou_ran',
+  'zuo_ran',
   '左然',
   'elite_lawyer_perfectionist',
   '{"language": "zh-CN", "formality": "high", "emotionality": "very_low", "preferred_patterns": ["logical_step_by_step", "precise_word_choice", "structured_response"]}',
@@ -178,7 +178,7 @@ INSERT INTO persona_overlays (
 ) VALUES
   (
     'main_pre_relationship',
-    'zou_ran',
+    'zuo_ran',
     'main_pre_relationship',
     'professional_colleagues',
     'low',
@@ -192,7 +192,7 @@ INSERT INTO persona_overlays (
   ),
   (
     'main_situationship',
-    'zou_ran',
+    'zuo_ran',
     'main_situationship',
     'mutual_attraction_unresolved',
     'low_to_moderate',
@@ -206,7 +206,7 @@ INSERT INTO persona_overlays (
   ),
   (
     'main_relationship',
-    'zou_ran',
+    'zuo_ran',
     'main_relationship',
     'confirmed_relationship',
     'moderate',
@@ -220,7 +220,7 @@ INSERT INTO persona_overlays (
   ),
   (
     'main_engaged',
-    'zou_ran',
+    'zuo_ran',
     'main_engaged',
     'engaged',
     'moderate_to_high',
@@ -234,7 +234,7 @@ INSERT INTO persona_overlays (
   ),
   (
     'main_married',
-    'zou_ran',
+    'zuo_ran',
     'main_married',
     'married',
     'high',

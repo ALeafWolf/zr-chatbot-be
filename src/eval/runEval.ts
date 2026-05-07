@@ -31,7 +31,7 @@ async function runScenario(scenario: Scenario): Promise<{
   if (scenario.input_draft) {
     validatorResult = await runResponseValidator({
       draft: scenario.input_draft,
-      characterId: "zou_ran",
+      characterId: "zuo_ran",
       continuityScope: scenario.session.continuity_scope,
       mode: scenario.session.mode,
       maxNsfwLevel: overlay.max_nsfw_level,

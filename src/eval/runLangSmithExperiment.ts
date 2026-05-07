@@ -51,7 +51,7 @@ export async function evalTarget(
     const overlay = loadPersonaOverlay(session.continuity_scope);
     const validation = await runResponseValidator({
       draft,
-      characterId: "zou_ran",
+      characterId: "zuo_ran",
       continuityScope: session.continuity_scope,
       mode: session.mode,
       maxNsfwLevel: overlay.max_nsfw_level,

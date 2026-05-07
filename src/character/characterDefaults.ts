@@ -15,6 +15,15 @@ export interface CharacterDefaults {
     avoid: string[];
   };
   core_traits: string[];
+  /** Long-form affective grounding; surfaced in prompts as [情感内核]. */
+  emotional_core?: string;
+  private_habits_and_texture?: string[];
+  /** Layered relational behavior prose; subsets chosen by overlay `relationship_status`. */
+  relationship_expression?: {
+    general?: string;
+    intimate?: string;
+    married?: string;
+  };
   values: string[];
   hard_rules: string[];
   interaction_defaults: {

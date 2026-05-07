@@ -42,7 +42,7 @@ const envSchema = z.object({
   FRONTEND_ORIGIN: z.string().default("http://localhost:5173"),
 
   DEFAULT_PLAYER_ID: z.string().default("local_dev"),
-  DEFAULT_CHARACTER_ID: z.string().default("zou_ran"),
+  DEFAULT_CHARACTER_ID: z.string().default("zuo_ran"),
 });
 
 const parsed = envSchema.safeParse(process.env);

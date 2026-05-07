@@ -69,7 +69,7 @@ Validation is enforced in `src/config/env.ts`. Required vs optional summary:
 | `PORT` | no | `4000` | |
 | `FRONTEND_ORIGIN` | no | `http://localhost:5173` | CORS origin |
 | `DEFAULT_PLAYER_ID` | no | `local_dev` | Phase 1 single-player stub |
-| `DEFAULT_CHARACTER_ID` | no | `zou_ran` | |
+| `DEFAULT_CHARACTER_ID` | no | `zuo_ran` | |
 
 See `.env.example` for a copy-paste template.
 
@@ -91,7 +91,7 @@ Example create session JSON:
 
 ```json
 {
-  "character_id": "zou_ran",
+  "character_id": "zuo_ran",
   "mode": "canonical_live",
   "continuity_scope": "main_married",
   "pinned_time": null,
