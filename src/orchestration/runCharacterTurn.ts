@@ -107,6 +107,7 @@ export async function* runCharacterTurnStream(
       canonChunks: context.canonChunks,
       recentTurns: context.recentTurns,
       sessionSummary: context.sessionSummary,
+      sessionRecall: context.sessionRecall,
     });
 
     const thoughtSummaryCache = new Map<string, string>();

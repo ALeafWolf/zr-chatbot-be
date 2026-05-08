@@ -9,6 +9,15 @@ import {
 import { deduplicateMemory } from "./deduplicateMemory";
 import { MEMORY_IMPORTANCE_THRESHOLD } from "../character/canonRules";
 
+export type MemoryScope = "cross_session" | "current_session";
+
+/** When `memoryScope` is `current_session`, written to session_memory_chunks instead of IME. */
+export type ExtractorSessionChunkType =
+  | "scene_moment"
+  | "decision"
+  | "emotional_shift"
+  | "open_thread";
+
 export interface MemoryCandidate {
   memoryType: "promise" | "relationship_transition" | "preference" | "habit" | "banter";
   summary: string;
@@ -16,6 +25,10 @@ export interface MemoryCandidate {
   emotionScore: number;
   tags?: string[];
   embedding: number[];
+  /** Routing (Phase 4). Default behaves as cross_session. */
+  memoryScope?: MemoryScope;
+  /** Per-turn session chunk subtype when routed to session_memory_chunks. */
+  sessionChunkType?: ExtractorSessionChunkType;
 }
 
 export interface WriteMemoryInput {

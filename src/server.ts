@@ -13,7 +13,7 @@ async function bootstrap(): Promise<void> {
   // CORS
   await server.register(cors, {
     origin: env.FRONTEND_ORIGIN,
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   });
 
   // Routes — /api/characters, /api/scopes, /api/modes
@@ -25,6 +25,7 @@ async function bootstrap(): Promise<void> {
   server.post("/api/sessions", sessionController.createSession);
   server.get("/api/sessions", sessionController.listSessions);
   server.get<{ Params: { id: string } }>("/api/sessions/:id", sessionController.getSession);
+  server.patch<{ Params: { id: string } }>("/api/sessions/:id", sessionController.patchSession);
   server.delete<{ Params: { id: string } }>("/api/sessions/:id", sessionController.deleteSession);
 
   // Chat route

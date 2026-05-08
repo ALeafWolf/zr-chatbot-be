@@ -25,6 +25,7 @@ export const chatSessions = pgTable(
     pinnedLocation: text("pinned_location"),
     writebackPolicy: text("writeback_policy").notNull(), // full_writeback | optional_writeback | no_writeback
     sessionSummary: text("session_summary"),
+    displayTitle: text("display_title"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

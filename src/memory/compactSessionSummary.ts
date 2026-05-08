@@ -2,6 +2,7 @@ import { RETRIEVAL_LIMITS } from "../character/canonRules";
 import type { ChatSession } from "../db/schema/chat";
 import { getMessagesByTurnRange } from "../retrieval/getMessagesByTurnRange";
 import { getSessionSummary, upsertSessionSummary } from "./sessionSummaryRepo";
+import { recentConversationWindowStartTurn } from "./recentWindowBoundary";
 import { runSessionSummaryMerger } from "../llm/runSessionSummaryMerger";
 import { traceStage } from "../observability/langsmithTracing";
 
@@ -77,11 +78,7 @@ async function compactSessionSummaryImpl(
     };
   }
 
-  const pairRows = RETRIEVAL_LIMITS.recentTurnPairs * 2;
-  const recentWindowStart = Math.max(
-    0,
-    latestTurnIndex - pairRows + 1,
-  );
+  const recentWindowStart = recentConversationWindowStartTurn(latestTurnIndex);
 
   const existing = await getSessionSummary(sessionId);
   const summarizedThrough = existing?.lastSummarizedTurnIndex ?? -1;

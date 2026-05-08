@@ -21,7 +21,19 @@ const CreateSessionBody = z.object({
   pinned_location: z.string().optional(),
 });
 
+const DISPLAY_TITLE_MAX_LEN = 120;
+
 const GetSessionParams = z.object({ id: z.string() });
+const PatchSessionBody = z.object({
+  display_title: z
+    .union([z.string(), z.null()])
+    .transform((val) => {
+      if (val === null) return null;
+      const t = val.trim();
+      return t.length === 0 ? null : t;
+    })
+    .pipe(z.union([z.null(), z.string().max(DISPLAY_TITLE_MAX_LEN)])),
+});
 const GetMessagesQuery = z.object({
   page: z
     .string()
@@ -107,6 +119,7 @@ export const sessionController = {
         mode: chatSessions.mode,
         continuityScope: chatSessions.continuityScope,
         sessionSummary: chatSessions.sessionSummary,
+        displayTitle: chatSessions.displayTitle,
         createdAt: chatSessions.createdAt,
         updatedAt: chatSessions.updatedAt,
       })
@@ -126,9 +139,39 @@ export const sessionController = {
       mode: s.mode,
       continuity_scope: s.continuityScope,
       session_summary: s.sessionSummary,
+      display_title: s.displayTitle,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
     })));
+  },
+
+  async patchSession(req: FastifyRequest, reply: FastifyReply) {
+    const { id } = GetSessionParams.parse((req as FastifyRequest<{ Params: { id: string } }>).params);
+    const body = PatchSessionBody.parse(req.body);
+
+    const existing = await db
+      .select({ sessionId: chatSessions.sessionId })
+      .from(chatSessions)
+      .where(and(eq(chatSessions.sessionId, id), isNull(chatSessions.deletedAt)))
+      .limit(1);
+
+    if (!existing[0]) {
+      reply.status(404).send({ error: "Session not found" });
+      return;
+    }
+
+    await db
+      .update(chatSessions)
+      .set({
+        displayTitle: body.display_title,
+        updatedAt: new Date(),
+      })
+      .where(eq(chatSessions.sessionId, id));
+
+    reply.send({
+      session_id: id,
+      display_title: body.display_title,
+    });
   },
 
   async getSession(req: FastifyRequest, reply: FastifyReply) {
@@ -166,6 +209,7 @@ export const sessionController = {
       pinned_time: s.pinnedTime,
       pinned_location: s.pinnedLocation,
       session_summary: s.sessionSummary,
+      display_title: s.displayTitle,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
       messages: messages.map((m) => ({

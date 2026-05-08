@@ -36,6 +36,12 @@ export const RETRIEVAL_LIMITS = {
   minTurnsBeforeSummary: 16,
 } as const;
 
+/** Re-ranking for session-local recall (Phase 3) — do not reuse canon retrieval weights. */
+export const SESSION_CHUNK_RANKING_WEIGHTS = {
+  similarity: 0.72,
+  recency: 0.28,
+} as const;
+
 /** Ranking weights for canon retrieval (§8 formula). */
 export const RANKING_WEIGHTS = {
   similarity: 0.35,

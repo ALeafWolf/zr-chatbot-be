@@ -31,6 +31,13 @@ const MemoryTypeSchema = z.enum([
   "banter",
 ]);
 
+const SessionChunkExtractorTypeSchema = z.enum([
+  "scene_moment",
+  "decision",
+  "emotional_shift",
+  "open_thread",
+]);
+
 const ExtractorOutputSchema = z.object({
   memory_candidates: z.array(
     z.object({
@@ -41,38 +48,45 @@ const ExtractorOutputSchema = z.object({
       cross_session_durability: z.coerce.number().default(0),
       emotion_score: z.coerce.number().default(0),
       tags: z.array(z.string()).optional(),
+      memory_scope: z.enum(["cross_session", "current_session"]).optional(),
+      session_chunk_type: SessionChunkExtractorTypeSchema.optional(),
     }),
   ),
   confidence: z.coerce.number().default(0),
 });
 
 const EXTRACTOR_SYSTEM = `You are a memory extraction classifier for a character roleplay system.
-Given the last user message and the character's reply, extract any events worth storing as long-term memories.
+Given the last user message and the character's reply, extract any notable events worth persisting.
+
+For EACH candidate choose memory_scope:
+- "cross_session" — preference / promise / relationship milestone / recurring pattern likely to matter in future chats (stored in durable interactive_memory_events namespace).
+- "current_session" — scene beat, motif, unresolved thread, emotion shift meaningful only INSIDE THIS SESSION (indexed as session-local recall chunks; do NOT spam cross_session).
+
+Also set session_chunk_type when memory_scope is "current_session":
+"scene_moment" | "decision" | "emotional_shift" | "open_thread" (omit for cross_session).
 
 Return ONLY valid JSON in this shape:
 {
   "memory_candidates": [
     {
       "memory_type": "promise" | "relationship_transition" | "preference" | "habit" | "banter",
-      "summary": "One-sentence description of the memory (in Chinese)",
+      "summary": "One-sentence description (in Chinese)",
       "emotional_weight": 0.0-1.0,
       "plot_relevance": 0.0-1.0,
       "cross_session_durability": 0.0-1.0,
       "emotion_score": 0.0-1.0,
-      "tags": ["optional", "tags"]
+      "tags": ["optional", "tags"],
+      "memory_scope": "cross_session" | "current_session",
+      "session_chunk_type": "scene_moment" | ...
     }
   ],
   "confidence": 0.0-1.0
 }
 
-Only include memories that meet at least one of these criteria:
-- High emotional importance
-- Changes what the character knows or has agreed to
-- Reveals a stable user preference
-- Involves a promise, confession, betrayal, or relationship transition
-- Creates a durable shared event likely to matter across sessions
+Prefer cross_session only when justified by durability. Use current_session liberally for rich this-session retrieval without polluting durable memory.
 
 If nothing worth storing occurred, return an empty memory_candidates array.`;
+
 
 export async function extractPostTurnSignals(
   input: ExtractSignalsInput,
@@ -101,7 +115,7 @@ Extract memory candidates.`.trim();
       { role: "user", content: userMessage },
     ],
     ExtractorOutputSchema,
-    { maxTokens: 1024, temperature: 0.3 },
+    { maxTokens: 2048, temperature: 0.3 },
   );
 
   if (!result.ok) {
@@ -138,6 +152,14 @@ Extract memory candidates.`.trim();
         emotionScore: raw.emotion_score ?? 0,
         tags: raw.tags,
         embedding,
+        memoryScope:
+          (raw.memory_scope ?? "cross_session") === "current_session"
+            ? "current_session"
+            : "cross_session",
+        ...((raw.memory_scope ?? "cross_session") === "current_session" &&
+        raw.session_chunk_type
+          ? { sessionChunkType: raw.session_chunk_type }
+          : {}),
       };
     }),
   );

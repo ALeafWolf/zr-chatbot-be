@@ -95,6 +95,36 @@ export const sessionSummaries = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// session_memory_chunks — per-session embeddings for session-local recall (Phase 3)
+// ---------------------------------------------------------------------------
+export const sessionMemoryChunks = pgTable(
+  "session_memory_chunks",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.sessionId, { onDelete: "cascade" }),
+    characterId: text("character_id").notNull(),
+    playerId: text("player_id").notNull(),
+    turnStart: integer("turn_start").notNull(),
+    turnEnd: integer("turn_end").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    embedding: vectorCol("embedding", { dimensions: 1536 }).notNull(),
+    chunkType: text("chunk_type").notNull(),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .$defaultFn(() => ({})),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("smc_session_turn_idx").on(t.sessionId, t.turnEnd),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // session_archive
 // ---------------------------------------------------------------------------
 export const sessionArchive = pgTable("session_archive", {
@@ -129,3 +159,5 @@ export type SessionArchive = typeof sessionArchive.$inferSelect;
 export type PlayerProfile = typeof playerProfile.$inferSelect;
 export type SessionSummary = typeof sessionSummaries.$inferSelect;
 export type NewSessionSummary = typeof sessionSummaries.$inferInsert;
+export type SessionMemoryChunk = typeof sessionMemoryChunks.$inferSelect;
+export type NewSessionMemoryChunk = typeof sessionMemoryChunks.$inferInsert;

@@ -29,6 +29,20 @@
       "when": 1749388800000,
       "tag": "0003_add_session_summaries",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1749475200000,
+      "tag": "0004_add_session_memory_chunks",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1749561600000,
+      "tag": "0005_add_chat_session_display_title",
+      "breakpoints": true
     }
   ]
 }

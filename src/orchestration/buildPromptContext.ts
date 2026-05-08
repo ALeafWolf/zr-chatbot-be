@@ -8,6 +8,22 @@ import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
 import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
 import type { ChatSession } from "../db/schema/chat";
 import type { SessionSummary } from "../db/schema/memory";
+import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
+
+const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
+
+function formatSessionRecall(chunks: RetrievedSessionMemoryChunk[]): string {
+  if (chunks.length === 0) return "";
+  const lines = chunks.map((c, i) => {
+    const label = `[${i + 1}] [类型:${c.chunkType}] Turn ${c.turnStart}–${c.turnEnd}`;
+    let body = c.chunkText.trim();
+    if (body.length > SESSION_RECALL_MAX_CHARS_PER_CHUNK) {
+      body = `${body.slice(0, SESSION_RECALL_MAX_CHARS_PER_CHUNK)}…`;
+    }
+    return `${label}\n${body}`;
+  });
+  return `以下内容来自本会话更早片段的语义检索，可能比 RECENT CHAT 更不新；仍以 RECENT CHAT 与用户当前消息为准。\n\n${lines.join("\n\n")}`;
+}
 
 /** Appended last in the system prompt: how to interpret ()/（） stage directions and 【】 meta. */
 const USER_MESSAGE_ANNOTATION_RULES = `用户消息中可能包含非对白标注。
@@ -25,7 +41,8 @@ export interface PromptContext {
  *
  * [SYSTEM] [BASE PERSONA] [CONTINUITY OVERLAY] [RELATIONSHIP EXPRESSION]
  * [CHARACTER DEFAULTS]
- * [SESSION STATE] [DERIVED STATE] [SESSION SUMMARY] [INTERACTIVE MEMORY] [CANON NARRATIVE]
+ * [SESSION STATE] [DERIVED STATE] [SESSION SUMMARY] [RELEVANT SESSION RECALL]
+ * [INTERACTIVE MEMORY] [CANON NARRATIVE]
  * [USER MESSAGE ANNOTATIONS]
  * [RECENT CHAT]   ← history passed separately to provider
  */
@@ -38,6 +55,7 @@ export function buildPromptContext(input: {
   canonChunks: RetrievedCanonChunk[];
   recentTurns: ConversationTurn[];
   sessionSummary?: SessionSummary | null;
+  sessionRecall?: RetrievedSessionMemoryChunk[];
 }): PromptContext {
   const {
     characterDefaults,
@@ -48,6 +66,7 @@ export function buildPromptContext(input: {
     canonChunks,
     recentTurns,
     sessionSummary,
+    sessionRecall = [],
   } = input;
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
@@ -80,7 +99,7 @@ export function buildPromptContext(input: {
 严格保持角色扮演。以下规则必须始终遵守：
 ${hardRules}
 
-冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > INTERACTIVE MEMORY > CANON NARRATIVE。SESSION SUMMARY 仅概括已离开 Raw 窗口的更旧内容；以 RECENT CHAT 为准。`),
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。`),
 
     buildBlock("BASE PERSONA", basePersonaBody),
 
@@ -116,6 +135,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
           buildBlock(
             "SESSION SUMMARY",
             `本段概括当前场次中已离开「最近 Raw 窗口」的更早回合，用于连续性。若与 RECENT CHAT 冲突，以 RECENT CHAT 为准。\n\n${sessionSummary.summaryText.trim()}`,
+          ),
+        ]
+      : []),
+
+    ...(sessionRecall.length > 0
+      ? [
+          buildBlock(
+            "RELEVANT SESSION RECALL",
+            formatSessionRecall(sessionRecall),
           ),
         ]
       : []),
