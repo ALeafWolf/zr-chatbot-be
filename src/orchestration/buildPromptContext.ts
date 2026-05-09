@@ -39,7 +39,7 @@ export interface PromptContext {
 /**
  * Build the full prompt context following the §9 Phase 1–2 block order:
  *
- * [SYSTEM] [BASE PERSONA] [CONTINUITY OVERLAY] [RELATIONSHIP EXPRESSION]
+ * [SYSTEM] [BASE PERSONA — includes 叙事文笔 / 沟通风格 / 角色表达 / 情感内核 …] [CONTINUITY OVERLAY] [RELATIONSHIP EXPRESSION]
  * [CHARACTER DEFAULTS]
  * [SESSION STATE] [DERIVED STATE] [SESSION SUMMARY] [RELEVANT SESSION RECALL]
  * [INTERACTIVE MEMORY] [CANON NARRATIVE]
@@ -76,7 +76,9 @@ export function buildPromptContext(input: {
 
 [核心特征]
 - ${coreTraits}`,
+    subsection("叙事文笔", characterDefaults.narrative_prose_guidelines),
     subsection("沟通风格", formatSpeechStyle(characterDefaults.speech_style)),
+    subsection("角色表达", characterDefaults.in_character_expression),
     subsection("情感内核", characterDefaults.emotional_core),
     subsection(
       "价值观",

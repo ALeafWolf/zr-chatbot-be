@@ -39,6 +39,8 @@ export async function* generateWithToolsStream(input: {
   ctx: ToolCtx;
   signal?: AbortSignal;
   enableTools?: boolean;
+  /** Precomputed for {@link models.generation} only (e.g. DeepSeek thinking). */
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
 }): AsyncGenerator<GenerateWithToolsYield> {
   const provider = getProvider(models.generation);
   const tools =
@@ -59,9 +61,15 @@ export async function* generateWithToolsStream(input: {
     const stream = provider.streamChat(messages, {
       tools,
       toolChoice,
-      maxTokens: 1024,
+      maxTokens: 4096,
       temperature: 1.0,
       signal: input.signal,
+      ...(input.openAICompatibleRequestExtensions !== undefined
+        ? {
+            openAICompatibleRequestExtensions:
+              input.openAICompatibleRequestExtensions,
+          }
+        : {}),
     });
 
     for await (const ev of stream) {
@@ -135,6 +143,7 @@ export async function generateWithTools(input: {
   ctx: ToolCtx;
   signal?: AbortSignal;
   enableTools?: boolean;
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
 }): Promise<GenerateWithToolsResult> {
   let final: GenerateWithToolsResult | undefined;
   for await (const ev of generateWithToolsStream(input)) {

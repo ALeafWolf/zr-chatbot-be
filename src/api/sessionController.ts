@@ -19,21 +19,34 @@ const CreateSessionBody = z.object({
   continuity_scope: z.enum(MainWorldScopeZodEnum).default("main_married"),
   pinned_time: z.string().optional(),
   pinned_location: z.string().optional(),
+  thinking: z.boolean().optional(),
 });
 
 const DISPLAY_TITLE_MAX_LEN = 120;
 
 const GetSessionParams = z.object({ id: z.string() });
-const PatchSessionBody = z.object({
-  display_title: z
-    .union([z.string(), z.null()])
-    .transform((val) => {
-      if (val === null) return null;
-      const t = val.trim();
-      return t.length === 0 ? null : t;
-    })
-    .pipe(z.union([z.null(), z.string().max(DISPLAY_TITLE_MAX_LEN)])),
-});
+const PatchSessionBody = z
+  .object({
+    display_title: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((val) => {
+        if (val === undefined) return undefined;
+        if (val === null) return null;
+        const t = val.trim();
+        return t.length === 0 ? null : t;
+      })
+      .pipe(
+        z
+          .union([z.undefined(), z.null(), z.string().max(DISPLAY_TITLE_MAX_LEN)])
+          .optional(),
+      ),
+    thinking: z.boolean().optional(),
+  })
+  .refine(
+    (d) => d.display_title !== undefined || d.thinking !== undefined,
+    { message: "At least one of display_title or thinking is required" },
+  );
 const GetMessagesQuery = z.object({
   page: z
     .string()
@@ -97,6 +110,7 @@ export const sessionController = {
       pinnedTime: body.pinned_time ?? null,
       pinnedLocation: body.pinned_location ?? null,
       writebackPolicy,
+      thinking: body.thinking ?? env.DEFAULT_SESSION_THINKING,
       createdAt: now,
       updatedAt: now,
     });
@@ -120,6 +134,7 @@ export const sessionController = {
         continuityScope: chatSessions.continuityScope,
         sessionSummary: chatSessions.sessionSummary,
         displayTitle: chatSessions.displayTitle,
+        thinking: chatSessions.thinking,
         createdAt: chatSessions.createdAt,
         updatedAt: chatSessions.updatedAt,
       })
@@ -140,6 +155,7 @@ export const sessionController = {
       continuity_scope: s.continuityScope,
       session_summary: s.sessionSummary,
       display_title: s.displayTitle,
+      thinking: s.thinking,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
     })));
@@ -160,17 +176,31 @@ export const sessionController = {
       return;
     }
 
-    await db
-      .update(chatSessions)
-      .set({
-        displayTitle: body.display_title,
-        updatedAt: new Date(),
+    const setVals: Partial<{
+      displayTitle: string | null;
+      thinking: boolean;
+      updatedAt: Date;
+    }> = { updatedAt: new Date() };
+    if (body.display_title !== undefined) {
+      setVals.displayTitle = body.display_title ?? null;
+    }
+    if (body.thinking !== undefined) setVals.thinking = body.thinking;
+
+    await db.update(chatSessions).set(setVals).where(eq(chatSessions.sessionId, id));
+
+    const [row] = await db
+      .select({
+        displayTitle: chatSessions.displayTitle,
+        thinking: chatSessions.thinking,
       })
-      .where(eq(chatSessions.sessionId, id));
+      .from(chatSessions)
+      .where(eq(chatSessions.sessionId, id))
+      .limit(1);
 
     reply.send({
       session_id: id,
-      display_title: body.display_title,
+      display_title: row?.displayTitle ?? null,
+      thinking: row?.thinking ?? true,
     });
   },
 
@@ -210,6 +240,7 @@ export const sessionController = {
       pinned_location: s.pinnedLocation,
       session_summary: s.sessionSummary,
       display_title: s.displayTitle,
+      thinking: s.thinking,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
       messages: messages.map((m) => ({

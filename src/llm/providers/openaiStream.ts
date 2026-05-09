@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import type {
+  ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
   ChatCompletionToolChoiceOption,
 } from "openai/resources/chat/completions";
@@ -99,7 +100,9 @@ export async function* streamOpenAICompatibleChat(
         ? "auto"
         : undefined;
 
-  const stream = await client.chat.completions.create(
+  const createParams = Object.assign(
+    {},
+    options.openAICompatibleRequestExtensions ?? {},
     {
       model,
       messages: apiMessages,
@@ -112,8 +115,11 @@ export async function* streamOpenAICompatibleChat(
       tools,
       tool_choice: toolChoice,
     },
-    { signal: options.signal },
-  );
+  ) as ChatCompletionCreateParamsStreaming;
+
+  const stream = await client.chat.completions.create(createParams, {
+    signal: options.signal,
+  });
 
   let buf = "";
   const toolAcc = new Map<number, { id?: string; name?: string; arguments?: string }>();

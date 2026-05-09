@@ -10,6 +10,12 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
   DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
 
+  /** Default when `POST /sessions` omits `thinking` (generation reasoning mode for new chats). */
+  DEFAULT_SESSION_THINKING: z
+    .string()
+    .default("true")
+    .transform((v) => v.trim().toLowerCase() !== "false" && v !== "0"),
+
   /** Optional — web search tool degrades gracefully when unset. */
   TAVILY_API_KEY: z.string().optional(),
 

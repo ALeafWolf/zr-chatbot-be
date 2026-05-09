@@ -24,6 +24,11 @@ export type CharacterReplyStreamEvent =
       outputTokens: number;
     };
 
+export interface GenerateReplyCallOptions {
+  signal?: AbortSignal;
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
+}
+
 /**
  * Generate a character reply using the configured generation model.
  * The full prompt is assembled by the caller (buildPromptContext); this
@@ -32,6 +37,7 @@ export type CharacterReplyStreamEvent =
  */
 export async function generateCharacterReply(
   input: GenerateReplyInput,
+  options?: GenerateReplyCallOptions,
 ): Promise<GenerateReplyOutput> {
   const provider = getProvider(models.generation);
 
@@ -45,8 +51,14 @@ export async function generateCharacterReply(
   ];
 
   const response = await provider.chat(messages, {
-    maxTokens: 1024,
+    maxTokens: 4096,
     temperature: 1.0,
+    ...(options?.openAICompatibleRequestExtensions !== undefined
+      ? {
+          openAICompatibleRequestExtensions:
+            options.openAICompatibleRequestExtensions,
+        }
+      : {}),
   });
 
   return {
@@ -58,7 +70,7 @@ export async function generateCharacterReply(
 
 async function* generateCharacterReplyStreamInner(
   input: GenerateReplyInput,
-  options?: { signal?: AbortSignal },
+  options?: GenerateReplyCallOptions,
 ): AsyncGenerator<CharacterReplyStreamEvent, void> {
   const provider = getProvider(models.generation);
 
@@ -76,10 +88,16 @@ async function* generateCharacterReplyStreamInner(
   let outputTokens = 0;
 
   for await (const ev of provider.streamChat(messages, {
-    maxTokens: 1024,
+    maxTokens: 4096,
     temperature: 1.0,
     toolChoice: "none",
     signal: options?.signal,
+    ...(options?.openAICompatibleRequestExtensions !== undefined
+      ? {
+          openAICompatibleRequestExtensions:
+            options.openAICompatibleRequestExtensions,
+        }
+      : {}),
   })) {
     if (options?.signal?.aborted) {
       throw Object.assign(new Error("Aborted"), { name: "AbortError" });

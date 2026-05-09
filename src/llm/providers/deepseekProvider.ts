@@ -27,16 +27,24 @@ export function createDeepSeekProvider(model: string): LLMProvider {
       messages: LLMMessage[],
       options: ChatOptions = {},
     ): Promise<LLMResponse> {
-      const response = await getClient().chat.completions.create({
-        model,
-        max_tokens: options.maxTokens ?? 2048,
-        temperature: options.temperature ?? 0.7,
-        response_format: options.jsonMode ? { type: "json_object" } : undefined,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-      });
+      const response = await getClient().chat.completions.create(
+        Object.assign(
+          {},
+          options.openAICompatibleRequestExtensions ?? {},
+          {
+            model,
+            max_tokens: options.maxTokens ?? 2048,
+            temperature: options.temperature ?? 0.7,
+            response_format: options.jsonMode
+              ? { type: "json_object" }
+              : undefined,
+            messages: messages.map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          },
+        ) as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+      );
 
       const msg = response.choices[0]?.message as
         | { content?: string | null; reasoning_content?: string | null }

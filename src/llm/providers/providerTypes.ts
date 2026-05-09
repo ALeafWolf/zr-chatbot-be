@@ -28,6 +28,8 @@ export interface ChatOptions {
   tools?: OpenAIToolDefinition[];
   toolChoice?: "auto" | "none";
   signal?: AbortSignal;
+  /** Extra JSON fields for OpenAI-compatible APIs that accept vendor extensions (e.g. DeepSeek `thinking`). */
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
 }
 
 export type LLMStreamEvent =

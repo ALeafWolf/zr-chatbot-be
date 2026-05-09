@@ -15,6 +15,10 @@ export interface CharacterDefaults {
     avoid: string[];
   };
   core_traits: string[];
+  /** General output craft (rhythm, imagery, narrator vs dialogue); prompts as [叙事文笔]. */
+  narrative_prose_guidelines?: string;
+  /** Character-specific voice, dialogue habits, micro-actions; prompts as [角色表达]. */
+  in_character_expression?: string;
   /** Long-form affective grounding; surfaced in prompts as [情感内核]. */
   emotional_core?: string;
   private_habits_and_texture?: string[];

@@ -18,6 +18,8 @@ import type { ToolCtx } from "../llm/tools/types";
 import { generateThoughtSummary } from "../llm/generateThoughtSummary";
 import type { Thought } from "./thoughtTypes";
 import type { OrchestrationStreamEvent } from "./thoughtTypes";
+import { extensionsForGenerationThinking } from "../llm/generationThinkingExtensions";
+import { models } from "../config/models";
 
 /** System/transport issues from the validator — not actionable for the drafter. */
 function isMetaValidatorIssue(issue: string): boolean {
@@ -138,6 +140,11 @@ export async function* generateAndValidateStream(input: {
     signal: signal ?? new AbortController().signal,
   };
 
+  const openAICompatibleRequestExtensions = extensionsForGenerationThinking(
+    models.generation,
+    session.thinking,
+  );
+
   let draft!: { content: string; inputTokens: number; outputTokens: number };
 
   try {
@@ -147,6 +154,9 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
+      ...(openAICompatibleRequestExtensions !== undefined
+        ? { openAICompatibleRequestExtensions }
+        : {}),
     })) {
       if (ev.type === "delta") {
         // Draft prose is withheld from SSE until after validation; native reasoning streams as thoughts.
@@ -315,7 +325,12 @@ export async function* generateAndValidateStream(input: {
       conversationHistory: promptContext.conversationHistory,
       userMessage,
     },
-    { signal },
+    {
+      signal,
+      ...(openAICompatibleRequestExtensions !== undefined
+        ? { openAICompatibleRequestExtensions }
+        : {}),
+    },
   )) {
     if (ev.type === "delta") {
       yield { type: "delta", text: ev.text };

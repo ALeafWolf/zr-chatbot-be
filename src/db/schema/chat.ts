@@ -5,6 +5,7 @@ import {
   timestamp,
   jsonb,
   index,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,8 @@ export const chatSessions = pgTable(
     writebackPolicy: text("writeback_policy").notNull(), // full_writeback | optional_writeback | no_writeback
     sessionSummary: text("session_summary"),
     displayTitle: text("display_title"),
+    /** Session-level generation "thinking" (mapped to provider-specific API fields). */
+    thinking: boolean("thinking").notNull().default(true),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
