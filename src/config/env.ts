@@ -16,6 +16,16 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v.trim().toLowerCase() !== "false" && v !== "0"),
 
+  /** Default when `POST /sessions` omits `temperature` (rewrite-path generation). */
+  DEFAULT_SESSION_TEMPERATURE: z
+    .string()
+    .default("1")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 1;
+      return Math.min(2, Math.max(0, n));
+    }),
+
   /** Optional — web search tool degrades gracefully when unset. */
   TAVILY_API_KEY: z.string().optional(),
 

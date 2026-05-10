@@ -5,8 +5,8 @@
  *   main_pre_relationship → [main_weiming]
  *   main_situationship    → [main_weiming, main_yimu]
  *   main_relationship     → [main_weiming, main_yimu, main_tianmi]
- *   main_engaged          → [main_weiming, main_yimu, main_tianmi, main_xiangshou]
- *   main_married          → [main_weiming, main_yimu, main_tianmi, main_xiangshou, main_zhiai]   ← Phase 1 default (character yaml)
+ *   main_engaged          → [main_weiming, main_yimu, main_tianmi, main_zhiai]
+ *   main_married          → [main_weiming, main_yimu, main_tianmi, main_zhiai, main_xiangshou]   ← Phase 1 default (character yaml)
  *
  * AU scopes are isolated to their own au_world_key and return an empty arc list
  * (the caller uses the au_world_id filter instead).
@@ -34,13 +34,13 @@ const MAIN_WORLD_SCOPE_ARCS: Record<MainWorldScope, string[]> = {
   main_pre_relationship: ["main_weiming"],
   main_situationship: ["main_weiming", "main_yimu"],
   main_relationship: ["main_weiming", "main_yimu", "main_tianmi"],
-  main_engaged: ["main_weiming", "main_yimu", "main_tianmi", "main_xiangshou"],
+  main_engaged: ["main_weiming", "main_yimu", "main_tianmi", "main_zhiai"],
   main_married: [
     "main_weiming",
     "main_yimu",
     "main_tianmi",
-    "main_xiangshou",
     "main_zhiai",
+    "main_xiangshou",
   ],
 };
 

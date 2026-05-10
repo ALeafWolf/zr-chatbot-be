@@ -141,6 +141,50 @@
       ]
     },
     {
+      "id": "canon_retrieval_fenghe_attribution_manual",
+      "description": "Tier 1 canon: manual check — trace retrieval.canon_narrative for messages mentioning 枫河露营公园; [CANON NARRATIVE] blocks should include same-scene neighbor lines so attribution (谁提议/安排) is visible. Stub eval only (full turn requires live backend).",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_relationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "枫河露营公园第一次和第二次去分别是谁提议的？"
+        }
+      ],
+      "assertions": [
+        {
+          "type": "not_contains",
+          "value": "__CANON_FENGHE_EVAL_STUB__",
+          "description": "Placeholder — replace with live replay + retrieval trace assertions when E2E eval is enabled"
+        }
+      ]
+    },
+    {
+      "id": "canon_retrieval_weak_lexical_overlap_manual",
+      "description": "Tier 1 canon: manual check — paraphrased queries with weak literal overlap should still get vector anchors; lexical branch fails open. Inspect fused anchors in LangSmith retrieval.canon_narrative.",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_relationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "（占位：用词不贴原文但语义指向已发生剧情。）"
+        }
+      ],
+      "assertions": [
+        {
+          "type": "not_contains",
+          "value": "__CANON_WEAK_LEXICAL_EVAL_STUB__",
+          "description": "Placeholder — verify vector branch supplies anchors when ILIKE terms are sparse"
+        }
+      ]
+    },
+    {
       "id": "session_summary_structured_manual",
       "description": "Structured session summary (Phases 1–2): compacted older-than-recent-window text is merged into session_summaries.summary_json, rendered to summary_text, and injected as [SESSION SUMMARY]. Full E2E (16+ turns, compaction, recall) requires live API keys and is not covered by the stub eval runner; verify manually after migrating 0003_add_session_summaries.sql.",
       "session": {

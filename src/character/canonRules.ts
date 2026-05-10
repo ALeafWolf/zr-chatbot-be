@@ -31,9 +31,45 @@ export const RETRIEVAL_LIMITS = {
   sessionRecallTopK: 4,
   /** @deprecated Use durableMemoryTopK — interactive memory retrieval top-K. */
   memories: 5,
+  /**
+   * Legacy single-pass canon line limit (pre window + RRF).
+   * @deprecated Effective retrieval uses {@link CANON_RETRIEVAL}.
+   */
   canonChunks: 3,
   compactEveryTurns: 8,
   minTurnsBeforeSummary: 16,
+} as const;
+
+/** Canon narrative: anchor count, neighbor expansion, hybrid RRF, and caps (Tier 1). */
+export const CANON_RETRIEVAL = {
+  /** Fused vector + lexical anchors before neighbor expansion. */
+  anchorTopK: 5,
+  /** Units before/after each anchor within the same scene (`unit_index` window). */
+  neighborWindow: 6,
+  /** Hard cap on story_units rows returned after expansion (token / prompt guardrail). */
+  maxUnitsAfterExpansion: 96,
+  /** RRF smoothing constant `k` (typical 60). */
+  rrfK: 60,
+  /** Pool size for vector-ranked candidates feeding RRF. */
+  vectorCandidateLimit: 36,
+  /** Pool size for lexical candidates feeding RRF. */
+  lexicalCandidateLimit: 36,
+  /** Max ILIKE terms extracted from the user message. */
+  maxLexicalTerms: 10,
+  minLexicalTermLength: 2,
+} as const;
+
+/** Weighted score for ordering vector anchor candidates (no scope constant term). */
+export const CANON_VECTOR_RANK_WEIGHTS = {
+  similarity: 0.78,
+  canonPriority: 0.22,
+} as const;
+
+/** Hard limits for `[CANON NARRATIVE]` prompt formatting. */
+export const CANON_PROMPT_LIMITS = {
+  maxCharsPerBlock: 2800,
+  maxTotalChars: 12000,
+  maxLinesPerBlock: 80,
 } as const;
 
 /** Re-ranking for session-local recall (Phase 3) — do not reuse canon retrieval weights. */
@@ -42,7 +78,11 @@ export const SESSION_CHUNK_RANKING_WEIGHTS = {
   recency: 0.28,
 } as const;
 
-/** Ranking weights for canon retrieval (§8 formula). */
+/**
+ * Legacy §8 composite weights (doc / future tiers).
+ * Tier 1 `retrieveCanonNarrative` orders vector anchors with {@link CANON_VECTOR_RANK_WEIGHTS} only;
+ * `continuityScopeMatch` is not applied to row scores (it was uniform for all in-scope rows).
+ */
 export const RANKING_WEIGHTS = {
   similarity: 0.35,
   importance: 0.15,

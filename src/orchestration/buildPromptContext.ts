@@ -5,6 +5,7 @@ import type {
 import type { DerivedState } from "../state/sessionStateRepo";
 import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
 import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
+import { CANON_PROMPT_LIMITS } from "../character/canonRules";
 import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
 import type { ChatSession } from "../db/schema/chat";
 import type { SessionSummary } from "../db/schema/memory";
@@ -258,12 +259,79 @@ function formatMemories(memories: RetrievedMemory[]): string {
     .join("\n");
 }
 
+function formatCanonChunkHeader(first: RetrievedCanonChunk, unitMin: number, unitMax: number): string {
+  const parts = [
+    first.arcKey ? `弧 ${first.arcKey}` : "",
+    first.chapterName?.trim() || first.chapterKey ? `章 ${(first.chapterName ?? first.chapterKey ?? "").trim()}` : "",
+    first.chapterLabel?.trim() ? `卷标 ${first.chapterLabel.trim()}` : "",
+    first.episodeLabel ? `节 ${first.episodeLabel}` : "",
+    first.sceneTitle?.trim() ? `场 ${first.sceneTitle.trim()}` : "",
+    first.sceneOrder != null ? `场序 ${first.sceneOrder}` : "",
+  ].filter(Boolean);
+  const range =
+    unitMin === unitMax ? `单元#${unitMin}` : `单元#${unitMin}–${unitMax}`;
+  const head = parts.length > 0 ? parts.join(" | ") : "Canon";
+  return `—— ${head} · ${range}`;
+}
+
 function formatCanon(chunks: RetrievedCanonChunk[]): string {
   if (chunks.length === 0) return "(无相关剧情内容)";
-  return chunks
-    .map((c, i) => {
+
+  type Group = { blockIndex: number; items: RetrievedCanonChunk[] };
+  const groups: Group[] = [];
+  for (const c of chunks) {
+    const bi = c.blockIndex ?? 0;
+    const last = groups[groups.length - 1];
+    if (last && last.blockIndex === bi) last.items.push(c);
+    else groups.push({ blockIndex: bi, items: [c] });
+  }
+
+  let totalChars = 0;
+  const out: string[] = [];
+
+  for (let g = 0; g < groups.length; g++) {
+    const { items } = groups[g];
+    if (items.length === 0) continue;
+
+    const indices = items
+      .map((c) => c.unitIndex)
+      .filter((n): n is number => typeof n === "number");
+    const unitMin = indices.length ? Math.min(...indices) : 0;
+    const unitMax = indices.length ? Math.max(...indices) : 0;
+
+    const header = formatCanonChunkHeader(items[0]!, unitMin, unitMax);
+    const lines: string[] = [];
+    let lineN = 1;
+    let blockChars = header.length + 2;
+
+    for (const c of items) {
+      if (lineN > CANON_PROMPT_LIMITS.maxLinesPerBlock) break;
       const speaker = c.speaker ? `${c.speaker}: ` : "";
-      return `${i + 1}. ${speaker}${c.textContent}`;
-    })
-    .join("\n");
+      const idx = c.unitIndex != null ? `[#${c.unitIndex}] ` : "";
+      let body = `${lineN}. ${idx}${speaker}${c.textContent}`;
+      const remainingBlock = CANON_PROMPT_LIMITS.maxCharsPerBlock - blockChars;
+      const remainingTotal = CANON_PROMPT_LIMITS.maxTotalChars - totalChars;
+      const cap = Math.min(remainingBlock, remainingTotal);
+      if (cap < 12) break;
+      if (body.length > cap) {
+        body = `${body.slice(0, Math.max(0, cap - 1))}…`;
+      }
+      lines.push(body);
+      blockChars += body.length + 1;
+      lineN += 1;
+      if (blockChars >= CANON_PROMPT_LIMITS.maxCharsPerBlock) break;
+    }
+
+    const blockText = [header, ...lines].join("\n");
+    if (totalChars + blockText.length + 2 > CANON_PROMPT_LIMITS.maxTotalChars) {
+      const room = CANON_PROMPT_LIMITS.maxTotalChars - totalChars;
+      if (room < 24) break;
+      out.push(`${blockText.slice(0, room - 1)}…`);
+      break;
+    }
+    out.push(blockText);
+    totalChars += blockText.length + 2;
+  }
+
+  return out.join("\n\n");
 }

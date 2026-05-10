@@ -12,6 +12,7 @@ import { generateAndValidateStream } from "./generateAndValidate";
 import { upsertSessionState } from "../state/sessionStateRepo";
 import { postTurnRunner } from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
+import { CANON_RETRIEVAL } from "../character/canonRules";
 import { traceStage } from "../observability/langsmithTracing";
 import type { Thought } from "./thoughtTypes";
 import { generateThoughtSummary } from "../llm/generateThoughtSummary";
@@ -123,9 +124,11 @@ export async function* runCharacterTurnStream(
               type: m.memoryType,
               summary: m.summary,
             })),
-            canon: context.canonChunks.slice(0, 3).map((c) => ({
-              excerpt: c.textContent.slice(0, 160),
-            })),
+            canon: context.canonChunks
+              .slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2))
+              .map((c) => ({
+                excerpt: c.textContent.slice(0, 160),
+              })),
           },
           voiceHints,
         },

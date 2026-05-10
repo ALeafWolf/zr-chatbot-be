@@ -6,6 +6,7 @@ import {
   jsonb,
   index,
   boolean,
+  doublePrecision,
 } from "drizzle-orm/pg-core";
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,8 @@ export const chatSessions = pgTable(
     displayTitle: text("display_title"),
     /** Session-level generation "thinking" (mapped to provider-specific API fields). */
     thinking: boolean("thinking").notNull().default(true),
+    /** Session temperature for validator rewrite path (`generateCharacterReplyStream`). */
+    temperature: doublePrecision("temperature").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

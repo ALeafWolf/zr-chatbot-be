@@ -13,6 +13,26 @@ import { loadPersonaOverlay } from "../character/characterDefaults";
 
 const MainWorldScopeZodEnum = AVAILABLE_SCOPES as unknown as [string, ...string[]];
 
+const DISPLAY_TITLE_MAX_LEN = 120;
+
+const optionalDisplayTitleField = z
+  .string()
+  .optional()
+  .transform((val) => {
+    if (val === undefined) return undefined;
+    const t = val.trim();
+    return t.length === 0 ? null : t;
+  })
+  .pipe(
+    z
+      .union([
+        z.undefined(),
+        z.null(),
+        z.string().max(DISPLAY_TITLE_MAX_LEN),
+      ])
+      .optional(),
+  );
+
 const CreateSessionBody = z.object({
   character_id: z.string().default(env.DEFAULT_CHARACTER_ID),
   mode: z.enum(["canonical_live", "pinned_scenario", "sandbox"]),
@@ -20,9 +40,9 @@ const CreateSessionBody = z.object({
   pinned_time: z.string().optional(),
   pinned_location: z.string().optional(),
   thinking: z.boolean().optional(),
+  display_title: optionalDisplayTitleField,
+  temperature: z.number().min(0).max(2).optional(),
 });
-
-const DISPLAY_TITLE_MAX_LEN = 120;
 
 const GetSessionParams = z.object({ id: z.string() });
 const PatchSessionBody = z
@@ -42,10 +62,17 @@ const PatchSessionBody = z
           .optional(),
       ),
     thinking: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
   })
   .refine(
-    (d) => d.display_title !== undefined || d.thinking !== undefined,
-    { message: "At least one of display_title or thinking is required" },
+    (d) =>
+      d.display_title !== undefined ||
+      d.thinking !== undefined ||
+      d.temperature !== undefined,
+    {
+      message:
+        "At least one of display_title, thinking, or temperature is required",
+    },
   );
 const GetMessagesQuery = z.object({
   page: z
@@ -110,7 +137,9 @@ export const sessionController = {
       pinnedTime: body.pinned_time ?? null,
       pinnedLocation: body.pinned_location ?? null,
       writebackPolicy,
+      displayTitle: body.display_title ?? null,
       thinking: body.thinking ?? env.DEFAULT_SESSION_THINKING,
+      temperature: body.temperature ?? env.DEFAULT_SESSION_TEMPERATURE,
       createdAt: now,
       updatedAt: now,
     });
@@ -135,6 +164,7 @@ export const sessionController = {
         sessionSummary: chatSessions.sessionSummary,
         displayTitle: chatSessions.displayTitle,
         thinking: chatSessions.thinking,
+        temperature: chatSessions.temperature,
         createdAt: chatSessions.createdAt,
         updatedAt: chatSessions.updatedAt,
       })
@@ -156,6 +186,7 @@ export const sessionController = {
       session_summary: s.sessionSummary,
       display_title: s.displayTitle,
       thinking: s.thinking,
+      temperature: s.temperature,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
     })));
@@ -179,12 +210,14 @@ export const sessionController = {
     const setVals: Partial<{
       displayTitle: string | null;
       thinking: boolean;
+      temperature: number;
       updatedAt: Date;
     }> = { updatedAt: new Date() };
     if (body.display_title !== undefined) {
       setVals.displayTitle = body.display_title ?? null;
     }
     if (body.thinking !== undefined) setVals.thinking = body.thinking;
+    if (body.temperature !== undefined) setVals.temperature = body.temperature;
 
     await db.update(chatSessions).set(setVals).where(eq(chatSessions.sessionId, id));
 
@@ -192,6 +225,7 @@ export const sessionController = {
       .select({
         displayTitle: chatSessions.displayTitle,
         thinking: chatSessions.thinking,
+        temperature: chatSessions.temperature,
       })
       .from(chatSessions)
       .where(eq(chatSessions.sessionId, id))
@@ -201,6 +235,7 @@ export const sessionController = {
       session_id: id,
       display_title: row?.displayTitle ?? null,
       thinking: row?.thinking ?? true,
+      temperature: row?.temperature ?? 1,
     });
   },
 
@@ -241,6 +276,7 @@ export const sessionController = {
       session_summary: s.sessionSummary,
       display_title: s.displayTitle,
       thinking: s.thinking,
+      temperature: s.temperature,
       created_at: s.createdAt,
       updated_at: s.updatedAt,
       messages: messages.map((m) => ({

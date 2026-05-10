@@ -65,6 +65,7 @@ export async function resolveContext(input: {
       }),
       tracedRetrieveCanon({
         queryEmbedding,
+        userMessage,
         characterId: session.characterId,
         arcKeys: scopeResolution.arcKeys,
       }),

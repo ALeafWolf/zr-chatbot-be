@@ -327,6 +327,7 @@ export async function* generateAndValidateStream(input: {
     },
     {
       signal,
+      temperature: session.temperature,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),

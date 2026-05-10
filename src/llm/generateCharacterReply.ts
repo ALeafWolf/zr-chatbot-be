@@ -27,6 +27,7 @@ export type CharacterReplyStreamEvent =
 export interface GenerateReplyCallOptions {
   signal?: AbortSignal;
   openAICompatibleRequestExtensions?: Record<string, unknown>;
+  temperature?: number;
 }
 
 /**
@@ -52,7 +53,7 @@ export async function generateCharacterReply(
 
   const response = await provider.chat(messages, {
     maxTokens: 4096,
-    temperature: 1.0,
+    temperature: options?.temperature ?? 1,
     ...(options?.openAICompatibleRequestExtensions !== undefined
       ? {
           openAICompatibleRequestExtensions:
@@ -89,7 +90,7 @@ async function* generateCharacterReplyStreamInner(
 
   for await (const ev of provider.streamChat(messages, {
     maxTokens: 4096,
-    temperature: 1.0,
+    temperature: options?.temperature ?? 1,
     toolChoice: "none",
     signal: options?.signal,
     ...(options?.openAICompatibleRequestExtensions !== undefined
