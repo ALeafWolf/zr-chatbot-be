@@ -4,6 +4,11 @@ import {
   CANON_RETRIEVAL,
   CANON_VECTOR_RANK_WEIGHTS,
 } from "../character/canonRules";
+import { extractLexicalTerms as extractLexicalTermsInner } from "./lexicalCanonTerms";
+import type { RetrievedCanonScene } from "./retrieveCanonTier3Pipeline";
+
+export type { RetrievedCanonScene } from "./retrieveCanonTier3Pipeline";
+export { retrieveCanonCoarseToFine } from "./retrieveCanonTier3Pipeline";
 
 export interface RetrievedCanonChunk {
   id: string;
@@ -25,22 +30,33 @@ export interface RetrievedCanonChunk {
   rankScore: number;
 }
 
-function sanitizeLexicalTerm(raw: string): string {
-  return raw.replace(/[%_\\]/g, "").trim();
-}
+/** @see {@link extractLexicalTermsInner} */
+export const extractLexicalTerms = extractLexicalTermsInner;
 
-/** Terms for ILIKE branch: long CJK runs and alpha-numeric tokens (Tier 1 baseline). */
-export function extractLexicalTerms(message: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const re = /[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9]{2,}/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(message)) !== null) {
-    const t = sanitizeLexicalTerm(m[0]);
-    if (t.length < CANON_RETRIEVAL.minLexicalTermLength || seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
-    if (out.length >= CANON_RETRIEVAL.maxLexicalTerms) break;
+/** Tier 3 scene payload → legacy chunk rows for transitional callers. */
+export function canonScenesToChunks(scenes: RetrievedCanonScene[]): RetrievedCanonChunk[] {
+  const out: RetrievedCanonChunk[] = [];
+  let blockIdx = 0;
+  for (const s of scenes) {
+    for (const u of s.units) {
+      out.push({
+        id: `${s.sceneId}_${u.unitIndex}`,
+        textContent: u.textContent,
+        contentType: u.contentType,
+        speaker: u.speaker,
+        canonPriority: null,
+        arcKey: s.arcKey,
+        chapterName: s.chapterName,
+        chapterLabel: null,
+        episodeLabel: s.episodeLabel,
+        sceneId: s.sceneId,
+        sceneTitle: s.sceneTitle,
+        unitIndex: u.unitIndex,
+        blockIndex: blockIdx,
+        rankScore: s.rankScore,
+      });
+    }
+    blockIdx += 1;
   }
   return out;
 }
@@ -96,11 +112,11 @@ function mergeSceneWindows(
 }
 
 /**
- * Retrieve canon story units: hybrid vector + lexical anchors (RRF), then same-scene neighbor expansion.
+ * Tier 1 legacy: hybrid vector + lexical unit anchors (RRF), then same-scene neighbor expansion.
  *
  * Scope: only arcs in `arcKeys`. Lexical branch is fail-open (skipped when there are no terms).
  */
-export async function retrieveCanonNarrative(input: {
+export async function retrieveCanonNarrativeLegacy(input: {
   queryEmbedding: number[];
   userMessage: string;
   characterId: string;
@@ -266,3 +282,6 @@ export async function retrieveCanonNarrative(input: {
     rankScore: r.cosine_similarity as number,
   }));
 }
+
+/** @deprecated Prefer {@link retrieveCanonNarrativeLegacy} in new code; name kept for imports. */
+export const retrieveCanonNarrative = retrieveCanonNarrativeLegacy;

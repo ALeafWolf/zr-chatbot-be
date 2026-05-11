@@ -132,6 +132,7 @@ export async function* generateAndValidateStream(input: {
     escalationRule: personaOverlay.escalation_rule,
     outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior,
     recentContext: recentContextStr,
+    retrievedCanonNarrative: promptContext.retrievedCanonNarrative ?? "",
     signal,
   };
 

@@ -106,15 +106,27 @@ export async function* runCharacterTurnStream(
       derivedState: context.derivedState,
       memories: context.memories,
       canonChunks: context.canonChunks,
+      canonScenes: context.canonScenes,
       recentTurns: context.recentTurns,
       sessionSummary: context.sessionSummary,
       sessionRecall: context.sessionRecall,
+      userMessage,
+      queryRewrite: context.queryRewrite,
     });
 
     const thoughtSummaryCache = new Map<string, string>();
     const thoughtsAcc: Thought[] = [];
 
-    if (context.memories.length > 0 || context.canonChunks.length > 0) {
+    const canonExcerptsForThought =
+      context.canonScenes.length > 0
+        ? context.canonScenes
+            .flatMap((s) => s.units.map((u) => ({ excerpt: u.textContent.slice(0, 160) })))
+            .slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2))
+        : context.canonChunks.slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2)).map((c) => ({
+            excerpt: c.textContent.slice(0, 160),
+          }));
+
+    if (context.memories.length > 0 || canonExcerptsForThought.length > 0) {
       const recallLine = await generateThoughtSummary(
         {
           characterName: characterDefaults.name,
@@ -124,11 +136,7 @@ export async function* runCharacterTurnStream(
               type: m.memoryType,
               summary: m.summary,
             })),
-            canon: context.canonChunks
-              .slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2))
-              .map((c) => ({
-                excerpt: c.textContent.slice(0, 160),
-              })),
+            canon: canonExcerptsForThought,
           },
           voiceHints,
         },

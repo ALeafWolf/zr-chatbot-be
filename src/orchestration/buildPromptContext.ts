@@ -4,12 +4,22 @@ import type {
 } from "../character/characterDefaults";
 import type { DerivedState } from "../state/sessionStateRepo";
 import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
-import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
+import type {
+  RetrievedCanonChunk,
+  RetrievedCanonScene,
+} from "../retrieval/retrieveCanonNarrative";
 import { CANON_PROMPT_LIMITS } from "../character/canonRules";
 import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
 import type { ChatSession } from "../db/schema/chat";
 import type { SessionSummary } from "../db/schema/memory";
 import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
+import { env } from "../config/env";
+import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
+import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
+import {
+  annotationHeuristicFallback,
+  shouldUseAnnotationFallback,
+} from "../retrieval/rewriteQuery";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 
@@ -26,25 +36,17 @@ function formatSessionRecall(chunks: RetrievedSessionMemoryChunk[]): string {
   return `以下内容来自本会话更早片段的语义检索，可能比 RECENT CHAT 更不新；仍以 RECENT CHAT 与用户当前消息为准。\n\n${lines.join("\n\n")}`;
 }
 
-/** Appended last in the system prompt: how to interpret ()/（） stage directions and 【】 meta. */
-const USER_MESSAGE_ANNOTATION_RULES = `用户消息中可能包含非对白标注。
-被 \`()\` 或 \`（）\` 包裹的内容表示非直接说出口的上下文，例如用户的内心活动、用户动作，或双方/场景动作。不要将其视为用户说出的对白。若其中描述的是可观察到的行为、表情、动作或语气变化，应让角色像自然观察到这些外在表现后作出回应。若其中描述的是私人内心活动，不要让角色表现得像能读心；只有当它能从外在表现中合理推断时，才可让角色以试探、猜测或含蓄察觉的方式回应，否则应忽略，或仅作为隐藏情绪背景参考。
-被 \`【】\` 包裹的内容表示用户提供的出戏指导或回复方向，而不是情景内对白。它可能用于指定情景设定、下一轮回复角度、情绪基调、节奏或回复重点。生成回复时应参考这些指导来塑造回应，但不得违反更高优先级的系统规则、安全限制或角色一致性。
-回复中不要主动提及用户使用了括号或方括号，除非必须请求澄清。`;
-
 export interface PromptContext {
   systemPrompt: string;
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Plain text of canon section (for validator attribution checks). */
+  retrievedCanonNarrative?: string;
 }
 
 /**
  * Build the full prompt context following the §9 Phase 1–2 block order:
  *
- * [SYSTEM] [BASE PERSONA — includes 叙事文笔 / 沟通风格 / 角色表达 / 情感内核 …] [CONTINUITY OVERLAY] [RELATIONSHIP EXPRESSION]
- * [CHARACTER DEFAULTS]
- * [SESSION STATE] [DERIVED STATE] [SESSION SUMMARY] [RELEVANT SESSION RECALL]
- * [INTERACTIVE MEMORY] [CANON NARRATIVE]
- * [USER MESSAGE ANNOTATIONS]
+ * [SYSTEM] ... [CANON NARRATIVE] [STRUCTURED USER QUERY]? [USER MESSAGE ANNOTATIONS]?
  * [RECENT CHAT]   ← history passed separately to provider
  */
 export function buildPromptContext(input: {
@@ -54,9 +56,12 @@ export function buildPromptContext(input: {
   derivedState: DerivedState;
   memories: RetrievedMemory[];
   canonChunks: RetrievedCanonChunk[];
+  canonScenes?: RetrievedCanonScene[];
   recentTurns: ConversationTurn[];
   sessionSummary?: SessionSummary | null;
   sessionRecall?: RetrievedSessionMemoryChunk[];
+  userMessage: string;
+  queryRewrite?: QueryRewriteResult;
 }): PromptContext {
   const {
     characterDefaults,
@@ -65,10 +70,29 @@ export function buildPromptContext(input: {
     derivedState,
     memories,
     canonChunks,
+    canonScenes = [],
     recentTurns,
     sessionSummary,
     sessionRecall = [],
+    userMessage,
+    queryRewrite,
   } = input;
+
+  const structuredBlock = queryRewrite?.combined_for_embedding?.trim() ?? "";
+  const useAnnotationFallback = queryRewrite
+    ? env.ANNOTATION_RULES_ALWAYS ||
+      shouldUseAnnotationFallback(queryRewrite) ||
+      annotationHeuristicFallback(userMessage, queryRewrite)
+    : true;
+
+  const showStructured =
+    structuredBlock.length > 0 && queryRewrite?.parseOk === true;
+  const showAnnotations = useAnnotationFallback;
+
+  const canonNarrativeBody =
+    canonScenes.length > 0
+      ? formatCanonScenes(canonScenes)
+      : formatCanon(canonChunks);
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
   const coreTraits = (characterDefaults.core_traits ?? []).join("\n- ");
@@ -98,11 +122,16 @@ export function buildPromptContext(input: {
   );
 
   const systemPrompt = [
-    buildBlock("SYSTEM", `你是${characterDefaults.name}，一个虚构角色扮演系统中的角色。
+    buildBlock(
+      "SYSTEM",
+      `你是${characterDefaults.name}，一个虚构角色扮演系统中的角色。
 严格保持角色扮演。以下规则必须始终遵守：
 ${hardRules}
 
-冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。`),
+若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
+
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。`,
+    ),
 
     buildBlock("BASE PERSONA", basePersonaBody),
 
@@ -153,9 +182,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
 
     buildBlock("INTERACTIVE MEMORY", formatMemories(memories)),
 
-    buildBlock("CANON NARRATIVE", formatCanon(canonChunks)),
+    buildBlock("CANON NARRATIVE", canonNarrativeBody),
 
-    buildBlock("USER MESSAGE ANNOTATIONS", USER_MESSAGE_ANNOTATION_RULES),
+    ...(showStructured
+      ? [buildBlock("STRUCTURED USER QUERY", structuredBlock)]
+      : []),
+
+    ...(showAnnotations
+      ? [buildBlock("USER MESSAGE ANNOTATIONS", USER_MESSAGE_ANNOTATION_RULES)]
+      : []),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -163,7 +198,11 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
   const conversationHistory: Array<{ role: "user" | "assistant"; content: string }> =
     recentTurns.map((t) => ({ role: t.role, content: t.content }));
 
-  return { systemPrompt, conversationHistory };
+  return {
+    systemPrompt,
+    conversationHistory,
+    retrievedCanonNarrative: canonNarrativeBody,
+  };
 }
 
 function buildBlock(label: string, content: string): string {
@@ -226,7 +265,6 @@ function formatSpeechStyle(
   return lines.length > 0 ? lines.join("\n") : fallback;
 }
 
-/** Select relationship_expression shards from defaults using overlay relationship_status. */
 function buildRelationshipExpressionContent(
   relationshipStatus: string,
   rel: CharacterDefaults["relationship_expression"],
@@ -259,10 +297,16 @@ function formatMemories(memories: RetrievedMemory[]): string {
     .join("\n");
 }
 
-function formatCanonChunkHeader(first: RetrievedCanonChunk, unitMin: number, unitMax: number): string {
+function formatCanonChunkHeader(
+  first: RetrievedCanonChunk,
+  unitMin: number,
+  unitMax: number,
+): string {
   const parts = [
     first.arcKey ? `弧 ${first.arcKey}` : "",
-    first.chapterName?.trim() || first.chapterKey ? `章 ${(first.chapterName ?? first.chapterKey ?? "").trim()}` : "",
+    first.chapterName?.trim() || first.chapterKey
+      ? `章 ${(first.chapterName ?? first.chapterKey ?? "").trim()}`
+      : "",
     first.chapterLabel?.trim() ? `卷标 ${first.chapterLabel.trim()}` : "",
     first.episodeLabel ? `节 ${first.episodeLabel}` : "",
     first.sceneTitle?.trim() ? `场 ${first.sceneTitle.trim()}` : "",
@@ -334,4 +378,73 @@ function formatCanon(chunks: RetrievedCanonChunk[]): string {
   }
 
   return out.join("\n\n");
+}
+
+export function formatCanonScenes(scenes: RetrievedCanonScene[]): string {
+  if (scenes.length === 0) return "(无相关剧情内容)";
+
+  const maxTotal = CANON_PROMPT_LIMITS.maxTotalChars;
+  const maxPerScene = CANON_PROMPT_LIMITS.maxCharsPerBlock;
+  let total = 0;
+  const parts: string[] = [];
+
+  sceneLoop: for (let i = 0; i < scenes.length; i++) {
+    const s = scenes[i]!;
+    let facts = [...s.facts];
+    let units = [...s.units].sort((a, b) => a.unitIndex - b.unitIndex);
+
+    const render = () => {
+      const head = `[场景 ${i + 1}] 章节《${s.chapterName}》/ ${s.episodeLabel} / 场景：${s.sceneTitle?.trim() || "—"}`;
+      let t = `${head}\n摘要：${(s.sceneSummary ?? "").trim() || "—"}\n`;
+      if (facts.length > 0) {
+        t += `关键事实：\n${facts
+          .map((f) =>
+            `- ${[f.subject, f.predicate, f.object].filter(Boolean).join(" ")}`.trim(),
+          )
+          .join("\n")}\n`;
+      } else {
+        t += `关键事实：(无检索到结构化事实)\n`;
+      }
+      t += `原文片段（按 unit_index 升序）：\n`;
+      t += units
+        .map(
+          (u) =>
+            `  ${u.unitIndex} ${u.speaker?.trim() || "—"} [${u.contentType}] ${u.textContent}`,
+        )
+        .join("\n");
+      return t;
+    };
+
+    let text = render();
+    while (text.length > maxPerScene && facts.length > 0) {
+      facts = facts.slice(0, -1);
+      text = render();
+    }
+    if (text.length > maxPerScene && units.length > 2) {
+      const keepHead = Math.ceil(CANON_PROMPT_LIMITS.maxLinesPerBlock / 2);
+      const tailN = Math.max(
+        1,
+        CANON_PROMPT_LIMITS.maxLinesPerBlock - keepHead - 1,
+      );
+      units = [
+        ...units.slice(0, keepHead),
+        ...units.slice(Math.max(keepHead, units.length - tailN)),
+      ];
+      text = render();
+    }
+    if (text.length > maxPerScene) {
+      text = `${text.slice(0, maxPerScene - 1)}…`;
+    }
+
+    if (total + text.length + 2 > maxTotal) {
+      const room = maxTotal - total - 2;
+      if (room < 48) break sceneLoop;
+      parts.push(`${text.slice(0, room - 1)}…`);
+      break;
+    }
+    parts.push(text);
+    total += text.length + 2;
+  }
+
+  return parts.join("\n\n");
 }

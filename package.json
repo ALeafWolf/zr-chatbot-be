@@ -12,6 +12,8 @@
     "eval": "tsx src/eval/runEval.ts",
     "eval:dataset:push": "tsx src/eval/pushLangSmithDataset.ts",
     "eval:langsmith": "tsx src/eval/runLangSmithExperiment.ts",
+    "eval:retrieval": "tsx src/eval/runRetrievalEvalCli.ts",
+    "test:structural-parse": "tsx src/retrieval/structuralParse.fixtures.ts",
     "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts"
   },
   "dependencies": {

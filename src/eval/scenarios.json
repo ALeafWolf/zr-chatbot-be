@@ -1,6 +1,6 @@
 {
-  "version": "1.0",
-  "description": "Phase 1 regression eval seed dataset. Run before any prompt change or model upgrade.",
+  "version": "2.0",
+  "description": "Phase 1 regression + Tier 3 retrieval / canon_attribution scenarios.",
   "scenarios": [
     {
       "id": "no_ai_claim",
@@ -141,8 +141,10 @@
       ]
     },
     {
-      "id": "canon_retrieval_fenghe_attribution_manual",
-      "description": "Tier 1 canon: manual check — trace retrieval.canon_narrative for messages mentioning 枫河露营公园; [CANON NARRATIVE] blocks should include same-scene neighbor lines so attribution (谁提议/安排) is visible. Stub eval only (full turn requires live backend).",
+      "id": "canon_attribution_fenghe_first_visit",
+      "group": "canon_attribution",
+      "eval_mode": "retrieval",
+      "description": "Tier 3 retrieval must surface 枫河 + 左然 + 提议/相关事实 for first-visit attribution (regression: 枫河 failure case).",
       "session": {
         "mode": "canonical_live",
         "continuity_scope": "main_relationship",
@@ -151,20 +153,28 @@
       "messages": [
         {
           "role": "user",
-          "content": "枫河露营公园第一次和第二次去分别是谁提议的？"
+          "content": "枫河露营公园第一次是谁提议去的？"
         }
       ],
+      "retrieval_expected_needle": "枫河",
       "assertions": [
         {
-          "type": "not_contains",
-          "value": "__CANON_FENGHE_EVAL_STUB__",
-          "description": "Placeholder — replace with live replay + retrieval trace assertions when E2E eval is enabled"
+          "type": "retrieval_min_anchors",
+          "min_scenes": 1,
+          "description": "Coarse-to-fine pipeline should return at least one anchor scene"
+        },
+        {
+          "type": "canon_contains_all",
+          "values": ["枫河", "左然", "提议"],
+          "description": "Rendered canon must include 枫河, 左然, and 提议 for grounded attribution"
         }
       ]
     },
     {
-      "id": "canon_retrieval_weak_lexical_overlap_manual",
-      "description": "Tier 1 canon: manual check — paraphrased queries with weak literal overlap should still get vector anchors; lexical branch fails open. Inspect fused anchors in LangSmith retrieval.canon_narrative.",
+      "id": "canon_attribution_fenghe_second_visit",
+      "group": "canon_attribution",
+      "eval_mode": "retrieval",
+      "description": "Tier 3 retrieval for second 枫河 visit / 安排 attribution.",
       "session": {
         "mode": "canonical_live",
         "continuity_scope": "main_relationship",
@@ -173,14 +183,71 @@
       "messages": [
         {
           "role": "user",
-          "content": "（占位：用词不贴原文但语义指向已发生剧情。）"
+          "content": "第二次去枫河露营公园是谁安排的？"
         }
+      ],
+      "retrieval_expected_needle": "枫河",
+      "assertions": [
+        {
+          "type": "retrieval_min_anchors",
+          "min_scenes": 1,
+          "description": "At least one anchor scene"
+        },
+        {
+          "type": "canon_contains_all",
+          "values": ["枫河", "左然"],
+          "description": "Canon should mention 枫河 and 左然 for second-trip context"
+        }
+      ]
+    },
+    {
+      "id": "canon_attribution_negation",
+      "group": "canon_attribution",
+      "eval_mode": "retrieval",
+      "description": "Neutral message — retrieval should stay bounded (smoke: rewriter + pipeline completes).",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_relationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        { "role": "user", "content": "今天天气挺好的。" }
       ],
       "assertions": [
         {
-          "type": "not_contains",
-          "value": "__CANON_WEAK_LEXICAL_EVAL_STUB__",
-          "description": "Placeholder — verify vector branch supplies anchors when ILIKE terms are sparse"
+          "type": "retrieval_min_anchors",
+          "min_scenes": 0,
+          "description": "Allow zero anchors for off-topic queries (smoke only)"
+        }
+      ]
+    },
+    {
+      "id": "canon_attribution_entity_rich_main_relationship",
+      "group": "canon_attribution",
+      "eval_mode": "retrieval",
+      "description": "Entity-rich query inherits main_relationship arc stack; lexical union with rewriter entities.",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_relationship",
+        "continuity_family": "main_world"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "（看了看手机）你上次说的枫河露营公园，第一次和我们后来再去，分别谁张罗的？"
+        }
+      ],
+      "retrieval_expected_needle": "枫河",
+      "assertions": [
+        {
+          "type": "retrieval_min_anchors",
+          "min_scenes": 1,
+          "description": "At least one anchor scene for entity-heavy paraphrase"
+        },
+        {
+          "type": "canon_contains_all",
+          "values": ["枫河", "左然"],
+          "description": "Canon should still surface 枫河 and 左然"
         }
       ]
     },

@@ -59,6 +59,56 @@ const envSchema = z.object({
 
   DEFAULT_PLAYER_ID: z.string().default("local_dev"),
   DEFAULT_CHARACTER_ID: z.string().default("zuo_ran"),
+
+  /** Legacy unit-window RRF pipeline vs coarse-to-fine Tier 3. */
+  CANON_RETRIEVAL_PIPELINE: z
+    .string()
+    .default("tier3")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "tier1" || s === "tier3") return s;
+      return "tier3";
+    }),
+
+  /** Optional second embedding branch from rewriter hypothetical (debug). */
+  CANON_QUERY_HYDE: z
+    .string()
+    .default("0")
+    .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
+
+  /** When true, embed rewritten query for interactive memory + session recall too. */
+  USE_REWRITTEN_QUERY_FOR_MEMORY_EMBEDDING: z
+    .string()
+    .default("0")
+    .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
+
+  /** Always inject full [USER MESSAGE ANNOTATIONS] alongside structured query. */
+  ANNOTATION_RULES_ALWAYS: z
+    .string()
+    .default("0")
+    .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
+
+  /** Below this rewriter confidence, treat as low-trust and use annotation fallback. */
+  REWRITE_CONFIDENCE_THRESHOLD: z
+    .string()
+    .default("0.6")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 0.6;
+      return Math.min(1, Math.max(0, n));
+    }),
+
+  /** Soft attribution penalty inside validator (Tier 4 prep). */
+  VALIDATOR_STRICT_ATTRIBUTION: z
+    .string()
+    .default("0")
+    .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
+
+  /** Optional LLM-as-judge for attribution evals. */
+  EVAL_ENABLE_LLM_JUDGE: z
+    .string()
+    .default("0")
+    .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
 });
 
 const parsed = envSchema.safeParse(process.env);

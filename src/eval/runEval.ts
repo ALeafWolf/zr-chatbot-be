@@ -5,16 +5,17 @@
  *   npx tsx src/eval/runEval.ts
  *   npx tsx src/eval/runEval.ts --scenario no_ai_claim
  *
- * Replays scenarios from scenarios.json through runCharacterTurn (or the
- * validator directly for draft-only assertions), logs results to LangSmith,
- * and prints a pass/fail summary.
+ * Replays scenarios from scenarios.json (validator for drafts; Tier 3 retrieval
+ * when eval_mode=retrieval), prints a pass/fail summary.
  */
 import { runResponseValidator } from "../llm/runResponseValidator";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import type { Scenario } from "./evalTypes";
 import type { ValidationResult } from "../llm/runResponseValidator";
+import type { AssertionContext } from "./evalAssertions";
 import { runAllAssertions } from "./evalAssertions";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";
+import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 
 async function runScenario(scenario: Scenario): Promise<{
   scenarioId: string;
@@ -27,8 +28,21 @@ async function runScenario(scenario: Scenario): Promise<{
   const overlay = loadPersonaOverlay(scenario.session.continuity_scope);
   let reply = "";
   let validatorResult: ValidationResult | undefined;
+  let ctx: AssertionContext | undefined;
 
-  if (scenario.input_draft) {
+  if (scenario.eval_mode === "retrieval") {
+    console.log("  … retrieval-only (Tier 3 + DB + embed)");
+    const out = await runRetrievalEvalForScenario(scenario);
+    ctx = {
+      retrievedCanon: out.retrieved_canon,
+      queryRewrite: out.query_rewrite,
+      scene_anchor_count: out.scene_anchor_count,
+    };
+    reply = "";
+    console.log(
+      `  anchors=${out.scene_anchor_count} summary=${out.had_summary_hit} fact=${out.had_fact_hit} lex=${out.had_lex_hit} rewrite_ok=${out.query_rewrite.parseOk}`,
+    );
+  } else if (scenario.input_draft) {
     validatorResult = await runResponseValidator({
       draft: scenario.input_draft,
       characterId: "zuo_ran",
@@ -47,7 +61,7 @@ async function runScenario(scenario: Scenario): Promise<{
     );
   }
 
-  const results = runAllAssertions(scenario, reply, validatorResult);
+  const results = runAllAssertions(scenario, reply, validatorResult, ctx);
   for (const r of results) {
     const icon = r.pass ? "✓" : "✗";
     console.log(`  ${icon} ${r.assertionDescription} — ${r.reason}`);
@@ -69,7 +83,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`\n=== Zuoran Chatbot Phase 1 Eval (${scenarios.length} scenarios) ===\n`);
+  console.log(`\n=== Zuoran Chatbot Eval (${scenarios.length} scenarios) ===\n`);
 
   let totalPassed = 0;
   let totalFailed = 0;

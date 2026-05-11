@@ -98,6 +98,9 @@ export const storyChapters = pgTable(
     inheritanceOrder: integer("inheritance_order"),
     scopeMembership: jsonb("scope_membership"),
     summary: text("summary"),
+    summaryEmbedding: vectorCol("summary_embedding", { dimensions: 1536 }),
+    summaryModel: text("summary_model"),
+    summaryGeneratedAt: timestamp("summary_generated_at", { withTimezone: true }),
     metadata: jsonb("metadata"),
     manuallyEdited: boolean("manually_edited").notNull().default(false),
     manuallyEditedAt: timestamp("manually_edited_at", { withTimezone: true }),
@@ -124,6 +127,9 @@ export const storyEpisodes = pgTable(
     episodeOrder: integer("episode_order").notNull(),
     episodeTitle: text("episode_title"),
     summary: text("summary"),
+    summaryEmbedding: vectorCol("summary_embedding", { dimensions: 1536 }),
+    summaryModel: text("summary_model"),
+    summaryGeneratedAt: timestamp("summary_generated_at", { withTimezone: true }),
     metadata: jsonb("metadata"),
     manuallyEdited: boolean("manually_edited").notNull().default(false),
     manuallyEditedAt: timestamp("manually_edited_at", { withTimezone: true }),
@@ -151,6 +157,11 @@ export const storyScenes = pgTable(
     location: text("location"),
     timeHint: text("time_hint"),
     sceneSummary: text("scene_summary"),
+    sceneSummaryEmbedding: vectorCol("scene_summary_embedding", {
+      dimensions: 1536,
+    }),
+    summaryModel: text("summary_model"),
+    summaryGeneratedAt: timestamp("summary_generated_at", { withTimezone: true }),
     emotionTags: jsonb("emotion_tags"),
     metadata: jsonb("metadata"),
     manuallyEdited: boolean("manually_edited").notNull().default(false),
@@ -159,6 +170,41 @@ export const storyScenes = pgTable(
   (t) => [
     index("story_scenes_episode_id_idx").on(t.episodeId),
     index("story_scenes_chapter_id_idx").on(t.chapterId),
+  ],
+);
+
+export const storyFacts = pgTable(
+  "story_facts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    characterId: text("character_id").notNull(),
+    chapterId: uuid("chapter_id")
+      .notNull()
+      .references(() => storyChapters.id, { onDelete: "cascade" }),
+    episodeId: uuid("episode_id")
+      .notNull()
+      .references(() => storyEpisodes.id, { onDelete: "cascade" }),
+    sceneId: uuid("scene_id")
+      .notNull()
+      .references(() => storyScenes.id, { onDelete: "cascade" }),
+    subject: text("subject"),
+    predicate: text("predicate"),
+    object: text("object"),
+    temporalIndex: integer("temporal_index"),
+    polarity: text("polarity"),
+    confidence: real("confidence"),
+    textForm: text("text_form").notNull(),
+    embedding: vectorCol("embedding", { dimensions: 1536 }),
+    sourceUnitIds: jsonb("source_unit_ids"),
+    metadata: jsonb("metadata"),
+    manuallyEdited: boolean("manually_edited").notNull().default(false),
+    manuallyEditedAt: timestamp("manually_edited_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("story_facts_scene_id_idx").on(t.sceneId),
+    index("story_facts_chapter_id_idx").on(t.chapterId),
+    index("story_facts_char_subject_idx").on(t.characterId, t.subject),
+    index("story_facts_char_object_idx").on(t.characterId, t.object),
   ],
 );
 
@@ -200,4 +246,5 @@ export type AuWorld = typeof auWorlds.$inferSelect;
 export type StoryChapter = typeof storyChapters.$inferSelect;
 export type StoryEpisode = typeof storyEpisodes.$inferSelect;
 export type StoryScene = typeof storyScenes.$inferSelect;
+export type StoryFact = typeof storyFacts.$inferSelect;
 export type StoryUnit = typeof storyUnits.$inferSelect;

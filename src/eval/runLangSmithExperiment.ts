@@ -1,7 +1,6 @@
 /**
  * Run a LangSmith experiment on LANGSMITH_EVAL_DATASET using the Phase 1
- * eval target (validator for input_draft rows; stub reply otherwise) and
- * assertion evaluators backed by example metadata.
+ * eval target (validator for input_draft rows; retrieval-only for eval_mode=retrieval).
  *
  * Usage:
  *   npx tsx src/eval/runLangSmithExperiment.ts
@@ -16,17 +15,32 @@ import { env } from "../config/env";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import { runResponseValidator } from "../llm/runResponseValidator";
 import type { ValidationResult } from "../llm/runResponseValidator";
-import { checkAssertion } from "./evalAssertions";
+import {
+  checkAssertion,
+  type AssertionContext,
+} from "./evalAssertions";
 import type { Assertion, Scenario } from "./evalTypes";
 import { flushLangSmithClient } from "./evalProcessDrain";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";
+import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
+import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
 
 export interface EvalTargetOutput {
   reply: string;
   validation?: ValidationResult;
-  mode: "validator_only" | "skipped" | "error";
+  mode: "validator_only" | "skipped" | "error" | "retrieval";
   skip_reason?: string;
   error?: string;
+  retrieved_canon?: string;
+  query_rewrite?: Pick<
+    QueryRewriteResult,
+    "structuralParseOk" | "labelOk" | "parseOk" | "intent" | "confidence"
+  >;
+  scene_anchor_count?: number;
+  had_summary_hit?: boolean;
+  had_fact_hit?: boolean;
+  had_lex_hit?: boolean;
+  attribution_target_in_canon?: boolean;
 }
 
 export async function evalTarget(
@@ -44,6 +58,48 @@ export async function evalTarget(
       mode: "error",
       error: "invalid_or_missing_session",
     };
+  }
+
+  if (inputs.eval_mode === "retrieval") {
+    const scenario: Scenario = {
+      id: String(inputs.scenario_id ?? "unknown"),
+      description: String(inputs.description ?? ""),
+      session,
+      messages: (inputs.messages as Scenario["messages"]) ?? [],
+      assertions: [],
+      retrieval_expected_needle:
+        typeof inputs.retrieval_expected_needle === "string"
+          ? inputs.retrieval_expected_needle
+          : undefined,
+    };
+    try {
+      const out = await runRetrievalEvalForScenario(scenario);
+      const needle = scenario.retrieval_expected_needle ?? "";
+      return {
+        reply: "",
+        mode: "retrieval",
+        retrieved_canon: out.retrieved_canon,
+        query_rewrite: {
+          structuralParseOk: out.query_rewrite.structuralParseOk,
+          labelOk: out.query_rewrite.labelOk,
+          parseOk: out.query_rewrite.parseOk,
+          intent: out.query_rewrite.intent,
+          confidence: out.query_rewrite.confidence,
+        },
+        scene_anchor_count: out.scene_anchor_count,
+        had_summary_hit: out.had_summary_hit,
+        had_fact_hit: out.had_fact_hit,
+        had_lex_hit: out.had_lex_hit,
+        attribution_target_in_canon:
+          needle.length > 0 ? out.retrieved_canon.includes(needle) : false,
+      };
+    } catch (e) {
+      return {
+        reply: "",
+        mode: "error",
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
   }
 
   const draft = inputs.input_draft;
@@ -87,12 +143,27 @@ function assertionsEvaluator(args: {
   const reply = typeof args.outputs.reply === "string" ? args.outputs.reply : "";
   const validation = args.outputs.validation as ValidationResult | undefined;
 
+  const ctx: AssertionContext | undefined =
+    args.outputs.mode === "retrieval"
+      ? {
+          retrievedCanon:
+            typeof args.outputs.retrieved_canon === "string"
+              ? args.outputs.retrieved_canon
+              : "",
+          queryRewrite: args.outputs.query_rewrite as QueryRewriteResult | undefined,
+          scene_anchor_count:
+            typeof args.outputs.scene_anchor_count === "number"
+              ? args.outputs.scene_anchor_count
+              : undefined,
+        }
+      : undefined;
+
   const results: EvaluationResult[] = [];
   let allPass = true;
   let firstFailReason: string | undefined;
 
   assertions.forEach((assertion, i) => {
-    const { pass, reason } = checkAssertion(assertion, reply, validation);
+    const { pass, reason } = checkAssertion(assertion, reply, validation, ctx);
     if (!pass) {
       allPass = false;
       if (firstFailReason === undefined) firstFailReason = reason;
@@ -111,6 +182,56 @@ function assertionsEvaluator(args: {
       ? "All assertions passed."
       : (firstFailReason ?? "One or more assertions failed."),
   });
+
+  return { results };
+}
+
+function retrievalQualityEvaluator(args: {
+  example: Example;
+  outputs: Record<string, unknown>;
+}): { results: EvaluationResult[] } {
+  const o = args.outputs;
+  if (o.mode !== "retrieval") {
+    return { results: [] };
+  }
+
+  const n = typeof o.scene_anchor_count === "number" ? o.scene_anchor_count : 0;
+  const inputs = args.example.inputs as Record<string, unknown> | undefined;
+  const expectedNeedle =
+    typeof inputs?.retrieval_expected_needle === "string"
+      ? inputs.retrieval_expected_needle
+      : "";
+
+  const results: EvaluationResult[] = [
+    {
+      key: "retrieval_scene_anchor_count",
+      score: n,
+      comment: `scene_anchor_count=${n}`,
+    },
+    {
+      key: "retrieval_had_summary_hit",
+      score: o.had_summary_hit === true ? 1 : 0,
+      comment: `had_summary_hit=${Boolean(o.had_summary_hit)}`,
+    },
+    {
+      key: "retrieval_had_fact_hit",
+      score: o.had_fact_hit === true ? 1 : 0,
+      comment: `had_fact_hit=${Boolean(o.had_fact_hit)}`,
+    },
+    {
+      key: "retrieval_had_lex_hit",
+      score: o.had_lex_hit === true ? 1 : 0,
+      comment: `had_lex_hit=${Boolean(o.had_lex_hit)}`,
+    },
+    {
+      key: "attribution_target_in_canon",
+      score: o.attribution_target_in_canon === true ? 1 : 0,
+      comment:
+        expectedNeedle.length > 0
+          ? `needle="${expectedNeedle}" in_canon=${Boolean(o.attribution_target_in_canon)}`
+          : "no needle configured",
+    },
+  ];
 
   return { results };
 }
@@ -146,6 +267,17 @@ async function main(): Promise<void> {
           referenceOutputs?: Record<string, unknown>;
         }) =>
           assertionsEvaluator({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          retrievalQualityEvaluator({
             example: args.example,
             outputs: args.outputs,
           }),

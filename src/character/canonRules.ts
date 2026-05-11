@@ -40,6 +40,25 @@ export const RETRIEVAL_LIMITS = {
   minTurnsBeforeSummary: 16,
 } as const;
 
+/** Tier 3 coarse-to-fine: scene anchors, multi-channel RRF, expansion caps. */
+export const CANON_TIER3 = {
+  canonAnchorSceneTopK: 4,
+  canonSummaryCandidates: 24,
+  canonFactCandidates: 24,
+  canonUnitCandidates: 36,
+  canonLexCandidates: 36,
+  canonRRFK: 60,
+  canonMaxUnitsPerScene: 48,
+  canonMaxTotalUnits: 96,
+  /** Tie-break bonus after fused RRF (not a parallel relevance score). */
+  canonProvenanceWeights: {
+    fromSummary: 0.02,
+    fromFact: 0.02,
+    fromUnit: 0.015,
+    fromLex: 0.01,
+  } as const,
+} as const;
+
 /** Canon narrative: anchor count, neighbor expansion, hybrid RRF, and caps (Tier 1). */
 export const CANON_RETRIEVAL = {
   /** Fused vector + lexical anchors before neighbor expansion. */

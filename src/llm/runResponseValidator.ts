@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { models } from "../config/models";
 import { chatJsonStream } from "./providers";
+import { env } from "../config/env";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -20,6 +21,8 @@ export interface ValidatorInput {
   escalationRule: string;
   outOfScopeChapterBehavior: string;
   recentContext: string;
+  /** Canon narrative block shown to the generator (Tier 3 coarse-to-fine). */
+  retrievedCanonNarrative?: string;
   signal?: AbortSignal;
 }
 
@@ -63,6 +66,32 @@ Return ONLY valid JSON in this exact shape:
   "needs_rewrite": boolean
 }`;
 
+/** Tier 3 prep: optional strict gate for unsupported canon attributions (no LLM). */
+function applyStrictAttributionSoftPenalty(
+  result: ValidationResult,
+  draft: string,
+  recentContext: string,
+  canon: string,
+): ValidationResult {
+  if (!result.in_character) return result;
+  const corpus = `${recentContext}\n${canon}`;
+  const cues =
+    /提议|安排|第一次|第二次|谁先|谁提出/.test(draft) &&
+    /左然|用户|你/.test(draft);
+  if (!cues) return result;
+  if (canon.includes("枫河") && /左然/.test(canon) && /提议|安排/.test(canon)) {
+    return result;
+  }
+  return {
+    ...result,
+    in_character: false,
+    issues: [
+      ...result.issues,
+      "Strict attribution mode: reply attributes plot points not clearly supported by retrieved canon + recent context.",
+    ],
+  };
+}
+
 export async function runResponseValidator(
   input: ValidatorInput,
 ): Promise<ValidationResult> {
@@ -102,5 +131,15 @@ Return the JSON validation result.`.trim();
     return VALIDATOR_FAIL_OPEN;
   }
 
-  return result.data;
+  let parsed = result.data;
+  if (env.VALIDATOR_STRICT_ATTRIBUTION && input.retrievedCanonNarrative?.trim()) {
+    parsed = applyStrictAttributionSoftPenalty(
+      parsed,
+      input.draft,
+      input.recentContext,
+      input.retrievedCanonNarrative,
+    );
+  }
+
+  return parsed;
 }

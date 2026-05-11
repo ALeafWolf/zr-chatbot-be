@@ -21,10 +21,15 @@ export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown
     scenario_id: scenario.id,
     description: scenario.description,
     session: scenario.session,
+    ...(scenario.group !== undefined && { group: scenario.group }),
+    ...(scenario.eval_mode !== undefined && { eval_mode: scenario.eval_mode }),
     ...(scenario.messages !== undefined && { messages: scenario.messages }),
     ...(scenario.primed_memories !== undefined && {
       primed_memories: scenario.primed_memories,
     }),
     ...(scenario.input_draft !== undefined && { input_draft: scenario.input_draft }),
+    ...(scenario.retrieval_expected_needle !== undefined && {
+      retrieval_expected_needle: scenario.retrieval_expected_needle,
+    }),
   };
 }

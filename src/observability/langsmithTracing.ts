@@ -30,6 +30,35 @@ export function traceStage<TInput extends unknown[], TOutput>(
 }
 
 /**
+ * Traced span with optional input/output shaping for LangSmith (truncated IO summaries).
+ * Does not change the function return value — only logged run payloads.
+ */
+export function traceStageWithIO<TInput extends unknown[], TOutput>(
+  name: string,
+  fn: (...args: TInput) => Promise<TOutput>,
+  opts?: {
+    tags?: string[];
+    metadata?: Record<string, unknown>;
+    processInputs?: (inputs: Record<string, unknown>) => Record<string, unknown>;
+    processOutputs?: (outputs: Record<string, unknown>) => Record<string, unknown>;
+  },
+): (...args: TInput) => Promise<TOutput> {
+  return traceable(fn, {
+    name,
+    run_type: "chain",
+    project_name: env.LANGSMITH_PROJECT,
+    tags: ["phase1", ...(opts?.tags ?? [])],
+    metadata: opts?.metadata ?? {},
+    processInputs: opts?.processInputs as
+      | ((inputs: Readonly<unknown>) => Record<string, unknown>)
+      | undefined,
+    processOutputs: opts?.processOutputs as
+      | ((outputs: Readonly<unknown>) => Record<string, unknown>)
+      | undefined,
+  }) as unknown as (...args: TInput) => Promise<TOutput>;
+}
+
+/**
  * Convenience wrapper for an LLM generation span.
  */
 export function traceLLMStage<TInput extends unknown[], TOutput>(
