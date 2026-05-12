@@ -130,7 +130,9 @@ ${hardRules}
 
 若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
 
-冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。`,
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
+
+工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。canon_lookup 可在断言剧情归属或行为主体（谁提议、谁安排、谁先发起等）之前核对检索到的原文摘要与片段；仅在确有断言需要佐证时调用，避免频繁检索。`,
     ),
 
     buildBlock("BASE PERSONA", basePersonaBody),
@@ -444,6 +446,52 @@ export function formatCanonScenes(scenes: RetrievedCanonScene[]): string {
     }
     parts.push(text);
     total += text.length + 2;
+  }
+
+  return parts.join("\n\n");
+}
+
+/** Compact scene formatting for tool outputs (e.g. canon_lookup verification). */
+export function formatCanonScenesCompact(
+  scenes: RetrievedCanonScene[],
+  opts: { maxUnitsPerScene: number },
+): string {
+  if (scenes.length === 0) return "(无相关剧情内容)";
+
+  const maxUnits = Math.max(1, opts.maxUnitsPerScene);
+  const maxTotalChars = 8000;
+  let total = 0;
+  const parts: string[] = [];
+
+  for (let i = 0; i < scenes.length; i++) {
+    const s = scenes[i]!;
+    const units = [...s.units]
+      .sort((a, b) => a.unitIndex - b.unitIndex)
+      .slice(0, maxUnits);
+    const factsLine =
+      s.facts.length > 0
+        ? `[FACTS] ${s.facts.map((f) => f.textForm.trim()).filter(Boolean).join(" | ")}`
+        : "[FACTS] (无)";
+
+    const head = `[场景 ${i + 1}] 《${s.chapterName}》/ ${s.episodeLabel} / ${s.sceneTitle?.trim() || "—"}`;
+    const summaryLine = `摘要：${(s.sceneSummary ?? "").trim() || "—"}`;
+    const unitLines = units
+      .map(
+        (u) =>
+          `  ${u.unitIndex} ${u.speaker?.trim() || "—"} [${u.contentType}] ${u.textContent}`,
+      )
+      .join("\n");
+
+    const block = [head, summaryLine, factsLine, "片段：", unitLines].join("\n");
+
+    if (total + block.length + 2 > maxTotalChars) {
+      const room = maxTotalChars - total - 2;
+      if (room < 48) break;
+      parts.push(`${block.slice(0, room - 1)}…`);
+      break;
+    }
+    parts.push(block);
+    total += block.length + 2;
   }
 
   return parts.join("\n\n");

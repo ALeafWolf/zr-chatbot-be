@@ -1,7 +1,12 @@
 import { z } from "zod";
+import { CANON_PROMPT_LIMITS } from "../character/canonRules";
 import { models } from "../config/models";
 import { chatJsonStream } from "./providers";
 import { env } from "../config/env";
+import {
+  runAttributionJudge,
+  type AttributionJudgeResult,
+} from "./runAttributionJudge";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -10,6 +15,8 @@ export interface ValidationResult {
   nsfw_within_bounds: boolean;
   issues: string[];
   needs_rewrite: boolean;
+  /** When strict attribution runs the LLM judge and gets a parsed verdict (not fail-open). */
+  attribution_judge?: AttributionJudgeResult;
 }
 
 export interface ValidatorInput {
@@ -50,8 +57,8 @@ Analyze the given draft response and return a JSON object — nothing else.
 
 Check all of the following:
 1. in_character: Does the reply stay fully in character? (false if it claims to be AI, breaks the fourth wall, or uses out-of-character phrasing)
-2. canon_consistent: Does the reply avoid contradicting established canon facts for the active continuity scope?
-3. session_state_consistent: Does the reply stay consistent with the current session mode, pinned context, and character defaults?
+2. canon_consistent: Does the reply avoid contradicting canon facts that are explicitly supported by the retrieved canon excerpt and/or the provided transcript? The excerpt is RAG retrieval for this turn and is NOT exhaustive world lore—do not fail solely because a detail appears only outside the excerpt. Fail only on clear contradiction with the excerpt or transcript.
+3. session_state_consistent: Does the reply stay consistent with the current user message (including physical actions and callbacks), the recent transcript, session mode, pinned context, and character defaults?
 4. nsfw_within_bounds: Is the NSFW content level within the allowed max_nsfw_level and escalation_rule?
 5. issues: List any specific problems found (empty array if none).
 6. needs_rewrite: true if any of the above checks failed.
@@ -66,7 +73,7 @@ Return ONLY valid JSON in this exact shape:
   "needs_rewrite": boolean
 }`;
 
-/** Tier 3 prep: optional strict gate for unsupported canon attributions (no LLM). */
+/** Fallback when the attribution judge fails open (legacy regex guard). */
 function applyStrictAttributionSoftPenalty(
   result: ValidationResult,
   draft: string,
@@ -92,9 +99,24 @@ function applyStrictAttributionSoftPenalty(
   };
 }
 
+function canonForValidatorPrompt(raw: string): string {
+  const t = raw.trim();
+  if (!t) {
+    return "Retrieved canon narrative: No canon excerpt retrieved for this turn.";
+  }
+  const max = CANON_PROMPT_LIMITS.maxTotalChars;
+  const body = t.length <= max ? t : `${t.slice(0, max)}…`;
+  return `Retrieved canon narrative (excerpt for this turn; not exhaustive):
+"""
+${body}
+"""`;
+}
+
 export async function runResponseValidator(
   input: ValidatorInput,
 ): Promise<ValidationResult> {
+  const canonBlock = canonForValidatorPrompt(input.retrievedCanonNarrative ?? "");
+
   const userMessage = `
 Character: ${input.characterId}
 Continuity scope: ${input.continuityScope}
@@ -103,7 +125,9 @@ Max NSFW level: ${input.maxNsfwLevel}
 Escalation rule: ${input.escalationRule}
 Out-of-scope behavior: ${input.outOfScopeChapterBehavior}
 
-Recent context (last 2 turns):
+${canonBlock}
+
+Turn context (recent transcript up to last 4 messages plus current user message):
 ${input.recentContext}
 
 Draft reply to validate:
@@ -132,14 +156,51 @@ Return the JSON validation result.`.trim();
   }
 
   let parsed = result.data;
+  let attributionJudgeMeta: AttributionJudgeResult | undefined;
+
   if (env.VALIDATOR_STRICT_ATTRIBUTION && input.retrievedCanonNarrative?.trim()) {
-    parsed = applyStrictAttributionSoftPenalty(
-      parsed,
-      input.draft,
-      input.recentContext,
-      input.retrievedCanonNarrative,
-    );
+    const judgeRun = await runAttributionJudge({
+      draft: input.draft,
+      retrievedCanonNarrative: input.retrievedCanonNarrative,
+      recentContext: input.recentContext,
+      signal: input.signal,
+    });
+
+    if (!judgeRun.usedFailOpen) {
+      attributionJudgeMeta = judgeRun.verdict;
+    }
+
+    const v = judgeRun.verdict;
+    if (
+      !judgeRun.usedFailOpen &&
+      v.has_attribution_claim &&
+      !v.supported_by_canon &&
+      !v.supported_by_transcript
+    ) {
+      const claimStr = v.claim
+        ? `${v.claim.subject}/${v.claim.predicate}/${v.claim.object}`
+        : "…";
+      parsed = {
+        ...parsed,
+        canon_consistent: false,
+        needs_rewrite: true,
+        issues: [
+          ...parsed.issues,
+          `Attribution claim "${claimStr}" not supported by retrieved canon or transcript. Use canon_lookup to verify before re-stating, or omit.`,
+        ],
+      };
+    } else if (judgeRun.usedFailOpen) {
+      parsed = applyStrictAttributionSoftPenalty(
+        parsed,
+        input.draft,
+        input.recentContext,
+        input.retrievedCanonNarrative,
+      );
+    }
   }
 
-  return parsed;
+  return {
+    ...parsed,
+    ...(attributionJudgeMeta ? { attribution_judge: attributionJudgeMeta } : {}),
+  };
 }

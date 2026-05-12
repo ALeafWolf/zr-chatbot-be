@@ -1,6 +1,6 @@
 {
-  "version": "2.0",
-  "description": "Phase 1 regression + Tier 3 retrieval / canon_attribution scenarios.",
+  "version": "2.1",
+  "description": "Phase 1 regression + Tier 3 retrieval / canon_attribution + Tier 4 attribution judge.",
   "scenarios": [
     {
       "id": "no_ai_claim",
@@ -248,6 +248,52 @@
           "type": "canon_contains_all",
           "values": ["枫河", "左然"],
           "description": "Canon should still surface 枫河 and 左然"
+        }
+      ]
+    },
+    {
+      "id": "tier4_attribution_unsupported_first_visit",
+      "group": "tier4_attribution_judge",
+      "description": "Strict attribution: unsupported first-visit agency claim should force rewrite path (requires VALIDATOR_STRICT_ATTRIBUTION=1).",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_engaged",
+        "continuity_family": "main_world"
+      },
+      "input_draft": "第一次是她临时起意拉他去的。",
+      "validator_retrieved_canon": "（评测固件）枫河露营公园：两人首次同往为临时出行，原文未指明由谁率先提议。第二次同往时，左然提前完成了预约与路线。",
+      "assertions": [
+        {
+          "type": "validator_field",
+          "field": "canon_consistent",
+          "expected": false,
+          "description": "Unsupported attribution should mark canon_consistent false"
+        },
+        {
+          "type": "validator_field",
+          "field": "needs_rewrite",
+          "expected": true,
+          "description": "Unsupported attribution should request rewrite"
+        }
+      ]
+    },
+    {
+      "id": "tier4_attribution_supported_second_visit",
+      "group": "tier4_attribution_judge",
+      "description": "Attribution aligned with fixture canon for second visit (strict mode exercises judge when enabled).",
+      "session": {
+        "mode": "canonical_live",
+        "continuity_scope": "main_engaged",
+        "continuity_family": "main_world"
+      },
+      "input_draft": "第二次是他自己安排的。",
+      "validator_retrieved_canon": "（评测固件）第二次前往枫河露营公园时，行程由左然自行安排与筹备。",
+      "assertions": [
+        {
+          "type": "validator_field",
+          "field": "canon_consistent",
+          "expected": true,
+          "description": "Supported second-trip attribution stays canon_consistent"
         }
       ]
     },

@@ -30,6 +30,8 @@ export interface Scenario {
   messages?: Array<{ role: string; content: string }>;
   primed_memories?: unknown[];
   input_draft?: string;
+  /** Fixture canon excerpt for validator-only Tier 4 attribution evals. */
+  validator_retrieved_canon?: string;
   assertions: Assertion[];
   /** Expected substring in retrieved canon for retrieval-quality metrics. */
   retrieval_expected_needle?: string;

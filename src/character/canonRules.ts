@@ -59,6 +59,13 @@ export const CANON_TIER3 = {
   } as const,
 } as const;
 
+/** Overrides for Tier 3 retrieval (tool verification paths, tests). */
+export type CanonTier3Override = {
+  [K in keyof typeof CANON_TIER3]?: (typeof CANON_TIER3)[K] extends number
+    ? number
+    : (typeof CANON_TIER3)[K];
+};
+
 /** Canon narrative: anchor count, neighbor expansion, hybrid RRF, and caps (Tier 1). */
 export const CANON_RETRIEVAL = {
   /** Fused vector + lexical anchors before neighbor expansion. */

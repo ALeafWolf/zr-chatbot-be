@@ -1,4 +1,4 @@
-import { CANON_TIER3 } from "../character/canonRules";
+import { CANON_TIER3, type CanonTier3Override } from "../character/canonRules";
 import { traceStage } from "../observability/langsmithTracing";
 import { expandAnchorScenes, type ExpandedSceneRow } from "./expandScenes";
 import {
@@ -300,6 +300,8 @@ async function runTier3Core(input: {
   characterId: string;
   arcKeys: string[];
   entities: string[];
+  /** Narrower caps for verification paths (e.g. canon_lookup tool). */
+  tier3Overrides?: CanonTier3Override;
 }): Promise<RetrievedCanonScene[]> {
   const {
     canonQueryEmbedding,
@@ -308,11 +310,13 @@ async function runTier3Core(input: {
     characterId,
     arcKeys,
     entities,
+    tier3Overrides,
   } = input;
 
   if (arcKeys.length === 0) return [];
 
-  const k = CANON_TIER3.canonRRFK;
+  const t3 = { ...CANON_TIER3, ...tier3Overrides };
+  const k = t3.canonRRFK;
   const hypo =
     hypotheticalQueryEmbedding && hypotheticalQueryEmbedding.length > 0
       ? hypotheticalQueryEmbedding
@@ -325,7 +329,7 @@ async function runTier3Core(input: {
         secondary: hypo,
         characterId,
         arcKeys,
-        limit: CANON_TIER3.canonSummaryCandidates,
+        limit: t3.canonSummaryCandidates,
         rrfK: k,
       }),
       tracedFactSearch({
@@ -333,7 +337,7 @@ async function runTier3Core(input: {
         secondary: hypo,
         characterId,
         arcKeys,
-        limit: CANON_TIER3.canonFactCandidates,
+        limit: t3.canonFactCandidates,
         rrfK: k,
       }),
       tracedUnitSearch({
@@ -341,7 +345,7 @@ async function runTier3Core(input: {
         secondary: hypo,
         characterId,
         arcKeys,
-        limit: CANON_TIER3.canonUnitCandidates,
+        limit: t3.canonUnitCandidates,
         rrfK: k,
       }),
       tracedLexicalSearch({
@@ -349,7 +353,7 @@ async function runTier3Core(input: {
         entities,
         characterId,
         arcKeys,
-        limit: CANON_TIER3.canonLexCandidates,
+        limit: t3.canonLexCandidates,
       }),
     ]);
 
@@ -367,16 +371,16 @@ async function runTier3Core(input: {
   const fused = await tracedAnchorFusion({
     lists,
     rrfK: k,
-    topN: CANON_TIER3.canonAnchorSceneTopK,
-    weights: CANON_TIER3.canonProvenanceWeights,
+    topN: t3.canonAnchorSceneTopK,
+    weights: t3.canonProvenanceWeights,
   });
 
   const { rows, factsByScene } = await tracedFineExpansion({
     characterId,
     arcKeys,
     anchors: fused,
-    maxUnitsPerScene: CANON_TIER3.canonMaxUnitsPerScene,
-    maxTotalUnits: CANON_TIER3.canonMaxTotalUnits,
+    maxUnitsPerScene: t3.canonMaxUnitsPerScene,
+    maxTotalUnits: t3.canonMaxTotalUnits,
   });
 
   return groupExpandedToScenes(fused, rows, factsByScene);

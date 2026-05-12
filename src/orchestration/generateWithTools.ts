@@ -41,6 +41,8 @@ export async function* generateWithToolsStream(input: {
   enableTools?: boolean;
   /** Precomputed for {@link models.generation} only (e.g. DeepSeek thinking). */
   openAICompatibleRequestExtensions?: Record<string, unknown>;
+  /** Max assistant completion rounds (each tool use consumes one round before the final reply). Default {@link MAX_TOOL_STEPS}. */
+  maxToolSteps?: number;
 }): AsyncGenerator<GenerateWithToolsYield> {
   const provider = getProvider(models.generation);
   const tools =
@@ -51,8 +53,9 @@ export async function* generateWithToolsStream(input: {
   let messages = [...input.messages];
   let totalIn = 0;
   let totalOut = 0;
+  const maxSteps = input.maxToolSteps ?? MAX_TOOL_STEPS;
 
-  for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     let assistantText = "";
     let toolCalls:
       | Array<{ id: string; name: string; arguments: string }>
@@ -144,6 +147,7 @@ export async function generateWithTools(input: {
   signal?: AbortSignal;
   enableTools?: boolean;
   openAICompatibleRequestExtensions?: Record<string, unknown>;
+  maxToolSteps?: number;
 }): Promise<GenerateWithToolsResult> {
   let final: GenerateWithToolsResult | undefined;
   for await (const ev of generateWithToolsStream(input)) {

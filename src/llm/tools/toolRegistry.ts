@@ -1,6 +1,8 @@
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { env } from "../../config/env";
 import type { ToolCtx, ToolDef } from "./types";
 import { webSearchTool } from "./webSearchTool";
+import { canonLookupTool } from "./canonLookupTool";
 
 /** OpenAI-compatible tool schema for providers. */
 export interface OpenAIToolDefinition {
@@ -60,4 +62,5 @@ export async function dispatchTool(
 
 export function defaultTools(): void {
   registerTool(webSearchTool);
+  if (env.CANON_LOOKUP_TOOL_ENABLED) registerTool(canonLookupTool);
 }

@@ -1,4 +1,3 @@
-import { generateCharacterReplyStream } from "../llm/generateCharacterReply";
 import {
   runResponseValidator,
   VALIDATOR_FAIL_OPEN,
@@ -77,6 +76,21 @@ function buildToolMessages(
   ];
 }
 
+function buildRewriteToolMessages(
+  promptContext: PromptContext,
+  userMessage: string,
+  rewriteSystemPrompt: string,
+): ToolChatMessage[] {
+  return [
+    { role: "system", content: rewriteSystemPrompt },
+    ...promptContext.conversationHistory.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    })),
+    { role: "user", content: userMessage },
+  ];
+}
+
 function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
   const s = characterDefaults.speech_style;
   return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
@@ -119,10 +133,17 @@ export async function* generateAndValidateStream(input: {
     yield { type: "thought", thought };
   }
 
-  const recentContextStr = promptContext.conversationHistory
+  const priorTranscript = promptContext.conversationHistory
     .slice(-4)
     .map((m) => `${m.role}: ${m.content}`)
     .join("\n");
+  const recentContextStr = [
+    "Recent transcript (last messages from session, before this turn):",
+    priorTranscript || "(none)",
+    "",
+    "Current user message (this turn):",
+    `user: ${userMessage}`,
+  ].join("\n");
 
   const validatorInput = {
     characterId: session.characterId,
@@ -138,6 +159,9 @@ export async function* generateAndValidateStream(input: {
 
   const toolCtx: ToolCtx = {
     sessionId: session.sessionId,
+    characterId: session.characterId,
+    continuityScope: session.continuityScope,
+    continuityFamily: session.continuityFamily as "main_world" | "au",
     signal: signal ?? new AbortController().signal,
   };
 
@@ -312,38 +336,135 @@ export async function* generateAndValidateStream(input: {
   );
   yield* emitThought({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
 
+  const attributionRewriteHint = drafterIssues1.some((i) =>
+    i.startsWith("Attribution claim"),
+  )
+    ? "如确有把握请先调用 canon_lookup 检索原文佐证；否则改写时移除该归属判断。\n\n"
+    : "";
+
   const rewriteSystemPrompt =
     promptContext.systemPrompt +
     `\n\n[REWRITE INSTRUCTION]\n` +
+    attributionRewriteHint +
     `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
     drafterIssues1.map((issue) => `- ${issue}`).join("\n");
 
   let rewrite!: { content: string; inputTokens: number; outputTokens: number };
 
-  for await (const ev of generateCharacterReplyStream(
-    {
-      systemPrompt: rewriteSystemPrompt,
-      conversationHistory: promptContext.conversationHistory,
-      userMessage,
-    },
-    {
+  try {
+    let completed = false;
+    for await (const ev of generateWithToolsStream({
+      messages: buildRewriteToolMessages(
+        promptContext,
+        userMessage,
+        rewriteSystemPrompt,
+      ),
+      ctx: toolCtx,
       signal,
-      temperature: session.temperature,
+      enableTools: true,
+      /** One optional tool round + final reply (two assistant completions). */
+      maxToolSteps: 2,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
-    },
-  )) {
-    if (ev.type === "delta") {
-      yield { type: "delta", text: ev.text };
+    })) {
+      if (ev.type === "delta") {
+        if (ev.text) {
+          yield { type: "delta", text: ev.text };
+        }
+        if (ev.reasoning) {
+          const thought: Thought = {
+            kind: "native",
+            text: ev.reasoning,
+            ts: Date.now(),
+          };
+          yield* emitThought(thought);
+        }
+      }
+      if (ev.type === "before_tool") {
+        const summary = await generateThoughtSummary(
+          {
+            characterName: characterDefaults.name,
+            stage: "tool_decision",
+            context: { tool: ev.name, args: ev.args },
+            voiceHints,
+          },
+          cache,
+        );
+        yield* emitThought({
+          kind: "tool_decision",
+          text: summary,
+          ts: Date.now(),
+          meta: { tool: ev.name },
+        });
+        yield {
+          type: "tool_call",
+          id: ev.id,
+          name: ev.name,
+          args: ev.args,
+        };
+      }
+      if (ev.type === "after_tool") {
+        yield {
+          type: "tool_result",
+          id: ev.id,
+          name: ev.name,
+          summary: ev.summary,
+        };
+        const voiceSummary = await generateThoughtSummary(
+          {
+            characterName: characterDefaults.name,
+            stage: "tool_result",
+            context: { tool: ev.name, summary: ev.summary },
+            voiceHints,
+          },
+          cache,
+        );
+        yield* emitThought({
+          kind: "tool_result",
+          text: voiceSummary,
+          ts: Date.now(),
+          meta: { tool: ev.name },
+        });
+      }
+      if (ev.type === "done") {
+        rewrite = {
+          content: ev.content,
+          inputTokens: ev.inputTokens,
+          outputTokens: ev.outputTokens,
+        };
+        completed = true;
+      }
     }
-    if (ev.type === "done") {
-      rewrite = {
-        content: ev.content,
-        inputTokens: ev.inputTokens,
-        outputTokens: ev.outputTokens,
+    if (!completed) {
+      throw new Error("Rewrite generation ended without completion");
+    }
+  } catch (e) {
+    if (e instanceof ToolLoopExceededError) {
+      const line = await generateThoughtSummary(
+        {
+          characterName: characterDefaults.name,
+          stage: "deflect",
+          context: { reason: "rewrite_tool_loop_exceeded" },
+          voiceHints,
+        },
+        cache,
+      );
+      yield* emitThought({ kind: "deflect", text: line, ts: Date.now() });
+      yield {
+        type: "_complete",
+        result: {
+          content: characterDefaults.safe_deflection,
+          validatorResult: VALIDATOR_FAIL_OPEN,
+          wasRewritten: true,
+          wasDeflected: true,
+          inputTokens: draft.inputTokens,
+          outputTokens: draft.outputTokens,
+        },
       };
+      return;
     }
+    throw e;
   }
 
   if (!rewrite) {

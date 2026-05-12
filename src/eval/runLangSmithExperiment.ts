@@ -15,6 +15,7 @@ import { env } from "../config/env";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import { runResponseValidator } from "../llm/runResponseValidator";
 import type { ValidationResult } from "../llm/runResponseValidator";
+import type { AttributionJudgeResult } from "../llm/runAttributionJudge";
 import {
   checkAssertion,
   type AssertionContext,
@@ -41,6 +42,7 @@ export interface EvalTargetOutput {
   had_fact_hit?: boolean;
   had_lex_hit?: boolean;
   attribution_target_in_canon?: boolean;
+  attribution_judge?: AttributionJudgeResult;
 }
 
 export async function evalTarget(
@@ -102,9 +104,26 @@ export async function evalTarget(
     }
   }
 
+  const scenarioId =
+    typeof inputs.scenario_id === "string" ? inputs.scenario_id : "";
+  if (
+    scenarioId === "tier4_attribution_unsupported_first_visit" &&
+    !env.VALIDATOR_STRICT_ATTRIBUTION
+  ) {
+    return {
+      reply: "",
+      mode: "skipped",
+      skip_reason: "requires_VALIDATOR_STRICT_ATTRIBUTION=1",
+    };
+  }
+
   const draft = inputs.input_draft;
   if (typeof draft === "string" && draft.length > 0) {
     const overlay = loadPersonaOverlay(session.continuity_scope);
+    const validatorCanon =
+      typeof inputs.validator_retrieved_canon === "string"
+        ? inputs.validator_retrieved_canon
+        : undefined;
     const validation = await runResponseValidator({
       draft,
       characterId: "zuo_ran",
@@ -114,8 +133,16 @@ export async function evalTarget(
       escalationRule: overlay.escalation_rule,
       outOfScopeChapterBehavior: overlay.out_of_scope_chapter_behavior,
       recentContext: "",
+      retrievedCanonNarrative: validatorCanon,
     });
-    return { reply: draft, validation, mode: "validator_only" };
+    return {
+      reply: draft,
+      validation,
+      mode: "validator_only",
+      ...(validation.attribution_judge
+        ? { attribution_judge: validation.attribution_judge }
+        : {}),
+    };
   }
 
   return {

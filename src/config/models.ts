@@ -24,5 +24,10 @@ export const models = {
   generation: parseModelBinding(env.GENERATION_MODEL),
   validator: parseModelBinding(env.VALIDATOR_MODEL),
   extractor: parseModelBinding(env.EXTRACTOR_MODEL),
+  attributionJudge: parseModelBinding(
+    env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL?.trim()
+      ? env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL.trim()
+      : env.EXTRACTOR_MODEL,
+  ),
   embedding: parseModelBinding(env.EMBEDDING_MODEL),
 } as const;

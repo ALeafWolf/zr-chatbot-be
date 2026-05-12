@@ -104,6 +104,18 @@ const envSchema = z.object({
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
 
+  /** When false, canon_lookup tool is not registered (kill-switch). */
+  CANON_LOOKUP_TOOL_ENABLED: z
+    .string()
+    .default("1")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s !== "0" && s !== "false" && s !== "off";
+    }),
+
+  /** Optional model for attribution judge; defaults to EXTRACTOR_MODEL. */
+  VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
+
   /** Optional LLM-as-judge for attribution evals. */
   EVAL_ENABLE_LLM_JUDGE: z
     .string()

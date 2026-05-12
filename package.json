@@ -14,7 +14,8 @@
     "eval:langsmith": "tsx src/eval/runLangSmithExperiment.ts",
     "eval:retrieval": "tsx src/eval/runRetrievalEvalCli.ts",
     "test:structural-parse": "tsx src/retrieval/structuralParse.fixtures.ts",
-    "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts"
+    "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts",
+    "test:unit": "tsx --test \"src/**/*.unit.ts\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

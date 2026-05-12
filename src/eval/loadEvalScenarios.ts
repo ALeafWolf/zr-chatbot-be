@@ -28,6 +28,9 @@ export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown
       primed_memories: scenario.primed_memories,
     }),
     ...(scenario.input_draft !== undefined && { input_draft: scenario.input_draft }),
+    ...(scenario.validator_retrieved_canon !== undefined && {
+      validator_retrieved_canon: scenario.validator_retrieved_canon,
+    }),
     ...(scenario.retrieval_expected_needle !== undefined && {
       retrieval_expected_needle: scenario.retrieval_expected_needle,
     }),
