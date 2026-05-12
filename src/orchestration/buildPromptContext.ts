@@ -13,6 +13,7 @@ import type { ConversationTurn } from "../retrieval/getRecentConversationWindow"
 import type { ChatSession } from "../db/schema/chat";
 import type { SessionSummary } from "../db/schema/memory";
 import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
+import type { RetrievedStructMemEntry } from "../retrieval/retrieveStructMemEntries";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
@@ -22,6 +23,18 @@ import {
 } from "../retrieval/rewriteQuery";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
+const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
+
+function formatStructMemEntriesForPrompt(entries: RetrievedStructMemEntry[]): string {
+  const lines = entries.map((e) => {
+    let body = e.text.trim();
+    if (body.length > STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY) {
+      body = `${body.slice(0, STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY)}…`;
+    }
+    return `- [${e.entryType}, turn ${e.turnIndex}] ${body}`;
+  });
+  return `以下内容为本会话中提取的结构化事件记忆，作为辅助上下文。若与 RECENT CHAT 或 [RELEVANT SESSION RECALL] 中的对白原文块冲突，以更直接的来源为准。\n\n${lines.join("\n")}`;
+}
 
 function formatSessionRecall(chunks: RetrievedSessionMemoryChunk[]): string {
   if (chunks.length === 0) return "";
@@ -60,6 +73,7 @@ export function buildPromptContext(input: {
   recentTurns: ConversationTurn[];
   sessionSummary?: SessionSummary | null;
   sessionRecall?: RetrievedSessionMemoryChunk[];
+  structMemEntries?: RetrievedStructMemEntry[];
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -74,6 +88,7 @@ export function buildPromptContext(input: {
     recentTurns,
     sessionSummary,
     sessionRecall = [],
+    structMemEntries = [],
     userMessage,
     queryRewrite,
   } = input;
@@ -130,7 +145,7 @@ ${hardRules}
 
 若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
 
-冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
 工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。canon_lookup 可在断言剧情归属或行为主体（谁提议、谁安排、谁先发起等）之前核对检索到的原文摘要与片段；仅在确有断言需要佐证时调用，避免频繁检索。`,
     ),
@@ -178,6 +193,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
           buildBlock(
             "RELEVANT SESSION RECALL",
             formatSessionRecall(sessionRecall),
+          ),
+        ]
+      : []),
+
+    ...(env.STRUCTMEM_ENABLED && structMemEntries.length > 0
+      ? [
+          buildBlock(
+            "STRUCTURED EVENT MEMORY",
+            formatStructMemEntriesForPrompt(structMemEntries),
           ),
         ]
       : []),

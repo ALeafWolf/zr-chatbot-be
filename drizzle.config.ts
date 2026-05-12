@@ -8,6 +8,7 @@ export default defineConfig({
     "./src/db/schema/chat.ts",
     "./src/db/schema/memory.ts",
     "./src/db/schema/persona.ts",
+    "./src/db/schema/structmem.ts",
   ],
   out: "./drizzle/migrations",
   dialect: "postgresql",

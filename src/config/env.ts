@@ -115,12 +115,39 @@ const envSchema = z.object({
 
   /** Optional model for attribution judge; defaults to EXTRACTOR_MODEL. */
   VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
-
   /** Optional LLM-as-judge for attribution evals. */
   EVAL_ENABLE_LLM_JUDGE: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
+
+  /** When true: StructMem event/entry writes, retrieval, and STRUCTURED EVENT MEMORY prompt block. */
+  STRUCTMEM_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+
+  /** When StructMem enabled, skip extractor-based session_memory_chunks for current_session candidates. */
+  STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+
+  /** Top-K for vector retrieval over structmem_entries (same recent-window cutoff as session recall). */
+  STRUCTMEM_ENTRY_RETRIEVAL_TOP_K: z
+    .string()
+    .default("6")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 6;
+      return Math.min(40, n);
+    }),
 });
 
 const parsed = envSchema.safeParse(process.env);

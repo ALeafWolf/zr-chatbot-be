@@ -24,6 +24,10 @@ import { getSessionSummary, type SessionSummaryRecord } from "../memory/sessionS
 import { recentConversationWindowStartTurn } from "../memory/recentWindowBoundary";
 import { retrieveSessionMemoryChunksTraced } from "../retrieval/retrieveSessionMemoryChunks";
 import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
+import {
+  retrieveStructMemEntriesTraced,
+  type RetrievedStructMemEntry,
+} from "../retrieval/retrieveStructMemEntries";
 import { env } from "../config/env";
 import { rewriteQuery, type QueryRewriteResult } from "../retrieval/rewriteQuery";
 
@@ -38,6 +42,8 @@ export interface ResolvedContext {
   canonQueryEmbedding: number[];
   sessionSummary: SessionSummaryRecord;
   sessionRecall: RetrievedSessionMemoryChunk[];
+  /** StructMem Phase 1: extracted entries before the raw recent window. */
+  structMemEntries: RetrievedStructMemEntry[];
   queryRewrite: QueryRewriteResult;
 }
 
@@ -161,6 +167,17 @@ export async function resolveContext(input: {
         })
       : [];
 
+  const structMemEntries =
+    env.STRUCTMEM_ENABLED && latestFrontierTurn >= 0
+      ? await retrieveStructMemEntriesTraced({
+          queryEmbedding,
+          sessionId: session.sessionId,
+          characterId: session.characterId,
+          exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+          latestFrontierTurnIndex: latestFrontierTurn,
+        })
+      : [];
+
   const derivedState = computeDerivedState(
     recentTurns.length,
     userMessage,
@@ -177,6 +194,7 @@ export async function resolveContext(input: {
     canonQueryEmbedding,
     sessionSummary,
     sessionRecall,
+    structMemEntries,
     queryRewrite,
   };
 }

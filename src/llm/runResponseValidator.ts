@@ -52,16 +52,21 @@ export const VALIDATOR_FAIL_OPEN: ValidationResult = {
   needs_rewrite: false,
 };
 
-const VALIDATOR_SYSTEM_PROMPT = `You are a strict character consistency validator for a character roleplay system.
+const VALIDATOR_SYSTEM_PROMPT = `You are a balanced character-consistency validator for a character roleplay system.
 Analyze the given draft response and return a JSON object — nothing else.
+
+Principles (read before each check):
+- The recent transcript + current user message are the live session truth for what is happening *right now*. Retrieved canon is RAG context: it may contain multiple unrelated scenes or chapters. Do NOT merge those scenes into one rigid timeline, and do NOT reject a draft because a different scene mentions the same calendar word (e.g. "周六") or the same broad place name unless the transcript clearly shows the user and character are continuing *that same* established beat.
+- Prefer transcript continuity over tangential canon. If the user is clearly in a casual or self-contained thread (e.g. tickets, invitation) and the draft follows that thread, treat conflicts with unrelated retrieved scenes as non-blocking: note them in issues only if helpful, but keep canon_consistent true unless the draft explicitly contradicts a fact already stated in the transcript or the same named in-session event.
+- In-character improvisation is allowed: minor NPCs, colleagues, or plausible scheduling details that are not contradicted by the transcript should not by themselves make session_state_consistent false. Only fail when the draft ignores the user's stated actions, contradicts an explicit prior line in the transcript, or breaks mode/NSFW rules.
 
 Check all of the following:
 1. in_character: Does the reply stay fully in character? (false if it claims to be AI, breaks the fourth wall, or uses out-of-character phrasing)
-2. canon_consistent: Does the reply avoid contradicting canon facts that are explicitly supported by the retrieved canon excerpt and/or the provided transcript? The excerpt is RAG retrieval for this turn and is NOT exhaustive world lore—do not fail solely because a detail appears only outside the excerpt. Fail only on clear contradiction with the excerpt or transcript.
-3. session_state_consistent: Does the reply stay consistent with the current user message (including physical actions and callbacks), the recent transcript, session mode, pinned context, and character defaults?
+2. canon_consistent: Does the reply avoid contradicting facts that are explicit in the provided transcript or that clearly bind this session? The retrieved canon excerpt is partial and multi-scene—not exhaustive lore. Do not fail solely because the draft does not reference canon, or because canon from another scene could be read as a different commitment. Fail only on clear contradiction with (a) the transcript / current user message, or (b) the excerpt when the same entity, promise, or event is clearly continued in the transcript and the draft denies or rewrites it.
+3. session_state_consistent: Does the reply respect the current user message and recent transcript (callbacks, objects, questions)? Allow reasonable invented detail that does not conflict with those. Do not fail solely for new names or off-screen logistics unless they contradict the transcript or the user's prompt.
 4. nsfw_within_bounds: Is the NSFW content level within the allowed max_nsfw_level and escalation_rule?
-5. issues: List any specific problems found (empty array if none).
-6. needs_rewrite: true if any of the above checks failed.
+5. issues: List specific problems (empty if none). Prefer concise, actionable notes; avoid speculative cross-chapter timeline accusations when the session transcript does not establish that linkage.
+6. needs_rewrite: true only if a check above actually failed for user-visible quality or safety—not for optional canon alignment alone.
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -106,11 +111,47 @@ function canonForValidatorPrompt(raw: string): string {
   }
   const max = CANON_PROMPT_LIMITS.maxTotalChars;
   const body = t.length <= max ? t : `${t.slice(0, max)}…`;
-  return `Retrieved canon narrative (excerpt for this turn; not exhaustive):
+  return `Retrieved canon narrative (RAG excerpt; may include several unrelated scenes—not one fused timeline):
 """
 ${body}
 """`;
 }
+
+/** Anthropic/OpenAI-style overload / capacity — safe to retry and eventually fail-open for the validator. */
+function isProviderOverloadOrRateLimit(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const st = (err as { status?: number }).status;
+    if (st === 429 || st === 503 || st === 529) return true;
+    const nestedType = (err as { error?: { type?: string } }).error?.type;
+    if (nestedType === "overloaded_error") return true;
+  }
+  const text =
+    err instanceof Error
+      ? err.message
+      : (() => {
+          try {
+            return JSON.stringify(err);
+          } catch {
+            return String(err);
+          }
+        })();
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("overloaded") ||
+    lower.includes("overloaded_error") ||
+    lower.includes("rate_limit") ||
+    lower.includes("too many requests") ||
+    /\b529\b/.test(text) ||
+    /\b429\b/.test(text)
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const VALIDATOR_LLM_BACKOFF_MS = [800, 2000, 4500] as const;
+const VALIDATOR_LLM_MAX_ATTEMPTS = VALIDATOR_LLM_BACKOFF_MS.length + 1;
 
 export async function runResponseValidator(
   input: ValidatorInput,
@@ -137,15 +178,52 @@ ${input.draft}
 
 Return the JSON validation result.`.trim();
 
-  const result = await chatJsonStream(
-    models.validator,
-    [
-      { role: "system", content: VALIDATOR_SYSTEM_PROMPT },
-      { role: "user", content: userMessage },
-    ],
-    ValidationResultSchema,
-    { maxTokens: 512, temperature: 0.1, signal: input.signal },
-  );
+  const messages: Array<{ role: "system" | "user"; content: string }> = [
+    { role: "system", content: VALIDATOR_SYSTEM_PROMPT },
+    { role: "user", content: userMessage },
+  ];
+
+  type ValidatorChatOutcome = Awaited<
+    ReturnType<typeof chatJsonStream<z.infer<typeof ValidationResultSchema>>>
+  >;
+  let result: ValidatorChatOutcome | undefined;
+
+  for (let attempt = 0; attempt < VALIDATOR_LLM_MAX_ATTEMPTS; attempt++) {
+    try {
+      result = await chatJsonStream(
+        models.validator,
+        messages,
+        ValidationResultSchema,
+        { maxTokens: 512, temperature: 0.1, signal: input.signal },
+      );
+      break;
+    } catch (err) {
+      const retriable = isProviderOverloadOrRateLimit(err);
+      const lastAttempt = attempt >= VALIDATOR_LLM_MAX_ATTEMPTS - 1;
+      if (!retriable || lastAttempt) {
+        if (retriable) {
+          console.warn(
+            "[runResponseValidator] validator LLM overloaded after retries; fail-open (accept draft).",
+            err,
+          );
+          return VALIDATOR_FAIL_OPEN;
+        }
+        throw err;
+      }
+      console.warn(
+        `[runResponseValidator] validator LLM transient error (attempt ${attempt + 1}/${VALIDATOR_LLM_MAX_ATTEMPTS}), retrying after backoff…`,
+        err,
+      );
+      await sleep(VALIDATOR_LLM_BACKOFF_MS[attempt]!);
+      if (input.signal?.aborted) {
+        throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+      }
+    }
+  }
+
+  if (result === undefined) {
+    return VALIDATOR_FAIL_OPEN;
+  }
 
   if (!result.ok) {
     console.warn(

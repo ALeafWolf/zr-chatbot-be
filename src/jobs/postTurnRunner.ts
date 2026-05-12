@@ -11,6 +11,9 @@ import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
 import type { DerivedState } from "../state/sessionStateRepo";
 import type { MemoryNamespace } from "../memory/memoryNamespace";
 import { traceStage } from "../observability/langsmithTracing";
+import { env } from "../config/env";
+import { collectMappedStructMemCandidates } from "../memory/structmemMapping";
+import { writeStructMemTurn } from "../memory/writeStructMemTurn";
 
 export interface PostTurnJob {
   sessionId: string;
@@ -22,6 +25,8 @@ export interface PostTurnJob {
   shouldWriteMemory: boolean;
   /** Assistant message turn_index just written for this turn. */
   latestTurnIndex: number;
+  userMessageId: string;
+  assistantMessageId: string;
 }
 
 /**
@@ -64,6 +69,8 @@ class PostTurnRunner {
       derivedState,
       shouldWriteMemory,
       latestTurnIndex,
+      userMessageId,
+      assistantMessageId,
     } = job;
 
     // Extract post-turn signals (memory facts + emotionalDelta=null in Phase 1)
@@ -88,12 +95,33 @@ class PostTurnRunner {
       sessionState: JSON.stringify(derivedState),
     });
 
+    /* StructMem: map current_session candidates to structmem_entries (non-sandbox only). */
+    if (env.STRUCTMEM_ENABLED && session.mode !== "sandbox") {
+      const mapped = collectMappedStructMemCandidates(signals.memoryFacts);
+      if (mapped.length > 0) {
+        await writeStructMemTurn({
+          session,
+          latestTurnIndex,
+          userMessageId,
+          assistantMessageId,
+          mapped,
+          extractorBatchConfidence:
+            signals.modelReportedConfidence.memoryFacts,
+        });
+      }
+    }
+
     /* Session-local recall rows from extractor output (sandbox: no indexing). */
     if (session.mode !== "sandbox") {
       const userTi = latestTurnIndex - 1;
       const asstTi = latestTurnIndex;
+      const suppressChunks =
+        env.STRUCTMEM_ENABLED && env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS;
       for (const candidate of signals.memoryFacts) {
         if ((candidate.memoryScope ?? "cross_session") !== "current_session") {
+          continue;
+        }
+        if (suppressChunks) {
           continue;
         }
         const chunkType = (candidate.sessionChunkType ??

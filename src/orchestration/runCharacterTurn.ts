@@ -110,6 +110,7 @@ export async function* runCharacterTurnStream(
       recentTurns: context.recentTurns,
       sessionSummary: context.sessionSummary,
       sessionRecall: context.sessionRecall,
+      structMemEntries: context.structMemEntries,
       userMessage,
       queryRewrite: context.queryRewrite,
     });
@@ -261,6 +262,8 @@ export async function* runCharacterTurnStream(
       derivedState: context.derivedState,
       shouldWriteMemory,
       latestTurnIndex: nextTurnIndex + 1,
+      userMessageId: userMsgId,
+      assistantMessageId: assistantMsgId,
     });
 
     yield {
