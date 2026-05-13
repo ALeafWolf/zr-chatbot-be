@@ -1,6 +1,7 @@
 import type { SessionSummaryJson } from "./sessionSummaryJson";
 
-const MAX_RENDER_CHARS = 6000;
+/** Prompt injection cap for the whole [SESSION SUMMARY] block (aligned with larger merged prose). */
+const MAX_RENDER_CHARS = 14_000;
 
 function clip(s: string): string {
   if (s.length <= MAX_RENDER_CHARS) return s;

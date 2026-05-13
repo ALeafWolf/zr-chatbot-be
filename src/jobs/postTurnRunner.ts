@@ -12,7 +12,7 @@ import type { DerivedState } from "../state/sessionStateRepo";
 import type { MemoryNamespace } from "../memory/memoryNamespace";
 import { traceStage } from "../observability/langsmithTracing";
 import { env } from "../config/env";
-import { collectMappedStructMemCandidates } from "../memory/structmemMapping";
+import { collectPhase1StructMemPersistRows } from "../memory/structmemMapping";
 import { writeStructMemTurn } from "../memory/writeStructMemTurn";
 
 export interface PostTurnJob {
@@ -95,18 +95,22 @@ class PostTurnRunner {
       sessionState: JSON.stringify(derivedState),
     });
 
-    /* StructMem: map current_session candidates to structmem_entries (non-sandbox only). */
+    /* StructMem: Phase 1 maps memory_candidates; Phase 2 native uses structmem_entries only (non-sandbox). */
     if (env.STRUCTMEM_ENABLED && session.mode !== "sandbox") {
-      const mapped = collectMappedStructMemCandidates(signals.memoryFacts);
-      if (mapped.length > 0) {
+      const useNative = env.STRUCTMEM_NATIVE_EXTRACTOR;
+      const rows = useNative
+        ? signals.structMemEntries
+        : collectPhase1StructMemPersistRows(signals.memoryFacts);
+      if (rows.length > 0) {
         await writeStructMemTurn({
           session,
           latestTurnIndex,
           userMessageId,
           assistantMessageId,
-          mapped,
+          rows,
           extractorBatchConfidence:
             signals.modelReportedConfidence.memoryFacts,
+          mergeNativeStructMemSource: useNative,
         });
       }
     }
@@ -116,7 +120,9 @@ class PostTurnRunner {
       const userTi = latestTurnIndex - 1;
       const asstTi = latestTurnIndex;
       const suppressChunks =
-        env.STRUCTMEM_ENABLED && env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS;
+        env.STRUCTMEM_ENABLED &&
+        (env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS ||
+          env.STRUCTMEM_NATIVE_EXTRACTOR);
       for (const candidate of signals.memoryFacts) {
         if ((candidate.memoryScope ?? "cross_session") !== "current_session") {
           continue;

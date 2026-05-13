@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  collectMappedStructMemCandidates,
+  collectPhase1StructMemPersistRows,
   mapMemoryCandidateToStructMemEntryType,
 } from "./structmemMapping";
 import type { MemoryCandidate } from "./writeInteractiveMemory";
@@ -57,7 +57,7 @@ describe("structmemMapping", () => {
     );
   });
 
-  it("collectMappedStructMemCandidates filters to current_session only", () => {
+  it("collectPhase1StructMemPersistRows filters to current_session only", () => {
     const facts: MemoryCandidate[] = [
       baseCandidate({
         memoryScope: "current_session",
@@ -69,9 +69,10 @@ describe("structmemMapping", () => {
         summary: "b",
       }),
     ];
-    const mapped = collectMappedStructMemCandidates(facts);
-    assert.equal(mapped.length, 1);
-    assert.equal(mapped[0]!.entryType, "open_thread");
-    assert.equal(mapped[0]!.candidate.summary, "a");
+    const rows = collectPhase1StructMemPersistRows(facts);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.entryType, "open_thread");
+    assert.equal(rows[0]!.text, "a");
+    assert.equal(rows[0]!.metadata?.memoryType, "banter");
   });
 });

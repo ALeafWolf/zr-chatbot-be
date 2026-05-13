@@ -7,19 +7,17 @@ import {
 } from "../db/schema/structmem";
 import type { ChatSession } from "../db/schema/chat";
 import { traceStage } from "../observability/langsmithTracing";
-import type { MemoryCandidate } from "./writeInteractiveMemory";
-import type { StructMemEntryTypePhase1 } from "./structmemMapping";
+import type { StructMemPersistRow } from "./structmemMapping";
 
 export interface StructMemTurnWriteInput {
   session: ChatSession;
   latestTurnIndex: number;
   userMessageId: string;
   assistantMessageId: string;
-  mapped: Array<{
-    candidate: MemoryCandidate;
-    entryType: StructMemEntryTypePhase1;
-  }>;
+  rows: StructMemPersistRow[];
   extractorBatchConfidence: number;
+  /** Merge `source: structmem_native_v2` into each entry metadata (native extractor path). */
+  mergeNativeStructMemSource?: boolean;
 }
 
 export interface StructMemTurnWriteResult {
@@ -69,14 +67,26 @@ async function writeStructMemEntriesImpl(input: {
   eventId: string;
   session: ChatSession;
   latestTurnIndex: number;
-  mapped: StructMemTurnWriteInput["mapped"];
+  rows: StructMemPersistRow[];
   extractorBatchConfidence: number;
+  mergeNativeStructMemSource?: boolean;
 }): Promise<string[]> {
-  const { eventId, session, latestTurnIndex, mapped } = input;
+  const { eventId, session, latestTurnIndex, rows } = input;
   const ids: string[] = [];
-  for (const row of mapped) {
+  for (const row of rows) {
     const id = uuidv4();
     ids.push(id);
+    const baseMeta =
+      typeof row.metadata === "object" && row.metadata !== null
+        ? { ...row.metadata }
+        : {};
+    if (input.mergeNativeStructMemSource) {
+      baseMeta.source = "structmem_native_v2";
+    }
+    const confidenceScore =
+      row.confidenceScore !== null && row.confidenceScore !== undefined
+        ? row.confidenceScore
+        : input.extractorBatchConfidence;
     await db.insert(structmemEntries).values({
       id,
       eventId,
@@ -86,13 +96,11 @@ async function writeStructMemEntriesImpl(input: {
       memoryNamespace: session.memoryNamespace,
       turnIndex: latestTurnIndex,
       entryType: row.entryType,
-      text: row.candidate.summary,
-      embedding: row.candidate.embedding,
-      importanceScore: row.candidate.importanceScore,
-      confidenceScore: input.extractorBatchConfidence,
-      metadata: {
-        memoryType: row.candidate.memoryType,
-      },
+      text: row.text,
+      embedding: row.embedding,
+      importanceScore: row.importanceScore,
+      confidenceScore,
+      metadata: baseMeta,
     });
   }
   return ids;
@@ -109,13 +117,13 @@ export const writeStructMemEntriesTraced = traceStage(
 );
 
 /**
- * Persist one StructMem event, message links, and all entries for mapped
- * current_session extractor candidates. Skips callers that pass an empty mapped list.
+ * Persist one StructMem event, message links, and all entries for the given rows.
+ * Skips callers that pass an empty rows list.
  */
 export async function writeStructMemTurn(
   input: StructMemTurnWriteInput,
 ): Promise<StructMemTurnWriteResult | null> {
-  if (input.mapped.length === 0) {
+  if (input.rows.length === 0) {
     return null;
   }
   const eventId = uuidv4();
@@ -131,8 +139,9 @@ export async function writeStructMemTurn(
     eventId,
     session: input.session,
     latestTurnIndex: input.latestTurnIndex,
-    mapped: input.mapped,
+    rows: input.rows,
     extractorBatchConfidence: input.extractorBatchConfidence,
+    mergeNativeStructMemSource: input.mergeNativeStructMemSource,
   });
   return { eventId, entryIds };
 }

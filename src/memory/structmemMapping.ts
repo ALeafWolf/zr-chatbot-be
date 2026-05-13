@@ -3,8 +3,27 @@ import type {
   ExtractorSessionChunkType,
 } from "./writeInteractiveMemory";
 
-/** Phase 1 entry types written from the existing extractor. */
+/** All StructMem entry_type values allowed by the DB check (Phase 2 doc §7). */
+export type StructMemEntryType =
+  | "factual"
+  | "relational"
+  | ExtractorSessionChunkType;
+
+/** Phase 1: only session-chunk labels came from the legacy extractor mapping. */
 export type StructMemEntryTypePhase1 = ExtractorSessionChunkType;
+
+/**
+ * One row ready for `structmem_entries` insert (Phase 1 mapped or Phase 2 native).
+ */
+export type StructMemPersistRow = {
+  entryType: StructMemEntryType;
+  text: string;
+  embedding: number[];
+  importanceScore: number;
+  /** When null, `writeStructMemTurn` uses batch extractor confidence. */
+  confidenceScore: number | null;
+  metadata?: Record<string, unknown>;
+};
 
 /**
  * Maps a post-turn memory candidate to a StructMem entry type.
@@ -29,18 +48,26 @@ export function mapMemoryCandidateToStructMemEntryType(
   return null;
 }
 
-export function collectMappedStructMemCandidates(
+/**
+ * Phase 1 path: derive StructMem persist rows from `memory_candidates` only.
+ */
+export function collectPhase1StructMemPersistRows(
   memoryFacts: MemoryCandidate[],
-): Array<{ candidate: MemoryCandidate; entryType: StructMemEntryTypePhase1 }> {
-  const out: Array<{
-    candidate: MemoryCandidate;
-    entryType: StructMemEntryTypePhase1;
-  }> = [];
+): StructMemPersistRow[] {
+  const out: StructMemPersistRow[] = [];
   for (const candidate of memoryFacts) {
     const entryType = mapMemoryCandidateToStructMemEntryType(candidate);
-    if (entryType) {
-      out.push({ candidate, entryType });
-    }
+    if (!entryType) continue;
+    const text = candidate.summary?.trim();
+    if (!text) continue;
+    out.push({
+      entryType,
+      text,
+      embedding: candidate.embedding,
+      importanceScore: candidate.importanceScore,
+      confidenceScore: null,
+      metadata: { memoryType: candidate.memoryType },
+    });
   }
   return out;
 }

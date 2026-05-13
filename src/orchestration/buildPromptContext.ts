@@ -33,7 +33,7 @@ function formatStructMemEntriesForPrompt(entries: RetrievedStructMemEntry[]): st
     }
     return `- [${e.entryType}, turn ${e.turnIndex}] ${body}`;
   });
-  return `以下内容为本会话中提取的结构化事件记忆，作为辅助上下文。若与 RECENT CHAT 或 [RELEVANT SESSION RECALL] 中的对白原文块冲突，以更直接的来源为准。\n\n${lines.join("\n")}`;
+  return `以下内容为本会话中提取的结构化事件记忆，作为辅助上下文。标签中 factual 多指已发生事实或明确表态，relational 多指信任、距离或情绪互动层面的变化；若与 RECENT CHAT 或 [RELEVANT SESSION RECALL] 中的对白原文块冲突，以更直接的来源为准。\n\n${lines.join("\n")}`;
 }
 
 function formatSessionRecall(chunks: RetrievedSessionMemoryChunk[]): string {

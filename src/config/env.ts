@@ -139,6 +139,18 @@ const envSchema = z.object({
       return s === "1" || s === "true";
     }),
 
+  /**
+   * When true with STRUCTMEM_ENABLED: persist StructMem rows from extractor `structmem_entries`
+   * (current_session only) instead of mapping Phase-1 `memory_candidates`.
+   */
+  STRUCTMEM_NATIVE_EXTRACTOR: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+
   /** Top-K for vector retrieval over structmem_entries (same recent-window cutoff as session recall). */
   STRUCTMEM_ENTRY_RETRIEVAL_TOP_K: z
     .string()
