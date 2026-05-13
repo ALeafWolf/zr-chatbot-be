@@ -6,7 +6,10 @@ import { scoreMemoryImportance } from "../memory/scoreMemoryImportance";
 import type { MemoryCandidate, MemoryScope } from "../memory/writeInteractiveMemory";
 import type { RawImportanceComponents } from "../memory/scoreMemoryImportance";
 import { embedText } from "./embedText";
-import type { StructMemPersistRow } from "../memory/structmemMapping";
+import type {
+  StructMemFallbackItem,
+  StructMemPersistRow,
+} from "../memory/structmemMapping";
 
 export interface PostTurnSignals {
   memoryFacts: MemoryCandidate[];
@@ -79,7 +82,7 @@ const StructMemEntryItemSchema = z.object({
 export const ExtractorOutputSchema = z.object({
   memory_candidates: z.array(
     z.object({
-      memory_type: MemoryTypeSchema,
+      memory_type: MemoryTypeSchema.default("banter"),
       summary: z.string(),
       emotional_weight: z.coerce.number().default(0),
       plot_relevance: z.coerce.number().default(0),
@@ -122,6 +125,11 @@ Add zero or more objects for this-session structured memory. Each item:
 
 Optional per-item scores (0–1): emotional_weight, plot_relevance, cross_session_durability, confidence_score. Optional metadata object (≤24 keys).
 
+Minimum StructMem rule:
+- If the quoted User message and Character reply contain a concrete event, explicit plan/decision/promise, unresolved thread, emotional shift, or reassurance/tension dynamic, "structmem_entries" MUST contain at least one current_session item.
+- For turns with both an event/plan and an emotional or relationship dynamic, prefer two current_session items: one "factual" and one "relational".
+- Return empty "structmem_entries" only for pure greetings, small talk with no new situation, or content unsupported by the quoted two-message turn.
+
 Return ONLY valid JSON in this shape:
 {
   "memory_candidates": [ ... ],
@@ -151,6 +159,73 @@ const NATIVE_STRUCTMEM_DEFAULT_COMPONENTS: RawImportanceComponents = {
   crossSessionDurability: 0.2,
   memoryType: "banter",
 };
+
+function compactTurnText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function isMeaningfulTurnForStructMem(input: {
+  userMessage: string;
+  assistantReply: string;
+}): boolean {
+  const combined = `${input.userMessage}\n${input.assistantReply}`.trim();
+  if (combined.length < 40) return false;
+  return /[。！？!?，,；;]|面试|录用|通过|紧张|发抖|安心|周六|音乐会|约|答应|承诺|陪|握|抱|决定|记得/.test(
+    combined,
+  );
+}
+
+function hasRelationalCue(input: {
+  userMessage: string;
+  assistantReply: string;
+}): boolean {
+  return /紧张|发抖|安心|不安|害怕|握|抱|陪|旁边|安抚|放心|看我|袖口|手/.test(
+    `${input.userMessage}\n${input.assistantReply}`,
+  );
+}
+
+export function buildNativeStructMemFallbackItems(input: {
+  userMessage: string;
+  assistantReply: string;
+}): StructMemFallbackItem[] {
+  if (!isMeaningfulTurnForStructMem(input)) return [];
+
+  const userSnippet = compactTurnText(input.userMessage, 90);
+  const assistantSnippet = compactTurnText(input.assistantReply, 90);
+  const items: StructMemFallbackItem[] = [
+    {
+      entryType: "factual",
+      text: `本回合事实：用户提到「${userSnippet}」；角色回应「${assistantSnippet}」。`,
+      importanceScore: scoreMemoryImportance({
+        emotionalWeight: 0.45,
+        plotRelevance: 0.55,
+        crossSessionDurability: 0.2,
+        memoryType: "banter",
+      }),
+      confidenceScore: 0.55,
+      metadata: { source: "structmem_native_v2_fallback" },
+    },
+  ];
+
+  if (hasRelationalCue(input)) {
+    items.push({
+      entryType: "relational",
+      text: "本回合关系动态：用户在情绪波动时靠近并寻求陪伴，角色以稳定、确认和在场承诺回应。",
+      importanceScore: scoreMemoryImportance({
+        emotionalWeight: 0.65,
+        plotRelevance: 0.45,
+        crossSessionDurability: 0.25,
+        memoryType: "relationship_transition",
+      }),
+      confidenceScore: 0.5,
+      metadata: { source: "structmem_native_v2_fallback" },
+    });
+  }
+
+  return items;
+}
 
 export function normalizeExtractorMemoryScope(
   rawScope: "cross_session" | "current_session" | undefined,
@@ -208,6 +283,23 @@ async function buildNativeStructMemPersistRows(
     });
   }
   return rows;
+}
+
+async function buildFallbackNativeStructMemPersistRows(input: {
+  userMessage: string;
+  assistantReply: string;
+}): Promise<StructMemPersistRow[]> {
+  const items = buildNativeStructMemFallbackItems(input);
+  return Promise.all(
+    items.map(async (item) => ({
+      entryType: item.entryType,
+      text: item.text,
+      embedding: await embedText(item.text),
+      importanceScore: item.importanceScore,
+      confidenceScore: item.confidenceScore,
+      metadata: item.metadata,
+    })),
+  );
 }
 
 export async function extractPostTurnSignals(
@@ -269,7 +361,7 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
       const importanceScore = scoreMemoryImportance(components);
       const embedding = await embedText(raw.summary);
       return {
-        memoryType: raw.memory_type,
+        memoryType: raw.memory_type ?? "banter",
         summary: raw.summary,
         importanceScore,
         emotionScore: raw.emotion_score ?? 0,
@@ -284,12 +376,18 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
     }),
   );
 
-  const structMemEntries =
-    env.STRUCTMEM_NATIVE_EXTRACTOR && env.STRUCTMEM_ENABLED
-      ? await buildNativeStructMemPersistRows(
-          parsed.structmem_entries ?? [],
-        )
-      : [];
+  let structMemEntries: StructMemPersistRow[] = [];
+  if (env.STRUCTMEM_NATIVE_EXTRACTOR && env.STRUCTMEM_ENABLED) {
+    structMemEntries = await buildNativeStructMemPersistRows(
+      parsed.structmem_entries ?? [],
+    );
+    if (structMemEntries.length === 0) {
+      structMemEntries = await buildFallbackNativeStructMemPersistRows({
+        userMessage: input.userMessage,
+        assistantReply: input.assistantReply,
+      });
+    }
+  }
 
   return {
     memoryFacts,

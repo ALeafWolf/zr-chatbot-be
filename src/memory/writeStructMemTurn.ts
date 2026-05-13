@@ -94,7 +94,7 @@ async function writeStructMemEntriesImpl(input: {
         ? { ...row.metadata }
         : {};
     if (input.mergeNativeStructMemSource) {
-      baseMeta.source = "structmem_native_v2";
+      baseMeta.source = baseMeta.source ?? "structmem_native_v2";
     }
     const confidenceScore =
       row.confidenceScore !== null && row.confidenceScore !== undefined

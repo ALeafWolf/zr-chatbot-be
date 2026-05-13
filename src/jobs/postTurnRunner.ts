@@ -27,6 +27,7 @@ import {
   type PostTurnStepName,
   type PostTurnStepStatus,
 } from "./postTurnJobPayload";
+import { shouldSuppressExtractorSessionChunks } from "./postTurnSessionChunkPolicy";
 
 const tracedExtract = traceStage(
   "llm.extract_post_turn_signals",
@@ -270,10 +271,12 @@ class PostTurnRunner {
 
       if (!isStepComplete(stepStatus, "session_chunks")) {
         if (session.mode !== "sandbox") {
-          const suppressChunks =
-            env.STRUCTMEM_ENABLED &&
-            (env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS ||
-              env.STRUCTMEM_NATIVE_EXTRACTOR);
+          const suppressChunks = shouldSuppressExtractorSessionChunks({
+            structMemEnabled: env.STRUCTMEM_ENABLED,
+            suppressExtractorSessionChunks:
+              env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
+            nativeStructMemExtractor: env.STRUCTMEM_NATIVE_EXTRACTOR,
+          });
           for (let i = 0; i < signals.memoryFacts.length; i++) {
             const candidate = signals.memoryFacts[i]!;
             if (candidate.memoryScope !== "current_session") continue;

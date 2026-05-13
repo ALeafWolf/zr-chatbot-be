@@ -25,6 +25,14 @@ export type StructMemPersistRow = {
   metadata?: Record<string, unknown>;
 };
 
+export type StructMemFallbackItem = {
+  entryType: StructMemEntryType;
+  text: string;
+  importanceScore: number;
+  confidenceScore: number;
+  metadata: Record<string, unknown>;
+};
+
 /**
  * Maps a post-turn memory candidate to a StructMem entry type.
  * Only current_session candidates with a valid session chunk type participate;
