@@ -3,7 +3,7 @@ import { models } from "../config/models";
 import { env } from "../config/env";
 import { chatJson } from "./providers";
 import { scoreMemoryImportance } from "../memory/scoreMemoryImportance";
-import type { MemoryCandidate } from "../memory/writeInteractiveMemory";
+import type { MemoryCandidate, MemoryScope } from "../memory/writeInteractiveMemory";
 import type { RawImportanceComponents } from "../memory/scoreMemoryImportance";
 import { embedText } from "./embedText";
 import type { StructMemPersistRow } from "../memory/structmemMapping";
@@ -152,6 +152,12 @@ const NATIVE_STRUCTMEM_DEFAULT_COMPONENTS: RawImportanceComponents = {
   memoryType: "banter",
 };
 
+export function normalizeExtractorMemoryScope(
+  rawScope: "cross_session" | "current_session" | undefined,
+): MemoryScope {
+  return rawScope === "cross_session" ? "cross_session" : "current_session";
+}
+
 async function buildNativeStructMemPersistRows(
   items: z.infer<typeof StructMemEntryItemSchema>[],
 ): Promise<StructMemPersistRow[]> {
@@ -269,11 +275,8 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
         emotionScore: raw.emotion_score ?? 0,
         tags: raw.tags,
         embedding,
-        memoryScope:
-          (raw.memory_scope ?? "cross_session") === "current_session"
-            ? "current_session"
-            : "cross_session",
-        ...((raw.memory_scope ?? "cross_session") === "current_session" &&
+        memoryScope: normalizeExtractorMemoryScope(raw.memory_scope),
+        ...((raw.memory_scope ?? "current_session") === "current_session" &&
         raw.session_chunk_type
           ? { sessionChunkType: raw.session_chunk_type }
           : {}),

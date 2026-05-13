@@ -160,6 +160,31 @@ const envSchema = z.object({
       if (Number.isNaN(n) || n < 1) return 6;
       return Math.min(40, n);
     }),
+
+  POST_TURN_JOB_POLL_INTERVAL_MS: z
+    .string()
+    .default("5000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 500) return 5000;
+      return Math.min(60_000, Math.max(500, n));
+    }),
+  POST_TURN_JOB_LOCK_TTL_MS: z
+    .string()
+    .default("600000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 30_000) return 600_000;
+      return Math.min(3_600_000, Math.max(30_000, n));
+    }),
+  POST_TURN_JOB_MAX_ATTEMPTS: z
+    .string()
+    .default("3")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 3;
+      return Math.min(10, n);
+    }),
 });
 
 const parsed = envSchema.safeParse(process.env);

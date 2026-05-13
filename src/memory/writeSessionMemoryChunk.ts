@@ -4,6 +4,7 @@ import {
   sessionMemoryChunks,
   type SessionMemoryChunk,
 } from "../db/schema/memory";
+import { and, eq, sql } from "drizzle-orm";
 import { embedText } from "../llm/embedText";
 import { traceStage } from "../observability/langsmithTracing";
 import type { ChatSession } from "../db/schema/chat";
@@ -50,6 +51,44 @@ export async function persistSessionMemoryChunk(input: {
   return { id, chunk: row };
 }
 
+export async function sessionMemoryChunkExists(input: {
+  sessionId: string;
+  turnStart: number;
+  turnEnd: number;
+  chunkType: SessionChunkTypePersisted;
+  metadataContains?: Record<string, unknown>;
+}): Promise<boolean> {
+  const { sessionId, turnStart, turnEnd, chunkType, metadataContains } = input;
+  if (metadataContains && Object.keys(metadataContains).length > 0) {
+    const metadataJson = JSON.stringify(metadataContains);
+    const rows = await db.execute(sql`
+      SELECT id
+      FROM session_memory_chunks
+      WHERE session_id = ${sessionId}
+        AND turn_start = ${turnStart}
+        AND turn_end = ${turnEnd}
+        AND chunk_type = ${chunkType}
+        AND metadata @> ${metadataJson}::jsonb
+      LIMIT 1
+    `);
+    return rows.rows.length > 0;
+  }
+
+  const rows = await db
+    .select({ id: sessionMemoryChunks.id })
+    .from(sessionMemoryChunks)
+    .where(
+      and(
+        eq(sessionMemoryChunks.sessionId, sessionId),
+        eq(sessionMemoryChunks.turnStart, turnStart),
+        eq(sessionMemoryChunks.turnEnd, turnEnd),
+        eq(sessionMemoryChunks.chunkType, chunkType),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export type WriteRawTurnChunkResult =
   | {
       status: "skipped";
@@ -89,7 +128,27 @@ async function writeRawTurnPairChunkImpl(input: {
     };
   }
 
-  const chunkText = `[回合 ${userTurnIndex}-${assistantTurnIndex}]\n用户：${userMessage}\n对方：${assistantReply}`;
+  const alreadyWritten = await sessionMemoryChunkExists({
+    sessionId,
+    turnStart: userTurnIndex,
+    turnEnd: assistantTurnIndex,
+    chunkType: "raw_turn_pair",
+  });
+  if (alreadyWritten) {
+    return {
+      status: "skipped",
+      reason: "raw_turn_pair_chunk_already_exists",
+      sessionId,
+      userTurnIndex,
+      assistantTurnIndex,
+    };
+  }
+
+  const chunkText = [
+    `[turn ${userTurnIndex}-${assistantTurnIndex}]`,
+    `User: ${userMessage}`,
+    `Character: ${assistantReply}`,
+  ].join("\n");
   const { id } = await persistSessionMemoryChunk({
     sessionId,
     characterId: session.characterId,

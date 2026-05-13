@@ -15,8 +15,20 @@ export interface ValidationResult {
   nsfw_within_bounds: boolean;
   issues: string[];
   needs_rewrite: boolean;
+  deterministic_guard_failures?: DeterministicGuardFailure[];
   /** When strict attribution runs the LLM judge and gets a parsed verdict (not fail-open). */
   attribution_judge?: AttributionJudgeResult;
+}
+
+export type DeterministicGuardKind =
+  | "meta_assistant_language"
+  | "scope_leakage"
+  | "nsfw_bounds";
+
+export interface DeterministicGuardFailure {
+  kind: DeterministicGuardKind;
+  issue: string;
+  matched: string;
 }
 
 export interface ValidatorInput {
@@ -51,6 +63,117 @@ export const VALIDATOR_FAIL_OPEN: ValidationResult = {
   issues: [],
   needs_rewrite: false,
 };
+
+const META_LANGUAGE_PATTERNS = [
+  /\bAI\b/i,
+  /\bartificial intelligence\b/i,
+  /\blanguage model\b/i,
+  /\bLLM\b/i,
+  /\bchatbot\b/i,
+  /\bassistant\b/i,
+  /\u4eba\u5de5\u667a\u80fd/u,
+  /\u8bed\u8a00\u6a21\u578b/u,
+  /\u5927\u6a21\u578b/u,
+  /\u0041\u0049\u52a9\u624b/u,
+] as const;
+
+const RELATIONSHIP_SCOPE_LEAKAGE: Array<{
+  scopePattern: RegExp;
+  forbidden: RegExp[];
+}> = [
+  {
+    scopePattern: /main_situationship|main_relationship/,
+    forbidden: [
+      /\u8ba2\u5a5a/u,
+      /\u7ed3\u5a5a/u,
+      /\u5a5a\u793c/u,
+      /\u672a\u5a5a\u59bb/u,
+      /\u59bb\u5b50/u,
+      /\u4e08\u592b/u,
+    ],
+  },
+  {
+    scopePattern: /main_engaged/,
+    forbidden: [/\u7ed3\u5a5a/u, /\u5a5a\u793c/u, /\u59bb\u5b50/u, /\u4e08\u592b/u],
+  },
+] as const;
+
+const EXPLICIT_NSFW_PATTERNS = [
+  /\bsex\b/i,
+  /\bfuck\b/i,
+  /\borgasm\b/i,
+  /\u6027\u7231/u,
+  /\u505a\u7231/u,
+  /\u9ad8\u6f6e/u,
+  /\u88f8/u,
+] as const;
+
+function firstPatternMatch(text: string, patterns: readonly RegExp[]): string | null {
+  for (const pattern of patterns) {
+    const m = text.match(pattern);
+    if (m?.[0]) return m[0];
+  }
+  return null;
+}
+
+export function runDeterministicValidatorGuards(
+  input: Pick<ValidatorInput, "draft" | "continuityScope" | "maxNsfwLevel">,
+): DeterministicGuardFailure[] {
+  const failures: DeterministicGuardFailure[] = [];
+  const draft = input.draft;
+
+  const metaMatch = firstPatternMatch(draft, META_LANGUAGE_PATTERNS);
+  if (metaMatch) {
+    failures.push({
+      kind: "meta_assistant_language",
+      matched: metaMatch,
+      issue:
+        "Reply contains AI/assistant/meta language that breaks character.",
+    });
+  }
+
+  for (const rule of RELATIONSHIP_SCOPE_LEAKAGE) {
+    if (!rule.scopePattern.test(input.continuityScope)) continue;
+    const match = firstPatternMatch(draft, rule.forbidden);
+    if (match) {
+      failures.push({
+        kind: "scope_leakage",
+        matched: match,
+        issue:
+          "Reply references relationship status beyond the active continuity scope.",
+      });
+      break;
+    }
+  }
+
+  const nsfwLevel = input.maxNsfwLevel.trim().toLowerCase();
+  if (nsfwLevel === "none" || nsfwLevel === "low") {
+    const nsfwMatch = firstPatternMatch(draft, EXPLICIT_NSFW_PATTERNS);
+    if (nsfwMatch) {
+      failures.push({
+        kind: "nsfw_bounds",
+        matched: nsfwMatch,
+        issue: "Reply contains explicit sexual content beyond the active scope.",
+      });
+    }
+  }
+
+  return failures;
+}
+
+function validationFromDeterministicFailures(
+  failures: DeterministicGuardFailure[],
+): ValidationResult {
+  return {
+    in_character: !failures.some((f) => f.kind === "meta_assistant_language"),
+    canon_consistent: !failures.some((f) => f.kind === "scope_leakage"),
+    session_state_consistent: true,
+    nsfw_within_bounds: !failures.some((f) => f.kind === "nsfw_bounds"),
+    issues: failures.map((f) => f.issue),
+    needs_rewrite: true,
+    deterministic_guard_failures: failures,
+  };
+}
 
 const VALIDATOR_SYSTEM_PROMPT = `You are a balanced character-consistency validator for a character roleplay system.
 Analyze the given draft response and return a JSON object — nothing else.
@@ -156,6 +279,11 @@ const VALIDATOR_LLM_MAX_ATTEMPTS = VALIDATOR_LLM_BACKOFF_MS.length + 1;
 export async function runResponseValidator(
   input: ValidatorInput,
 ): Promise<ValidationResult> {
+  const deterministicFailures = runDeterministicValidatorGuards(input);
+  if (deterministicFailures.length > 0) {
+    return validationFromDeterministicFailures(deterministicFailures);
+  }
+
   const canonBlock = canonForValidatorPrompt(input.retrievedCanonNarrative ?? "");
 
   const userMessage = `

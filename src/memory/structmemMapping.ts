@@ -29,11 +29,12 @@ export type StructMemPersistRow = {
  * Maps a post-turn memory candidate to a StructMem entry type.
  * Only current_session candidates with a valid session chunk type participate;
  * cross_session candidates use interactive_memory_events only.
+ * Omitted scope is treated as current-session by the post-turn normalizer.
  */
 export function mapMemoryCandidateToStructMemEntryType(
   candidate: Pick<MemoryCandidate, "memoryScope" | "sessionChunkType">,
 ): StructMemEntryTypePhase1 | null {
-  if ((candidate.memoryScope ?? "cross_session") !== "current_session") {
+  if ((candidate.memoryScope ?? "current_session") !== "current_session") {
     return null;
   }
   const t = (candidate.sessionChunkType ?? "scene_moment") as string;

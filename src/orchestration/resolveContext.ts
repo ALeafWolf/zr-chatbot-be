@@ -156,27 +156,27 @@ export async function resolveContext(input: {
     latestFrontierTurn,
   );
 
-  const sessionRecall =
+  const [sessionRecall, structMemEntries] =
     latestFrontierTurn >= 0
-      ? await retrieveSessionMemoryChunksTraced({
-          queryEmbedding,
-          sessionId: session.sessionId,
-          characterId: session.characterId,
-          exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
-          latestFrontierTurnIndex: latestFrontierTurn,
-        })
-      : [];
-
-  const structMemEntries =
-    env.STRUCTMEM_ENABLED && latestFrontierTurn >= 0
-      ? await retrieveStructMemEntriesTraced({
-          queryEmbedding,
-          sessionId: session.sessionId,
-          characterId: session.characterId,
-          exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
-          latestFrontierTurnIndex: latestFrontierTurn,
-        })
-      : [];
+      ? await Promise.all([
+          retrieveSessionMemoryChunksTraced({
+            queryEmbedding,
+            sessionId: session.sessionId,
+            characterId: session.characterId,
+            exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+            latestFrontierTurnIndex: latestFrontierTurn,
+          }),
+          env.STRUCTMEM_ENABLED
+            ? retrieveStructMemEntriesTraced({
+                queryEmbedding,
+                sessionId: session.sessionId,
+                characterId: session.characterId,
+                exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+                latestFrontierTurnIndex: latestFrontierTurn,
+              })
+            : Promise.resolve([] as RetrievedStructMemEntry[]),
+        ])
+      : [[], []];
 
   const derivedState = computeDerivedState(
     recentTurns.length,

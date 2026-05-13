@@ -25,7 +25,7 @@ export interface MemoryCandidate {
   emotionScore: number;
   tags?: string[];
   embedding: number[];
-  /** Routing (Phase 4). Default behaves as cross_session. */
+  /** Routing (Phase 4). Durable writes require explicit cross_session. */
   memoryScope?: MemoryScope;
   /** Per-turn session chunk subtype when routed to session_memory_chunks. */
   sessionChunkType?: ExtractorSessionChunkType;

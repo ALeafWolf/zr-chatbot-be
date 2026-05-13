@@ -7,7 +7,10 @@ import type { PromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../character/characterDefaults";
 import { loadCharacterDefaults } from "../character/characterDefaults";
-import { traceStage } from "../observability/langsmithTracing";
+import {
+  traceStage,
+  traceStreamingLLM,
+} from "../observability/langsmithTracing";
 import type { ToolChatMessage } from "../llm/providers";
 import {
   generateWithToolsStream,
@@ -60,7 +63,20 @@ async function* replayValidatedDraftDeltas(
   }
 }
 
-const tracedValidate = traceStage("llm.run_response_validator", runResponseValidator);
+const tracedResponseGeneration = traceStreamingLLM(
+  "llm.response_generation",
+  generateWithToolsStream,
+  { tags: ["stage:draft"] },
+);
+const tracedValidate = traceStage(
+  "llm.run_response_validator",
+  runResponseValidator,
+);
+const tracedResponseRewriteGeneration = traceStreamingLLM(
+  "llm.response_rewrite_generation",
+  generateWithToolsStream,
+  { tags: ["stage:rewrite"] },
+);
 
 function buildToolMessages(
   promptContext: PromptContext,
@@ -91,7 +107,9 @@ function buildRewriteToolMessages(
   ];
 }
 
-function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
+function voiceHintsFrom(
+  characterDefaults: ReturnType<typeof loadCharacterDefaults>,
+): string {
   const s = characterDefaults.speech_style;
   return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
     "；",
@@ -174,7 +192,7 @@ export async function* generateAndValidateStream(input: {
 
   try {
     let completed = false;
-    for await (const ev of generateWithToolsStream({
+    for await (const ev of tracedResponseGeneration({
       messages: buildToolMessages(promptContext, userMessage),
       ctx: toolCtx,
       signal,
@@ -353,7 +371,7 @@ export async function* generateAndValidateStream(input: {
 
   try {
     let completed = false;
-    for await (const ev of generateWithToolsStream({
+    for await (const ev of tracedResponseRewriteGeneration({
       messages: buildRewriteToolMessages(
         promptContext,
         userMessage,

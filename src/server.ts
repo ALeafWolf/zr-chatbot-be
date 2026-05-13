@@ -43,6 +43,7 @@ async function bootstrap(): Promise<void> {
 
   // Pre-warm character YAML cache at startup
   warmCharacterCache();
+  postTurnRunner.start();
 
   await server.listen({ port: env.PORT, host: "0.0.0.0" });
   server.log.info(`Chatbot backend listening on :${env.PORT}`);
@@ -50,6 +51,7 @@ async function bootstrap(): Promise<void> {
 
 async function shutdown(): Promise<void> {
   server.log.info("Shutting down — draining post-turn jobs...");
+  postTurnRunner.stop();
   await postTurnRunner.drain();
   await server.close();
   await pool.end();

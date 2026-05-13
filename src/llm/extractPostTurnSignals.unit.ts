@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ExtractorOutputSchema } from "./extractPostTurnSignals";
+import {
+  ExtractorOutputSchema,
+  normalizeExtractorMemoryScope,
+} from "./extractPostTurnSignals";
 
 describe("extractPostTurnSignals schema", () => {
   it("parses minimal payload with default structmem_entries", () => {
@@ -73,5 +76,14 @@ describe("extractPostTurnSignals schema", () => {
     if (r.success) {
       assert.equal(r.data.structmem_entries[0]!.text, "durable hint");
     }
+  });
+
+  it("defaults omitted memory_scope to current_session", () => {
+    assert.equal(normalizeExtractorMemoryScope(undefined), "current_session");
+    assert.equal(
+      normalizeExtractorMemoryScope("current_session"),
+      "current_session",
+    );
+    assert.equal(normalizeExtractorMemoryScope("cross_session"), "cross_session");
   });
 });

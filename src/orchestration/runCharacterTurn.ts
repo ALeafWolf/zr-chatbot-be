@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/client";
-import { chatMessages, chatSessions } from "../db/schema/chat";
-import { eq } from "drizzle-orm";
+import { chatMessages, chatSessions, sessionState } from "../db/schema/chat";
+import { eq, sql } from "drizzle-orm";
 import {
   loadCharacterDefaults,
   loadPersonaOverlay,
@@ -9,13 +9,23 @@ import {
 import { resolveContext } from "./resolveContext";
 import { buildPromptContext } from "./buildPromptContext";
 import { generateAndValidateStream } from "./generateAndValidate";
-import { upsertSessionState } from "../state/sessionStateRepo";
-import { postTurnRunner } from "../jobs/postTurnRunner";
+import {
+  INITIAL_POST_TURN_STEP_STATUS,
+  newPostTurnJobId,
+  postTurnRunner,
+} from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
 import { CANON_RETRIEVAL } from "../character/canonRules";
 import { traceStage } from "../observability/langsmithTracing";
 import type { Thought } from "./thoughtTypes";
 import { generateThoughtSummary } from "../llm/generateThoughtSummary";
+import { postTurnJobs } from "../db/schema/jobs";
+import { env } from "../config/env";
+import {
+  sessionSnapshotFromChatSession,
+  type PostTurnJobPayloadV1,
+} from "../jobs/postTurnJobPayload";
+import { calculateNextTurnIndexes } from "./turnIndexAllocator";
 
 export interface TurnInput {
   sessionId: string;
@@ -50,6 +60,8 @@ export type CharacterTurnSseEvent =
       };
     }
   | { event: "error"; data: { message: string } };
+
+const FINAL_REPLY_REPLAY_SLICE = 96;
 
 function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
   const s = characterDefaults.speech_style;
@@ -181,7 +193,7 @@ export async function* runCharacterTurnStream(
           yield { event: "thought", data: ev.thought };
           break;
         case "delta":
-          yield { event: "delta", data: { text: ev.text } };
+          // Final prose is replayed only after validation and DB persistence.
           break;
         case "tool_call":
           yield {
@@ -213,65 +225,154 @@ export async function* runCharacterTurnStream(
 
     const result = resultPayload;
 
-    const nextTurnIndex =
-      (context.recentTurns[context.recentTurns.length - 1]?.turnIndex ?? -1) + 1;
-    const userMsgId = uuidv4();
-    const assistantMsgId = uuidv4();
+    const persisted = await db.transaction(async (tx) => {
+      await tx
+        .insert(sessionState)
+        .values({
+          sessionId,
+          lastTurnIndex: 0,
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing();
 
-    await db.insert(chatMessages).values([
-      {
-        id: userMsgId,
-        sessionId,
-        turnIndex: nextTurnIndex,
-        role: "user",
-        content: userMessage,
-        validatorResult: null,
-        thoughts: null,
-      },
-      {
-        id: assistantMsgId,
-        sessionId,
-        turnIndex: nextTurnIndex + 1,
-        role: "assistant",
-        content: result.content,
-        validatorResult: result.validatorResult as unknown as Record<
-          string,
-          unknown
-        >,
-        thoughts: thoughtsAcc.length > 0 ? thoughtsAcc : null,
-      },
-    ]);
+      const stateRows = await tx.execute(sql`
+        SELECT last_turn_index AS "lastTurnIndex"
+        FROM session_state
+        WHERE session_id = ${sessionId}
+        FOR UPDATE
+      `);
+      const maxRows = await tx.execute(sql`
+        SELECT MAX(turn_index) AS "maxTurnIndex"
+        FROM chat_messages
+        WHERE session_id = ${sessionId}
+      `);
 
-    await upsertSessionState(sessionId, {
-      derivedState: context.derivedState,
-      lastTurnIndex: nextTurnIndex + 1,
+      const stateLastRaw = stateRows.rows[0]?.lastTurnIndex;
+      const maxRaw = maxRows.rows[0]?.maxTurnIndex;
+      const { userTurnIndex, assistantTurnIndex } = calculateNextTurnIndexes({
+        sessionStateLastTurnIndex:
+          typeof stateLastRaw === "number"
+            ? stateLastRaw
+            : stateLastRaw === null || stateLastRaw === undefined
+              ? null
+              : Number(stateLastRaw),
+        maxMessageTurnIndex:
+          typeof maxRaw === "number"
+            ? maxRaw
+            : maxRaw === null || maxRaw === undefined
+              ? null
+              : Number(maxRaw),
+      });
+
+      const userMsgId = uuidv4();
+      const assistantMsgId = uuidv4();
+      const now = new Date();
+
+      await tx.insert(chatMessages).values([
+        {
+          id: userMsgId,
+          sessionId,
+          turnIndex: userTurnIndex,
+          role: "user",
+          content: userMessage,
+          validatorResult: null,
+          thoughts: null,
+        },
+        {
+          id: assistantMsgId,
+          sessionId,
+          turnIndex: assistantTurnIndex,
+          role: "assistant",
+          content: result.content,
+          validatorResult: result.validatorResult as unknown as Record<
+            string,
+            unknown
+          >,
+          thoughts: thoughtsAcc.length > 0 ? thoughtsAcc : null,
+        },
+      ]);
+
+      await tx
+        .insert(sessionState)
+        .values({
+          sessionId,
+          derivedState: context.derivedState,
+          lastTurnIndex: assistantTurnIndex,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: sessionState.sessionId,
+          set: {
+            derivedState: context.derivedState,
+            lastTurnIndex: assistantTurnIndex,
+            updatedAt: now,
+          },
+        });
+
+      await tx
+        .update(chatSessions)
+        .set({ updatedAt: now })
+        .where(eq(chatSessions.sessionId, sessionId));
+
+      const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
+      const jobId = newPostTurnJobId();
+      const payload: PostTurnJobPayloadV1 = {
+        version: 1,
+        sessionId,
+        userMessage,
+        assistantReply: result.content,
+        session: sessionSnapshotFromChatSession(session),
+        derivedState: context.derivedState,
+        shouldWriteMemory,
+        userTurnIndex,
+        assistantTurnIndex,
+        userMessageId: userMsgId,
+        assistantMessageId: assistantMsgId,
+        recentMemorySummaries: context.memories
+          .slice(0, 3)
+          .map((m) => m.summary),
+      };
+
+      await tx.insert(postTurnJobs).values({
+        id: jobId,
+        sessionId,
+        userMessageId: userMsgId,
+        assistantMessageId: assistantMsgId,
+        status: "pending",
+        attempts: 0,
+        maxAttempts: env.POST_TURN_JOB_MAX_ATTEMPTS,
+        runAfter: now,
+        stepStatus: { ...INITIAL_POST_TURN_STEP_STATUS },
+        payload: payload as unknown as Record<string, unknown>,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      return {
+        userMessageId: userMsgId,
+        assistantMessageId: assistantMsgId,
+        assistantTurnIndex,
+        jobId,
+      };
     });
 
-    await db
-      .update(chatSessions)
-      .set({ updatedAt: new Date() })
-      .where(eq(chatSessions.sessionId, sessionId));
+    postTurnRunner.wake();
 
-    const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
-    postTurnRunner.enqueue({
-      sessionId,
-      userMessage,
-      assistantReply: result.content,
-      session,
-      memories: context.memories,
-      derivedState: context.derivedState,
-      shouldWriteMemory,
-      latestTurnIndex: nextTurnIndex + 1,
-      userMessageId: userMsgId,
-      assistantMessageId: assistantMsgId,
-    });
+    for (let i = 0; i < result.content.length; i += FINAL_REPLY_REPLAY_SLICE) {
+      yield {
+        event: "delta",
+        data: {
+          text: result.content.slice(i, i + FINAL_REPLY_REPLAY_SLICE),
+        },
+      };
+    }
 
     yield {
       event: "done",
       data: {
-        message_id: assistantMsgId,
+        message_id: persisted.assistantMessageId,
         content: result.content,
-        turn_index: nextTurnIndex + 1,
+        turn_index: persisted.assistantTurnIndex,
         was_rewritten: result.wasRewritten,
         was_deflected: result.wasDeflected,
         thoughts: thoughtsAcc,

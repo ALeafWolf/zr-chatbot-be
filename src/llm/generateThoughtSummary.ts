@@ -34,7 +34,7 @@ export async function generateThoughtSummary(
 
   const system =
     "你是角色扮演助手。根据给定情境，用角色的口吻输出恰好一句内心独白。" +
-    "要求：第一人称；口语自然；最多20个汉字；不要引号；不要Markdown；不要复述指令。";
+    "要求：第一人称；口语自然；最多50个汉字；不要引号；不要Markdown；不要复述指令。";
 
   const user =
     `角色名：${input.characterName}\n` +
@@ -48,10 +48,18 @@ export async function generateThoughtSummary(
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    { maxTokens: 40, temperature: 0.7 },
+    {
+      maxTokens: 80,
+      temperature: 0.7,
+      ...(models.extractor.provider === "deepseek"
+        ? { openAICompatibleRequestExtensions: { thinking: { type: "disabled" as const } } }
+        : {}),
+    },
   );
 
-  const line = res.content.replace(/\s+/g, " ").trim().slice(0, 80);
+  const line =
+    res.content.replace(/\s+/g, " ").trim().slice(0, 80) ||
+    "我得先理清这些。";
   cache.set(key, line);
   return line;
 }

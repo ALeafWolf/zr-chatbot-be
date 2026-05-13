@@ -5,6 +5,7 @@ import {
   structmemEventMessages,
   structmemEvents,
 } from "../db/schema/structmem";
+import { eq } from "drizzle-orm";
 import type { ChatSession } from "../db/schema/chat";
 import { traceStage } from "../observability/langsmithTracing";
 import type { StructMemPersistRow } from "./structmemMapping";
@@ -23,6 +24,18 @@ export interface StructMemTurnWriteInput {
 export interface StructMemTurnWriteResult {
   eventId: string;
   entryIds: string[];
+  status: "written" | "skipped_existing";
+}
+
+export async function findStructMemEventIdForMessage(
+  messageId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ eventId: structmemEventMessages.eventId })
+    .from(structmemEventMessages)
+    .where(eq(structmemEventMessages.messageId, messageId))
+    .limit(1);
+  return rows[0]?.eventId ?? null;
 }
 
 async function writeStructMemEventAndMessagesImpl(input: {
@@ -126,6 +139,20 @@ export async function writeStructMemTurn(
   if (input.rows.length === 0) {
     return null;
   }
+  const existingEventId = await findStructMemEventIdForMessage(
+    input.assistantMessageId,
+  );
+  if (existingEventId) {
+    const existingEntries = await db
+      .select({ id: structmemEntries.id })
+      .from(structmemEntries)
+      .where(eq(structmemEntries.eventId, existingEventId));
+    return {
+      eventId: existingEventId,
+      entryIds: existingEntries.map((r) => r.id),
+      status: "skipped_existing",
+    };
+  }
   const eventId = uuidv4();
   await writeStructMemEventAndMessagesTraced({
     eventId,
@@ -143,5 +170,5 @@ export async function writeStructMemTurn(
     extractorBatchConfidence: input.extractorBatchConfidence,
     mergeNativeStructMemSource: input.mergeNativeStructMemSource,
   });
-  return { eventId, entryIds };
+  return { eventId, entryIds, status: "written" };
 }

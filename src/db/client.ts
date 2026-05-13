@@ -6,6 +6,7 @@ import * as chatSchema from "./schema/chat";
 import * as memorySchema from "./schema/memory";
 import * as personaSchema from "./schema/persona";
 import * as structmemSchema from "./schema/structmem";
+import * as jobsSchema from "./schema/jobs";
 
 export const pool = new Pool({ connectionString: env.DATABASE_URL });
 
@@ -16,6 +17,7 @@ export const db = drizzle(pool, {
     ...memorySchema,
     ...personaSchema,
     ...structmemSchema,
+    ...jobsSchema,
   },
 });
 

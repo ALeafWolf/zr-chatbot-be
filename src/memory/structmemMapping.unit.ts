@@ -50,10 +50,10 @@ describe("structmemMapping", () => {
     );
   });
 
-  it("defaults omitted memoryScope to cross_session mapping => null StructMem entry", () => {
+  it("defaults omitted memoryScope to current_session mapping", () => {
     assert.equal(
       mapMemoryCandidateToStructMemEntryType(baseCandidate({})),
-      null,
+      "scene_moment",
     );
   });
 
