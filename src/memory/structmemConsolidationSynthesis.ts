@@ -3,6 +3,8 @@ import { models } from "../config/models";
 import { chatJson } from "../llm/providers";
 import { traceLLMStage } from "../observability/langsmithTracing";
 import type { ConsolidationCandidateEntry } from "./structmemConsolidationSelection";
+import type { StructMemStableCategory } from "./structmemPhase4Policy";
+import { normalizeStableCategory } from "./structmemPhase4Policy";
 
 export const StructMemConsolidationOutputSchema = z.object({
   summary_text: z.string().trim().min(1).max(3000),
@@ -23,6 +25,38 @@ export type StructMemConsolidationSynthesisResult =
       outputTokens: number;
     };
   };
+
+const StableCategorySchema = z.preprocess(
+  normalizeStableCategory,
+  z.enum([
+    "promise_or_commitment",
+    "stable_relationship_pattern",
+    "relationship_milestone",
+    "recurring_preference",
+    "repeated_habit",
+    "interaction_style_or_inside_joke",
+  ] satisfies [StructMemStableCategory, ...StructMemStableCategory[]]),
+);
+
+const StructMemCrossSessionItemSchema = z.object({
+  category: StableCategorySchema,
+  summary_text: z.string().trim().min(1).max(1200),
+  confidence_score: z.number().min(0).max(1),
+  importance_score: z.number().min(0).max(1).default(0.75),
+  tags: z.array(z.string().trim().min(1)).max(8).default([]),
+});
+
+export const StructMemCrossSessionDistillationOutputSchema = z.object({
+  stable_items: z.array(StructMemCrossSessionItemSchema).max(3).default([]),
+});
+
+export type StructMemCrossSessionItem = z.infer<
+  typeof StructMemCrossSessionItemSchema
+>;
+
+export type StructMemCrossSessionDistillationOutput = z.infer<
+  typeof StructMemCrossSessionDistillationOutputSchema
+>;
 
 export function parseStructMemConsolidationOutput(
   raw: unknown,
@@ -110,4 +144,58 @@ export const synthesizeStructMemConsolidation = traceLLMStage(
   "llm.structmem_consolidation",
   synthesizeStructMemConsolidationImpl,
   { tags: ["structmem", "phase3"] },
+);
+
+function buildCrossSessionDistillationPrompt(input: {
+  summaryText: string;
+  summaryJson: Record<string, unknown>;
+  confidenceScore: number | null;
+}): string {
+  return [
+    "Decide whether this current-session StructMem synthesis contains stable cross-session memory.",
+    "Return only items that should help future sessions in the same memory namespace.",
+    "Do not include one-off scene details, transient emotions, or unsupported speculation.",
+    "If nothing is stable enough, return an empty stable_items array.",
+    "",
+    `Current confidence: ${input.confidenceScore ?? "unknown"}`,
+    `Summary: ${input.summaryText}`,
+    `Structured JSON: ${JSON.stringify(input.summaryJson ?? {})}`,
+    "",
+    "Return JSON only: { stable_items: [{ category, summary_text, confidence_score, importance_score, tags }] }.",
+  ].join("\n");
+}
+
+async function distillCrossSessionStructMemImpl(input: {
+  summaryText: string;
+  summaryJson: Record<string, unknown>;
+  confidenceScore: number | null;
+}): Promise<StructMemCrossSessionDistillationOutput> {
+  const result = await chatJson(
+    models.consolidation,
+    [
+      {
+        role: "system",
+        content:
+          "You are a conservative memory distillation worker. Output strictly valid JSON.",
+      },
+      {
+        role: "user",
+        content: buildCrossSessionDistillationPrompt(input),
+      },
+    ],
+    StructMemCrossSessionDistillationOutputSchema,
+    { maxTokens: 700, temperature: 0.1 },
+  );
+
+  if (!result.ok) {
+    throw new Error(`StructMem cross-session distillation failed: ${result.error}`);
+  }
+
+  return result.data;
+}
+
+export const distillCrossSessionStructMem = traceLLMStage(
+  "llm.structmem_cross_session_distillation",
+  distillCrossSessionStructMemImpl,
+  { tags: ["structmem", "phase4"] },
 );

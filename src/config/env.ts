@@ -4,19 +4,26 @@ import { z } from "zod";
 dotenv.config();
 
 const envSchema = z.object({
+  // Database
+  // Connection string for the chatbot backend database.
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
-  OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
-  ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
-  DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
+  // Server
+  // HTTP port and browser client origin.
+  PORT: z
+    .string()
+    .default("4000")
+    .transform((v) => parseInt(v, 10)),
+  FRONTEND_ORIGIN: z.string().default("http://localhost:5173"),
 
-  /** Default when `POST /sessions` omits `thinking` (generation reasoning mode for new chats). */
+  // App Defaults
+  // Used when session creation omits player, character, thinking, or temperature.
+  DEFAULT_PLAYER_ID: z.string().default("local_dev"),
+  DEFAULT_CHARACTER_ID: z.string().default("zuo_ran"),
   DEFAULT_SESSION_THINKING: z
     .string()
     .default("true")
     .transform((v) => v.trim().toLowerCase() !== "false" && v !== "0"),
-
-  /** Default when `POST /sessions` omits `temperature` (rewrite-path generation). */
   DEFAULT_SESSION_TEMPERATURE: z
     .string()
     .default("1")
@@ -26,9 +33,15 @@ const envSchema = z.object({
       return Math.min(2, Math.max(0, n));
     }),
 
-  /** Optional — web search tool degrades gracefully when unset. */
+  // Provider Keys
+  // Required model provider keys plus optional web-search key.
+  OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
+  ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
+  DEEPSEEK_API_KEY: z.string().min(1, "DEEPSEEK_API_KEY is required"),
   TAVILY_API_KEY: z.string().optional(),
 
+  // Model Bindings
+  // Provider:model values used by generation, validation, extraction, and embeddings.
   GENERATION_MODEL: z.string().default("anthropic:claude-sonnet-4-5"),
   VALIDATOR_MODEL: z.string().default("anthropic:claude-haiku-4-5"),
   EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-chat"),
@@ -38,29 +51,8 @@ const envSchema = z.object({
     .default("1536")
     .transform((v) => parseInt(v, 10)),
 
-  LANGSMITH_TRACING: z
-    .string()
-    .default("false")
-    .transform((v) => v === "true"),
-  LANGSMITH_API_KEY: z.string().optional(),
-  LANGSMITH_PROJECT: z.string().default("zuoran-chatbot-phase1"),
-  LANGSMITH_ENDPOINT: z
-    .string()
-    .default("https://api.smith.langchain.com"),
-
-  /** LangSmith dataset name for Phase 1 regression examples (push + evaluate). */
-  LANGSMITH_EVAL_DATASET: z.string().default("zuoran-phase1-eval"),
-
-  PORT: z
-    .string()
-    .default("4000")
-    .transform((v) => parseInt(v, 10)),
-  FRONTEND_ORIGIN: z.string().default("http://localhost:5173"),
-
-  DEFAULT_PLAYER_ID: z.string().default("local_dev"),
-  DEFAULT_CHARACTER_ID: z.string().default("zuo_ran"),
-
-  /** Legacy unit-window RRF pipeline vs coarse-to-fine Tier 3. */
+  // Retrieval And Validation
+  // Optional override knobs for canon retrieval, query rewriting, and evals.
   CANON_RETRIEVAL_PIPELINE: z
     .string()
     .default("tier3")
@@ -69,26 +61,18 @@ const envSchema = z.object({
       if (s === "tier1" || s === "tier3") return s;
       return "tier3";
     }),
-
-  /** Optional second embedding branch from rewriter hypothetical (debug). */
   CANON_QUERY_HYDE: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
-
-  /** When true, embed rewritten query for interactive memory + session recall too. */
   USE_REWRITTEN_QUERY_FOR_MEMORY_EMBEDDING: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
-
-  /** Always inject full [USER MESSAGE ANNOTATIONS] alongside structured query. */
   ANNOTATION_RULES_ALWAYS: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
-
-  /** Below this rewriter confidence, treat as low-trust and use annotation fallback. */
   REWRITE_CONFIDENCE_THRESHOLD: z
     .string()
     .default("0.6")
@@ -97,14 +81,11 @@ const envSchema = z.object({
       if (Number.isNaN(n)) return 0.6;
       return Math.min(1, Math.max(0, n));
     }),
-
-  /** Soft attribution penalty inside validator (Tier 4 prep). */
   VALIDATOR_STRICT_ATTRIBUTION: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
-
-  /** When false, canon_lookup tool is not registered (kill-switch). */
+  VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
   CANON_LOOKUP_TOOL_ENABLED: z
     .string()
     .default("1")
@@ -112,16 +93,13 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s !== "0" && s !== "false" && s !== "off";
     }),
-
-  /** Optional model for attribution judge; defaults to EXTRACTOR_MODEL. */
-  VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
-  /** Optional LLM-as-judge for attribution evals. */
   EVAL_ENABLE_LLM_JUDGE: z
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
 
-  /** When true: StructMem event/entry writes, retrieval, and STRUCTURED EVENT MEMORY prompt block. */
+  // StructMem: Events And Entries
+  // Per-turn structured memory writes, entry retrieval, and prompt injection.
   STRUCTMEM_ENABLED: z
     .string()
     .default("false")
@@ -129,8 +107,6 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s === "1" || s === "true";
     }),
-
-  /** When StructMem enabled, skip extractor-based session_memory_chunks for current_session candidates. */
   STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS: z
     .string()
     .default("false")
@@ -138,11 +114,6 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s === "1" || s === "true";
     }),
-
-  /**
-   * When true with STRUCTMEM_ENABLED: persist StructMem rows from extractor `structmem_entries`
-   * (current_session only) instead of mapping Phase-1 `memory_candidates`.
-   */
   STRUCTMEM_NATIVE_EXTRACTOR: z
     .string()
     .default("false")
@@ -150,8 +121,6 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s === "1" || s === "true";
     }),
-
-  /** Top-K for vector retrieval over structmem_entries (same recent-window cutoff as session recall). */
   STRUCTMEM_ENTRY_RETRIEVAL_TOP_K: z
     .string()
     .default("6")
@@ -161,7 +130,8 @@ const envSchema = z.object({
       return Math.min(40, n);
     }),
 
-  /** Phase 3: in-process current-session consolidation worker. */
+  // StructMem: Current-Session Consolidation
+  // In-process consolidation worker thresholds, caps, retry limits, and model binding.
   STRUCTMEM_CONSOLIDATION_ENABLED: z
     .string()
     .default("false")
@@ -235,6 +205,48 @@ const envSchema = z.object({
       return Math.min(10, n);
     }),
 
+  // StructMem: Cross-Session Retrieval And Writeback
+  // Direct cross-session synthesis retrieval plus conservative writeback/promotion gates.
+  STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_CROSS_SESSION_RETRIEVAL_TOP_K: z
+    .string()
+    .default("4")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 4;
+      return Math.min(20, n);
+    }),
+  STRUCTMEM_CROSS_SESSION_WRITE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_PROMOTION_TO_IME_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_CROSS_SESSION_MIN_CONFIDENCE: z
+    .string()
+    .default("0.75")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 0.75;
+      return Math.min(1, Math.max(0, n));
+    }),
+
+  // Background Jobs
+  // Post-turn worker polling, lock TTL, and retry behavior.
   POST_TURN_JOB_POLL_INTERVAL_MS: z
     .string()
     .default("5000")
@@ -259,12 +271,25 @@ const envSchema = z.object({
       if (Number.isNaN(n) || n < 1) return 3;
       return Math.min(10, n);
     }),
+
+  // LangSmith
+  // Optional tracing, project metadata, and eval dataset name.
+  LANGSMITH_TRACING: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  LANGSMITH_API_KEY: z.string().optional(),
+  LANGSMITH_PROJECT: z.string().default("zuoran-chatbot-phase1"),
+  LANGSMITH_ENDPOINT: z
+    .string()
+    .default("https://api.smith.langchain.com"),
+  LANGSMITH_EVAL_DATASET: z.string().default("zuoran-phase1-eval"),
 });
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error("❌ Invalid environment variables:");
+  console.error("Invalid environment variables:");
   for (const [field, issues] of Object.entries(
     parsed.error.flatten().fieldErrors,
   )) {

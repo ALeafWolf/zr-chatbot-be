@@ -63,9 +63,13 @@ function formatStructMemConsolidationsForPrompt(
       c.turnStart != null && c.turnEnd != null
         ? `turns ${c.turnStart}-${c.turnEnd}`
         : "turn range unknown";
-    return `- [${range}] ${body}`;
+    const label =
+      c.scope === "cross_session"
+        ? "cross-session synthesis"
+        : `current-session synthesis, ${range}`;
+    return `- [${label}] ${body}`;
   });
-  return `The following is synthesized current-session memory derived from multiple StructMem entries. It is lower priority than RECENT CHAT, SESSION SUMMARY, RELEVANT SESSION RECALL, and STRUCTURED EVENT MEMORY. Use it for continuity only when it does not conflict with more direct sources.\n\n${lines.join("\n")}`;
+  return `The following is synthesized StructMem memory derived from multiple structured entries. Cross-session synthesis is inferred stable memory and is lower priority than RECENT CHAT, SESSION SUMMARY, RELEVANT SESSION RECALL, and STRUCTURED EVENT MEMORY. Use it for continuity only when it does not conflict with more direct sources.\n\n${lines.join("\n")}`;
 }
 
 export interface PromptContext {
@@ -228,7 +232,8 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       : []),
 
     ...(env.STRUCTMEM_ENABLED &&
-    env.STRUCTMEM_CONSOLIDATION_ENABLED &&
+    (env.STRUCTMEM_CONSOLIDATION_ENABLED ||
+      env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED) &&
     structMemConsolidations.length > 0
       ? [
           buildBlock(

@@ -181,11 +181,14 @@ export async function resolveContext(input: {
                 latestFrontierTurnIndex: latestFrontierTurn,
               })
             : Promise.resolve([] as RetrievedStructMemEntry[]),
-          env.STRUCTMEM_ENABLED && env.STRUCTMEM_CONSOLIDATION_ENABLED
+          env.STRUCTMEM_ENABLED &&
+          (env.STRUCTMEM_CONSOLIDATION_ENABLED ||
+            env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED)
             ? retrieveStructMemConsolidationsTraced({
                 queryEmbedding,
                 sessionId: session.sessionId,
                 characterId: session.characterId,
+                memoryNamespace: session.memoryNamespace,
                 exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
                 latestFrontierTurnIndex: latestFrontierTurn,
               })

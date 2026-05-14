@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client";
-import type { ChatSession } from "../db/schema/chat";
+import { chatSessions, type ChatSession } from "../db/schema/chat";
 import {
   structmemConsolidationJobs,
   structmemConsolidations,
@@ -12,13 +12,24 @@ import {
 import { env } from "../config/env";
 import { embedText } from "../llm/embedText";
 import { traceStage } from "../observability/langsmithTracing";
+import type { MemoryNamespace } from "./memoryNamespace";
 import {
   consolidationEligibility,
   selectBufferEntries,
   selectSeedEntriesByEvent,
   type ConsolidationCandidateEntry,
 } from "./structmemConsolidationSelection";
-import { synthesizeStructMemConsolidation } from "./structmemConsolidationSynthesis";
+import {
+  distillCrossSessionStructMem,
+  synthesizeStructMemConsolidation,
+  type StructMemCrossSessionItem,
+} from "./structmemConsolidationSynthesis";
+import {
+  mapStableCategoryToMemoryType,
+  shouldPromoteStructMemToIme,
+  shouldWriteCrossSessionStructMem,
+} from "./structmemPhase4Policy";
+import { writeInteractiveMemory } from "./writeInteractiveMemory";
 
 interface UnconsolidatedStats {
   entryCount: number;
@@ -40,6 +51,12 @@ interface SemanticSeedRow {
   text: string;
   importance_score: number | null;
   confidence_score: number | null;
+}
+
+interface ConsolidationSourceRow {
+  entry_id: string;
+  event_id: string;
+  source_role: "buffer" | "semantic_seed";
 }
 
 export type MaybeEnqueueStructMemConsolidationResult = {
@@ -281,6 +298,182 @@ async function markJob(input: {
     .where(eq(structmemConsolidationJobs.id, input.jobId));
 }
 
+async function currentConsolidationHasCrossSessionChildren(
+  consolidationId: string,
+): Promise<boolean> {
+  const rows = await db.execute(sql`
+    SELECT id
+    FROM structmem_consolidations
+    WHERE scope = 'cross_session'
+      AND summary_json->>'origin_current_session_consolidation_id' = ${consolidationId}
+    LIMIT 1
+  `);
+  return rows.rows.length > 0;
+}
+
+async function fetchConsolidationSources(
+  consolidationId: string,
+): Promise<ConsolidationSourceRow[]> {
+  const rows = await db.execute(sql`
+    SELECT entry_id, event_id, source_role
+    FROM structmem_consolidation_sources
+    WHERE consolidation_id = ${consolidationId}
+  `);
+  return rows.rows as unknown as ConsolidationSourceRow[];
+}
+
+async function promoteCrossSessionStructMemToIme(input: {
+  session: ChatSession;
+  consolidationId: string;
+  item: StructMemCrossSessionItem;
+  embedding: number[];
+}): Promise<"promoted" | "rejected"> {
+  const result = await writeInteractiveMemory({
+    candidate: {
+      memoryType: mapStableCategoryToMemoryType(input.item.category),
+      summary: input.item.summary_text,
+      importanceScore: input.item.importance_score,
+      emotionScore: 0,
+      tags: ["structmem_phase4", input.item.category, ...input.item.tags],
+      embedding: input.embedding,
+      memoryScope: "cross_session",
+    },
+    characterId: input.session.characterId,
+    playerId: input.session.playerId,
+    sessionId: input.session.sessionId,
+    continuityScope: input.session.continuityScope,
+    continuityFamily: input.session.continuityFamily as "main_world" | "au",
+    memoryNamespace: input.session.memoryNamespace as MemoryNamespace,
+  });
+
+  const status =
+    result === "written" || result === "deduplicated" ? "promoted" : "rejected";
+  await db
+    .update(structmemConsolidations)
+    .set({ promotionStatus: status })
+    .where(eq(structmemConsolidations.id, input.consolidationId));
+  return status;
+}
+
+async function maybeWriteCrossSessionConsolidations(input: {
+  session: ChatSession;
+  currentConsolidationId: string;
+  currentSummaryText: string;
+  currentSummaryJson: Record<string, unknown>;
+  currentConfidenceScore: number | null;
+}): Promise<{ status: string; crossSessionIds: string[] }> {
+  if (
+    !shouldWriteCrossSessionStructMem({
+      enabled: env.STRUCTMEM_CROSS_SESSION_WRITE_ENABLED,
+      sessionMode: input.session.mode,
+      writebackPolicy: input.session.writebackPolicy,
+    })
+  ) {
+    return { status: "disabled", crossSessionIds: [] };
+  }
+
+  if (await currentConsolidationHasCrossSessionChildren(input.currentConsolidationId)) {
+    return { status: "skipped_existing", crossSessionIds: [] };
+  }
+
+  const distilled = await distillCrossSessionStructMem({
+    summaryText: input.currentSummaryText,
+    summaryJson: input.currentSummaryJson,
+    confidenceScore: input.currentConfidenceScore,
+  });
+  const stableItems = distilled.stable_items.filter(
+    (item) => item.confidence_score >= env.STRUCTMEM_CROSS_SESSION_MIN_CONFIDENCE,
+  );
+  if (stableItems.length === 0) {
+    return { status: "no_stable_items", crossSessionIds: [] };
+  }
+
+  const sources = await fetchConsolidationSources(input.currentConsolidationId);
+  const rowsToInsert: Array<{
+    id: string;
+    item: StructMemCrossSessionItem;
+    embedding: number[];
+  }> = [];
+  for (const item of stableItems) {
+    rowsToInsert.push({
+      id: uuidv4(),
+      item,
+      embedding: await embedText(item.summary_text),
+    });
+  }
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    for (const row of rowsToInsert) {
+      await tx.insert(structmemConsolidations).values({
+        id: row.id,
+        sessionId: input.session.sessionId,
+        characterId: input.session.characterId,
+        playerId: input.session.playerId,
+        memoryNamespace: input.session.memoryNamespace,
+        scope: "cross_session",
+        summaryText: row.item.summary_text,
+        summaryJson: {
+          ...input.currentSummaryJson,
+          stable_category: row.item.category,
+          origin_current_session_consolidation_id:
+            input.currentConsolidationId,
+          distillation_confidence_score: row.item.confidence_score,
+          tags: row.item.tags,
+        },
+        embedding: row.embedding,
+        turnStart: null,
+        turnEnd: null,
+        confidenceScore: row.item.confidence_score,
+        promotionStatus: env.STRUCTMEM_PROMOTION_TO_IME_ENABLED
+          ? "candidate"
+          : "none",
+        createdAt: now,
+      });
+
+      if (sources.length > 0) {
+        await tx.insert(structmemConsolidationSources).values(
+          sources.map((source) => ({
+            consolidationId: row.id,
+            entryId: source.entry_id,
+            eventId: source.event_id,
+            sourceRole: source.source_role,
+            createdAt: now,
+          })),
+        );
+      }
+    }
+  });
+
+  if (
+    shouldPromoteStructMemToIme({
+      enabled: env.STRUCTMEM_PROMOTION_TO_IME_ENABLED,
+      sessionMode: input.session.mode,
+      writebackPolicy: input.session.writebackPolicy,
+    })
+  ) {
+    for (const row of rowsToInsert) {
+      await promoteCrossSessionStructMemToIme({
+        session: input.session,
+        consolidationId: row.id,
+        item: row.item,
+        embedding: row.embedding,
+      });
+    }
+  }
+
+  return {
+    status: "written",
+    crossSessionIds: rowsToInsert.map((row) => row.id),
+  };
+}
+
+export const maybeWriteCrossSessionStructMemConsolidations = traceStage(
+  "memory.write_cross_session_structmem_consolidations",
+  maybeWriteCrossSessionConsolidations,
+  { tags: ["structmem", "phase4"] },
+);
+
 async function runStructMemConsolidationImpl(
   job: StructMemConsolidationJob,
 ): Promise<{ status: "completed" | "skipped"; consolidationId?: string }> {
@@ -364,6 +557,22 @@ async function runStructMemConsolidationImpl(
       })
       .where(eq(structmemConsolidationJobs.id, job.id));
   });
+
+  const sessionRows = await db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.sessionId, job.sessionId))
+    .limit(1);
+  const session = sessionRows[0];
+  if (session) {
+    await maybeWriteCrossSessionStructMemConsolidations({
+      session,
+      currentConsolidationId: consolidationId,
+      currentSummaryText: synthesis.summary_text,
+      currentSummaryJson: synthesis.summary_json,
+      currentConfidenceScore: synthesis.confidence_score,
+    });
+  }
 
   return { status: "completed", consolidationId };
 }
