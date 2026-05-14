@@ -46,7 +46,7 @@ export type ChatJsonErr = {
 export async function chatJson<T>(
   binding: ModelBinding,
   messages: LLMMessage[],
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   options?: { maxTokens?: number; temperature?: number },
 ): Promise<ChatJsonOk<T> | ChatJsonErr> {
   const provider = getProvider(binding);
@@ -94,7 +94,7 @@ export async function chatJson<T>(
 export async function chatJsonStream<T>(
   binding: ModelBinding,
   messages: LLMMessage[],
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   options?: {
     maxTokens?: number;
     temperature?: number;

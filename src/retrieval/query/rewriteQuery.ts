@@ -47,20 +47,58 @@ const LaneSchema = z.enum([
   "reply_direction",
 ]);
 
-const LaneLabelModelSchema = z.object({
-  labels: z.array(
-    z.object({
-      spanId: z.string(),
-      lane: LaneSchema,
-    }),
-  ),
-  entities: z.array(z.string()),
-  intent: z.enum(["attribution", "recall", "general"]),
-  confidence: z.number().min(0).max(1).optional(),
-  hypothetical: z.string().optional(),
+const LaneLabelSchema = z.object({
+  spanId: z.string(),
+  lane: LaneSchema,
 });
 
+function normalizeLaneLabelRows(rows: unknown): unknown {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+    const obj = row as Record<string, unknown>;
+    if (typeof obj.spanId === "string") return row;
+    if (typeof obj.id === "string") {
+      return { ...obj, spanId: obj.id };
+    }
+    return row;
+  });
+}
+
+function normalizeLaneLabelModelOutput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const obj = value as Record<string, unknown>;
+  if (Array.isArray(obj.labels)) {
+    return { ...obj, labels: normalizeLaneLabelRows(obj.labels) };
+  }
+  if (Array.isArray(obj.spans)) {
+    return { ...obj, labels: normalizeLaneLabelRows(obj.spans) };
+  }
+  return value;
+}
+
+const LaneLabelModelSchema = z.preprocess(
+  normalizeLaneLabelModelOutput,
+  z.object({
+    labels: z.array(LaneLabelSchema),
+    entities: z.array(z.string()).default([]),
+    intent: z.enum(["attribution", "recall", "general"]).default("general"),
+    confidence: z.number().min(0).max(1).optional(),
+    hypothetical: z.string().optional(),
+  }),
+);
+
 type ModelLane = z.infer<typeof LaneSchema>;
+type LaneLabelModelOutput = z.infer<typeof LaneLabelModelSchema>;
+
+export function parseLaneLabelModelOutputForTesting(
+  value: unknown,
+): LaneLabelModelOutput {
+  return LaneLabelModelSchema.parse(value);
+}
 
 function serializeForEmbedding(segmentsInIndexOrder: QuerySegment[]): string {
   const header: Record<QueryLane, string> = {
@@ -198,10 +236,13 @@ const tracedPhaseB = traceLLMStage(
     payload: { id: string; structuralKind: string; rawText: string }[];
     signal?: AbortSignal;
   }): Promise<z.infer<typeof LaneLabelModelSchema> | null> => {
-    const user = `Return JSON only for this spans array:\n${JSON.stringify(input.payload)}`;
+    const user =
+      "Return JSON only. Use this exact shape: " +
+      '{"labels":[{"spanId":"s0","lane":"user_speech"}],"entities":[],"intent":"general","confidence":0.9}' +
+      `\n\nSpans array:\n${JSON.stringify(input.payload)}`;
     const wantHypothetical = env.CANON_QUERY_HYDE;
 
-    const res = await chatJsonStream(
+    const res = await chatJsonStream<LaneLabelModelOutput>(
       models.extractor,
       [
         { role: "system", content: REWRITE_ANNOTATION_INSTRUCTIONS },
@@ -215,7 +256,7 @@ const tracedPhaseB = traceLLMStage(
         },
       ],
       LaneLabelModelSchema,
-      { maxTokens: 512, temperature: 0.1, signal: input.signal },
+      { maxTokens: 1024, temperature: 0.1, signal: input.signal },
     );
 
     if (!res.ok) return null;

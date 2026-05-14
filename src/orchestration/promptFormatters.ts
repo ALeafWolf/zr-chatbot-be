@@ -7,10 +7,23 @@ import type {
 import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSessionMemoryChunks";
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
+import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
 const STRUCTURED_MEMORY_SYNTHESIS_MAX_CHARS_PER_ITEM = 1400;
+const OPEN_THREAD_MAX_CHARS_PER_ITEM = 900;
+
+export function formatOpenThreads(threads: RetrievedOpenThread[]): string {
+  const lines = threads.map((thread, index) => {
+    let body = thread.text.trim();
+    if (body.length > OPEN_THREAD_MAX_CHARS_PER_ITEM) {
+      body = `${body.slice(0, OPEN_THREAD_MAX_CHARS_PER_ITEM)}...`;
+    }
+    return `${index + 1}. [${thread.status}, ${thread.source}, turn ${thread.sourceTurnIndex}] ${body}`;
+  });
+  return `These are active unresolved threads or pending commitments from this session. Prefer them over broad summaries when deciding what still needs attention, but do not override RECENT CHAT.\n\n${lines.join("\n")}`;
+}
 
 export function formatStructMemEntriesForPrompt(
   entries: RetrievedStructMemEntry[],

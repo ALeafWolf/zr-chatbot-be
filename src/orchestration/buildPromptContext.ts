@@ -14,6 +14,7 @@ import type { SessionSummary } from "../db/schema/memory";
 import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSessionMemoryChunks";
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
+import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -46,6 +47,7 @@ export function buildPromptContext(input: {
   canonScenes?: RetrievedCanonScene[];
   recentTurns: ConversationTurn[];
   sessionSummary?: SessionSummary | null;
+  openThreads?: RetrievedOpenThread[];
   sessionRecall?: RetrievedSessionMemoryChunk[];
   structMemEntries?: RetrievedStructMemEntry[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
@@ -62,6 +64,7 @@ export function buildPromptContext(input: {
     canonScenes = [],
     recentTurns,
     sessionSummary,
+    openThreads = [],
     sessionRecall = [],
     structMemEntries = [],
     structMemConsolidations = [],
@@ -118,7 +121,7 @@ ${hardRules}
 
 若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
 
-冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
+冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
 工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。canon_lookup 可在断言剧情归属或行为主体（谁提议、谁安排、谁先发起等）之前核对检索到的原文摘要与片段；仅在确有断言需要佐证时调用，避免频繁检索。`,
     ),
@@ -160,6 +163,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
 推断活动：${derivedState.inferredActivity}
 对话立场：${derivedState.conversationalStance}`,
     ),
+
+    ...(openThreads.length > 0
+      ? [
+          buildBlock(
+            "ACTIVE OPEN THREADS",
+            promptFormatters.formatOpenThreads(openThreads),
+          ),
+        ]
+      : []),
 
     ...(sessionSummary?.summaryText?.trim()
       ? [
