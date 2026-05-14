@@ -7,29 +7,9 @@ import {
   timestamp,
   jsonb,
   index,
-  customType,
 } from "drizzle-orm/pg-core";
 import { chatSessions } from "./chat";
-
-const vectorCol = customType<{
-  data: number[];
-  config: { dimensions: number };
-  driverData: string;
-}>({
-  dataType(config) {
-    return `vector(${config?.dimensions ?? 1536})`;
-  },
-  toDriver(value: number[]): string {
-    return `[${value.join(",")}]`;
-  },
-  fromDriver(value: string): number[] {
-    if (Array.isArray(value)) return value as unknown as number[];
-    return (value as string)
-      .slice(1, -1)
-      .split(",")
-      .map(Number);
-  },
-});
+import { vectorCol } from "./vector";
 
 // ---------------------------------------------------------------------------
 // interactive_memory_events
@@ -126,6 +106,7 @@ export const sessionMemoryChunks = pgTable(
 
 // ---------------------------------------------------------------------------
 // session_archive
+// Deprecated: no runtime backend code currently reads or writes this table.
 // ---------------------------------------------------------------------------
 export const sessionArchive = pgTable("session_archive", {
   sessionId: text("session_id").primaryKey(),
@@ -139,6 +120,7 @@ export const sessionArchive = pgTable("session_archive", {
 
 // ---------------------------------------------------------------------------
 // player_profile
+// Deprecated candidate: playerProfileRepo is unused and local row count is zero.
 // ---------------------------------------------------------------------------
 export const playerProfile = pgTable("player_profile", {
   playerId: text("player_id").primaryKey(),

@@ -1,5 +1,9 @@
 import { pgTable, text, jsonb, timestamp } from "drizzle-orm/pg-core";
 
+/**
+ * Persona DB tables are currently metadata/admin candidates. Runtime prompt
+ * defaults and overlays are loaded from YAML files in `src/character`.
+ */
 // ---------------------------------------------------------------------------
 // character_profiles
 // ---------------------------------------------------------------------------

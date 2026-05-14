@@ -3,7 +3,7 @@ import { createOpenAIProvider } from "./openaiProvider";
 import { createDeepSeekProvider } from "./deepseekProvider";
 import type { ModelBinding } from "../../config/models";
 import { z } from "zod";
-import { parseJsonOutput } from "../parseJsonOutput";
+import { parseJsonOutput } from "../json/parseJsonOutput";
 import type {
   LLMMessage,
   LLMProvider,

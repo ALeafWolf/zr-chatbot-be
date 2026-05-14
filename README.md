@@ -37,6 +37,7 @@ curl http://localhost:4000/health
 | Script | Purpose |
 |--------|---------|
 | `npm run dev` | Hot reload: `tsx watch` on `src/server.ts` and `src/**/*.yaml` (character/overlays). Use this for local API work — not `start`. |
+| `npm run typecheck` | Run TypeScript without emitting files |
 | `npm run build` | Bundle to `dist/` with `tsup` |
 | `npm run start` | Run `dist/server.js` (after `build`; no file watcher) |
 | `npm run db:generate` | Generate Drizzle migrations from schema |
@@ -125,12 +126,13 @@ When `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` is set, the pipeline emits
 
 | Path | Role |
 |------|------|
-| `src/server.ts` | Fastify bootstrap, routes |
-| `src/api/` | Session + chat controllers |
+| `src/server.ts` | Process lifecycle: app startup, worker startup, graceful shutdown |
+| `src/http/` | Fastify app construction, route plugins, centralized error handling |
+| `src/features/` | Feature-facing handlers/services for sessions, chat, turns, memory, StructMem |
 | `src/orchestration/` | Turn pipeline (`runCharacterTurn`, prompt context, validation loop) |
-| `src/llm/` | Providers, generation, embeddings, validator, post-turn extractor |
-| `src/retrieval/` | Canon + interactive memory + recent turns |
-| `src/memory/` | Write path, summarization, dedupe, importance |
+| `src/llm/` | Provider adapters, tools, embeddings, generation, validation, extraction, JSON parsing, summarization |
+| `src/retrieval/` | Conversation windows, query rewrite, continuity scope, canon retrieval, memory retrieval |
+| `src/memory/` | Session summaries/chunks, interactive memory writes, StructMem writes/consolidation, shared scoring/namespace helpers |
 | `src/character/` | Profiles, persona overlays, YAML-backed defaults |
 | `src/db/` | Pool client + Drizzle schemas |
 | `src/jobs/` | Background post-turn work (drained on SIGINT/SIGTERM) |

@@ -1,12 +1,12 @@
-import { embedText } from "../llm/embedText";
-import { resolveContinuityScope } from "../retrieval/resolveContinuityScope";
-import { retrieveInteractiveMemories } from "../retrieval/retrieveInteractiveMemories";
+import { embedText } from "../llm/embeddings/embedText";
+import { resolveContinuityScope } from "../retrieval/scope/resolveContinuityScope";
+import { retrieveInteractiveMemories } from "../retrieval/memory/retrieveInteractiveMemories";
 import {
   canonScenesToChunks,
   retrieveCanonNarrativeLegacy,
   retrieveCanonCoarseToFine,
-} from "../retrieval/retrieveCanonNarrative";
-import { getRecentConversationWindow } from "../retrieval/getRecentConversationWindow";
+} from "../retrieval/canon/retrieveCanonNarrative";
+import { getRecentConversationWindow } from "../retrieval/conversation/getRecentConversationWindow";
 import {
   computeDerivedState,
   getSessionState,
@@ -14,26 +14,26 @@ import {
 } from "../state/sessionStateRepo";
 import type { ChatSession } from "../db/schema/chat";
 import type { CharacterDefaults } from "../character/characterDefaults";
-import type { MemoryNamespace } from "../memory/memoryNamespace";
-import type { RetrievedMemory } from "../retrieval/retrieveInteractiveMemories";
-import type { RetrievedCanonChunk } from "../retrieval/retrieveCanonNarrative";
-import type { RetrievedCanonScene } from "../retrieval/retrieveCanonTier3Pipeline";
-import type { ConversationTurn } from "../retrieval/getRecentConversationWindow";
+import type { MemoryNamespace } from "../memory/shared/memoryNamespace";
+import type { RetrievedMemory } from "../retrieval/memory/retrieveInteractiveMemories";
+import type { RetrievedCanonChunk } from "../retrieval/canon/retrieveCanonNarrative";
+import type { RetrievedCanonScene } from "../retrieval/canon/retrieveCanonTier3Pipeline";
+import type { ConversationTurn } from "../retrieval/conversation/getRecentConversationWindow";
 import { traceStage } from "../observability/langsmithTracing";
-import { getSessionSummary, type SessionSummaryRecord } from "../memory/sessionSummaryRepo";
-import { recentConversationWindowStartTurn } from "../memory/recentWindowBoundary";
-import { retrieveSessionMemoryChunksTraced } from "../retrieval/retrieveSessionMemoryChunks";
-import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
+import { getSessionSummary, type SessionSummaryRecord } from "../memory/session/sessionSummaryRepo";
+import { recentConversationWindowStartTurn } from "../retrieval/conversation/recentConversationBoundary";
+import { retrieveSessionMemoryChunksTraced } from "../retrieval/memory/retrieveSessionMemoryChunks";
+import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSessionMemoryChunks";
 import {
   retrieveStructMemEntriesTraced,
   type RetrievedStructMemEntry,
-} from "../retrieval/retrieveStructMemEntries";
+} from "../retrieval/memory/retrieveStructMemEntries";
 import {
   retrieveStructMemConsolidationsTraced,
   type RetrievedStructMemConsolidation,
-} from "../retrieval/retrieveStructMemConsolidations";
+} from "../retrieval/memory/retrieveStructMemConsolidations";
 import { env } from "../config/env";
-import { rewriteQuery, type QueryRewriteResult } from "../retrieval/rewriteQuery";
+import { rewriteQuery, type QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];

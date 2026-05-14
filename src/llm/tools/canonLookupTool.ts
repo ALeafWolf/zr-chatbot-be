@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { embedText } from "../embedText";
-import { retrieveCanonCoarseToFine } from "../../retrieval/retrieveCanonNarrative";
-import { resolveContinuityScope } from "../../retrieval/resolveContinuityScope";
-import { formatCanonScenesCompact } from "../../orchestration/buildPromptContext";
+import { embedText } from "../embeddings/embedText";
+import { retrieveCanonCoarseToFine } from "../../retrieval/canon/retrieveCanonNarrative";
+import { resolveContinuityScope } from "../../retrieval/scope/resolveContinuityScope";
+import { formatCanonScenesCompact } from "../../orchestration/promptFormatters";
 import { traceStageWithIO } from "../../observability/langsmithTracing";
 import type { ToolDef } from "./types";
 import type { ToolCtx } from "./types";

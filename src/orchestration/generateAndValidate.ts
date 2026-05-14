@@ -2,7 +2,7 @@ import {
   runResponseValidator,
   VALIDATOR_FAIL_OPEN,
   type ValidationResult,
-} from "../llm/runResponseValidator";
+} from "../llm/validation/runResponseValidator";
 import type { PromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../character/characterDefaults";
@@ -17,22 +17,17 @@ import {
   ToolLoopExceededError,
 } from "./generateWithTools";
 import type { ToolCtx } from "../llm/tools/types";
-import { generateThoughtSummary } from "../llm/generateThoughtSummary";
+import { generateThoughtSummary } from "../llm/generation/generateThoughtSummary";
 import type { Thought } from "./thoughtTypes";
 import type { OrchestrationStreamEvent } from "./thoughtTypes";
-import { extensionsForGenerationThinking } from "../llm/generationThinkingExtensions";
+import { extensionsForGenerationThinking } from "../llm/generation/generationThinkingExtensions";
 import { models } from "../config/models";
+import {
+  filterDrafterFacingIssues,
+  replayValidatedDraftDeltas,
+} from "./validationFlowHelpers";
 
-/** System/transport issues from the validator — not actionable for the drafter. */
-function isMetaValidatorIssue(issue: string): boolean {
-  return /\b(json|parse|validator|schema|zod)\b/i.test(issue);
-}
-
-/** Issues the character model can try to fix (excludes validator parse/schema noise). */
-function filterDrafterFacingIssues(issues: string[]): string[] {
-  return issues.filter((i) => !isMetaValidatorIssue(i));
-}
-
+/** System/transport issues from the validator are not actionable for the drafter. */
 export interface GenerateAndValidateResult {
   content: string;
   validatorResult: ValidationResult;
@@ -47,22 +42,6 @@ export type GenerateAndValidateYield =
   | { type: "_complete"; result: GenerateAndValidateResult };
 
 /** Chunk size when replaying validated first-draft prose to SSE (~UTF-16 code units). */
-const VALIDATED_REPLY_REPLAY_SLICE = 96;
-
-async function* replayValidatedDraftDeltas(
-  text: string,
-  signal?: AbortSignal,
-): AsyncGenerator<Extract<OrchestrationStreamEvent, { type: "delta" }>> {
-  for (let i = 0; i < text.length; ) {
-    if (signal?.aborted) {
-      throw Object.assign(new Error("Aborted"), { name: "AbortError" });
-    }
-    const j = Math.min(i + VALIDATED_REPLY_REPLAY_SLICE, text.length);
-    yield { type: "delta", text: text.slice(i, j) };
-    i = j;
-  }
-}
-
 const tracedResponseGeneration = traceStreamingLLM(
   "llm.response_generation",
   generateWithToolsStream,
@@ -112,12 +91,12 @@ function voiceHintsFrom(
 ): string {
   const s = characterDefaults.speech_style;
   return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
-    "；",
+    "，",
   );
 }
 
 /**
- * Draft → validate → rewrite-once → validate again → safe deflection ladder,
+ * Draft, validate, rewrite once, validate again, then safe deflection ladder,
  * yielding orchestration events incrementally. Ends with a `_complete` sentinel.
  */
 export async function* generateAndValidateStream(input: {
@@ -557,7 +536,7 @@ export async function* generateAndValidateStream(input: {
   };
 }
 
-/** Non-streaming wrapper — drains {@link generateAndValidateStream}. */
+/** Non-streaming wrapper that drains {@link generateAndValidateStream}. */
 export async function generateAndValidate(
   input: Parameters<typeof generateAndValidateStream>[0],
 ): Promise<GenerateAndValidateResult> {

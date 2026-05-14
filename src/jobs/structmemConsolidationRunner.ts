@@ -3,11 +3,11 @@ import { sql } from "drizzle-orm";
 import { db } from "../db/client";
 import type { StructMemConsolidationJob } from "../db/schema/structmem";
 import { env } from "../config/env";
-import { traceStage } from "../observability/langsmithTracing";
+import { BackgroundRunner } from "./backgroundRunner";
 import {
   failStructMemConsolidationJob,
   runStructMemConsolidation,
-} from "../memory/structmemConsolidationRepo";
+} from "../memory/structmem/structmemConsolidationRepo";
 
 async function claimStructMemConsolidationJobImpl(
   workerId: string,
@@ -64,54 +64,17 @@ async function claimStructMemConsolidationJobImpl(
   return (rows.rows[0] as unknown as StructMemConsolidationJob | undefined) ?? null;
 }
 
-export const claimStructMemConsolidationJob = traceStage(
-  "jobs.claim_structmem_consolidation_job",
-  claimStructMemConsolidationJobImpl,
-  { tags: ["structmem", "phase3"] },
-);
+export const claimStructMemConsolidationJob =
+  claimStructMemConsolidationJobImpl;
 
-class StructMemConsolidationRunner {
-  private timer: NodeJS.Timeout | undefined;
-  private running = false;
-  private inFlight: Promise<void>[] = [];
+class StructMemConsolidationRunner extends BackgroundRunner {
   private readonly workerId = `structmem-consolidation-${process.pid}-${uuidv4()}`;
 
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(
-      () => this.wake(),
-      env.POST_TURN_JOB_POLL_INTERVAL_MS,
-    );
-    this.timer.unref?.();
-    this.wake();
+  constructor() {
+    super("structmemConsolidationRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
   }
 
-  stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = undefined;
-  }
-
-  wake(): void {
-    if (this.running) return;
-    const task = this.runLoop()
-      .catch((err) => {
-        console.error("[structmemConsolidationRunner] run loop failed:", err);
-      })
-      .finally(() => {
-        this.running = false;
-        this.inFlight = this.inFlight.filter((p) => p !== task);
-      });
-    this.running = true;
-    this.inFlight.push(task);
-  }
-
-  async drain(): Promise<void> {
-    this.stop();
-    await Promise.allSettled(this.inFlight);
-  }
-
-  private async runLoop(): Promise<void> {
+  protected async runLoop(): Promise<void> {
     while (true) {
       const job = await claimStructMemConsolidationJob(this.workerId);
       if (!job) return;
@@ -130,4 +93,3 @@ class StructMemConsolidationRunner {
 
 export const structmemConsolidationRunner =
   new StructMemConsolidationRunner();
-

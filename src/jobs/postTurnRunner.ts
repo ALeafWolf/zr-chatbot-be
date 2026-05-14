@@ -1,21 +1,22 @@
 import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/client";
 import { postTurnJobs, type PostTurnJobRow } from "../db/schema/jobs";
-import { extractPostTurnSignals } from "../llm/extractPostTurnSignals";
-import { writeInteractiveMemory } from "../memory/writeInteractiveMemory";
-import { maybeCompactSessionSummary } from "../memory/compactSessionSummary";
+import { extractPostTurnSignals } from "../llm/extraction/extractPostTurnSignals";
+import { writeInteractiveMemory } from "../memory/interactive/writeInteractiveMemory";
+import { maybeCompactSessionSummary } from "../memory/session/compactSessionSummary";
 import {
   persistSessionMemoryChunk,
   sessionMemoryChunkExists,
   writeRawTurnPairSessionChunkTraced,
-} from "../memory/writeSessionMemoryChunk";
-import type { SessionChunkTypePersisted } from "../memory/writeSessionMemoryChunk";
-import type { MemoryNamespace } from "../memory/memoryNamespace";
+} from "../memory/session/writeSessionMemoryChunk";
+import type { SessionChunkTypePersisted } from "../memory/session/writeSessionMemoryChunk";
+import type { MemoryNamespace } from "../memory/shared/memoryNamespace";
 import { traceStage } from "../observability/langsmithTracing";
 import { env } from "../config/env";
-import { collectPhase1StructMemPersistRows } from "../memory/structmemMapping";
-import { writeStructMemTurn } from "../memory/writeStructMemTurn";
+import { collectPhase1StructMemPersistRows } from "../memory/structmem/structmemMapping";
+import { writeStructMemTurn } from "../memory/structmem/writeStructMemTurn";
 import { eq, sql } from "drizzle-orm";
+import { BackgroundRunner } from "./backgroundRunner";
 import {
   INITIAL_POST_TURN_STEP_STATUS,
   chatSessionFromSnapshot,
@@ -27,8 +28,8 @@ import {
   type PostTurnStepName,
   type PostTurnStepStatus,
 } from "./postTurnJobPayload";
-import { shouldSuppressExtractorSessionChunks } from "./postTurnSessionChunkPolicy";
-import { maybeEnqueueStructMemConsolidation } from "../memory/structmemConsolidationRepo";
+import { shouldSuppressExtractorSessionChunks } from "./postTurnPolicies";
+import { maybeEnqueueStructMemConsolidation } from "../memory/structmem/structmemConsolidationRepo";
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
 
 const tracedExtract = traceStage(
@@ -45,48 +46,14 @@ function nextRunAfter(attempts: number): Date {
   return new Date(Date.now() + delayMs);
 }
 
-class PostTurnRunner {
-  private timer: NodeJS.Timeout | undefined;
-  private running = false;
-  private inFlight: Promise<void>[] = [];
+class PostTurnRunner extends BackgroundRunner {
   private readonly workerId = `post-turn-${process.pid}-${uuidv4()}`;
 
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(
-      () => this.wake(),
-      env.POST_TURN_JOB_POLL_INTERVAL_MS,
-    );
-    this.timer.unref?.();
-    this.wake();
+  constructor() {
+    super("postTurnRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
   }
 
-  stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = undefined;
-  }
-
-  wake(): void {
-    if (this.running) return;
-    const task = this.runLoop()
-      .catch((err) => {
-        console.error("[postTurnRunner] run loop failed:", err);
-      })
-      .finally(() => {
-        this.running = false;
-        this.inFlight = this.inFlight.filter((p) => p !== task);
-      });
-    this.running = true;
-    this.inFlight.push(task);
-  }
-
-  async drain(): Promise<void> {
-    this.stop();
-    await Promise.allSettled(this.inFlight);
-  }
-
-  private async runLoop(): Promise<void> {
+  protected async runLoop(): Promise<void> {
     while (true) {
       const job = await this.claimNextJob();
       if (!job) return;

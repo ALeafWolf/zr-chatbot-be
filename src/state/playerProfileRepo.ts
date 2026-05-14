@@ -3,6 +3,10 @@ import { playerProfile } from "../db/schema/memory";
 import { eq } from "drizzle-orm";
 import type { PlayerProfile } from "../db/schema/memory";
 
+/**
+ * Deprecated candidate: no runtime callers were found in the backend cleanup
+ * audit, and the local `player_profile` table had zero rows.
+ */
 export async function getOrCreatePlayerProfile(
   playerId: string,
 ): Promise<PlayerProfile> {

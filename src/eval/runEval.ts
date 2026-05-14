@@ -8,10 +8,10 @@
  * Replays scenarios from scenarios.json (validator for drafts; Tier 3 retrieval
  * when eval_mode=retrieval), prints a pass/fail summary.
  */
-import { runResponseValidator } from "../llm/runResponseValidator";
+import { runResponseValidator } from "../llm/validation/runResponseValidator";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import type { Scenario } from "./evalTypes";
-import type { ValidationResult } from "../llm/runResponseValidator";
+import type { ValidationResult } from "../llm/validation/runResponseValidator";
 import type { AssertionContext } from "./evalAssertions";
 import { runAllAssertions } from "./evalAssertions";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";

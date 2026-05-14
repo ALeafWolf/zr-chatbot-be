@@ -1,10 +1,10 @@
-import { embedText } from "../llm/embedText";
+import { embedText } from "../llm/embeddings/embedText";
 import { env } from "../config/env";
-import { formatCanonScenes } from "../orchestration/buildPromptContext";
-import { rewriteQuery, type QueryRewriteResult } from "../retrieval/rewriteQuery";
-import { resolveContinuityScope } from "../retrieval/resolveContinuityScope";
-import { retrieveCanonCoarseToFine } from "../retrieval/retrieveCanonNarrative";
-import type { RetrievedCanonScene } from "../retrieval/retrieveCanonTier3Pipeline";
+import { formatCanonScenes } from "../orchestration/promptFormatters";
+import { rewriteQuery, type QueryRewriteResult } from "../retrieval/query/rewriteQuery";
+import { resolveContinuityScope } from "../retrieval/scope/resolveContinuityScope";
+import { retrieveCanonCoarseToFine } from "../retrieval/canon/retrieveCanonNarrative";
+import type { RetrievedCanonScene } from "../retrieval/canon/retrieveCanonTier3Pipeline";
 import type { Scenario } from "./evalTypes";
 
 export interface RetrievalEvalResult {

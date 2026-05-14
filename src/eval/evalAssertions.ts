@@ -1,6 +1,6 @@
 import type { Assertion, Scenario } from "./evalTypes";
-import type { ValidationResult } from "../llm/runResponseValidator";
-import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
+import type { ValidationResult } from "../llm/validation/runResponseValidator";
+import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 
 export interface AssertionContext {
   retrievedCanon?: string;
@@ -79,7 +79,7 @@ export function checkAssertion(
       if (!matchesAnyPattern(reply, patterns)) {
         return {
           pass: true,
-          reason: "OK (fail-open — reply does not assert attribution per patterns)",
+          reason: "OK (fail-open: reply does not assert attribution per patterns)",
         };
       }
       const ok = needles.every((n) => canon.includes(n));

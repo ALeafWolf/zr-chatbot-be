@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { shouldSuppressExtractorSessionChunks } from "./postTurnSessionChunkPolicy";
+import { shouldSuppressExtractorSessionChunks } from "./postTurnPolicies";
 
-describe("postTurnSessionChunkPolicy", () => {
+describe("postTurnPolicies", () => {
   it("does not suppress extractor chunks when StructMem is disabled", () => {
     assert.equal(
       shouldSuppressExtractorSessionChunks({

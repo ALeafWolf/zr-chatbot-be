@@ -13,9 +13,9 @@ import type { EvaluationResult } from "langsmith/evaluation";
 import type { Example, Run } from "langsmith/schemas";
 import { env } from "../config/env";
 import { loadPersonaOverlay } from "../character/characterDefaults";
-import { runResponseValidator } from "../llm/runResponseValidator";
-import type { ValidationResult } from "../llm/runResponseValidator";
-import type { AttributionJudgeResult } from "../llm/runAttributionJudge";
+import { runResponseValidator } from "../llm/validation/runResponseValidator";
+import type { ValidationResult } from "../llm/validation/runResponseValidator";
+import type { AttributionJudgeResult } from "../llm/validation/runAttributionJudge";
 import {
   checkAssertion,
   type AssertionContext,
@@ -24,7 +24,7 @@ import type { Assertion, Scenario } from "./evalTypes";
 import { flushLangSmithClient } from "./evalProcessDrain";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";
 import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
-import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
+import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 
 export interface EvalTargetOutput {
   reply: string;
@@ -311,7 +311,7 @@ async function main(): Promise<void> {
       ],
       experimentPrefix: "zuoran-phase1",
       maxConcurrency: 1,
-      description: `Phase 1 regression — scenario assertions (scenarios v${version})`,
+      description: `Phase 1 regression: scenario assertions (scenarios v${version})`,
       metadata: {
         scenarios_file_version: version,
         langsmith_project: env.LANGSMITH_PROJECT,

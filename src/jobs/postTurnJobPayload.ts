@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ChatSession } from "../db/schema/chat";
 import type { DerivedState } from "../state/sessionStateRepo";
-import type { PostTurnSignals } from "../llm/extractPostTurnSignals";
+import type { PostTurnSignals } from "../llm/extraction/extractPostTurnSignals";
 
 export const POST_TURN_STEP_NAMES = [
   "raw_chunk",

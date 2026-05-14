@@ -1,7 +1,6 @@
-import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/client";
-import { chatMessages, chatSessions, sessionState } from "../db/schema/chat";
-import { eq, sql } from "drizzle-orm";
+import { chatSessions } from "../db/schema/chat";
+import { eq } from "drizzle-orm";
 import {
   loadCharacterDefaults,
   loadPersonaOverlay,
@@ -9,23 +8,13 @@ import {
 import { resolveContext } from "./resolveContext";
 import { buildPromptContext } from "./buildPromptContext";
 import { generateAndValidateStream } from "./generateAndValidate";
-import {
-  INITIAL_POST_TURN_STEP_STATUS,
-  newPostTurnJobId,
-  postTurnRunner,
-} from "../jobs/postTurnRunner";
+import { postTurnRunner } from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
 import { CANON_RETRIEVAL } from "../character/canonRules";
 import { traceStage } from "../observability/langsmithTracing";
 import type { Thought } from "./thoughtTypes";
-import { generateThoughtSummary } from "../llm/generateThoughtSummary";
-import { postTurnJobs } from "../db/schema/jobs";
-import { env } from "../config/env";
-import {
-  sessionSnapshotFromChatSession,
-  type PostTurnJobPayloadV1,
-} from "../jobs/postTurnJobPayload";
-import { calculateNextTurnIndexes } from "./turnIndexAllocator";
+import { generateThoughtSummary } from "../llm/generation/generateThoughtSummary";
+import { persistCompletedTurn } from "./turnPersistence";
 
 export interface TurnInput {
   sessionId: string;
@@ -66,7 +55,7 @@ const FINAL_REPLY_REPLAY_SLICE = 96;
 function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
   const s = characterDefaults.speech_style;
   return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
-    "；",
+    "，",
   );
 }
 
@@ -226,135 +215,14 @@ export async function* runCharacterTurnStream(
 
     const result = resultPayload;
 
-    const persisted = await db.transaction(async (tx) => {
-      await tx
-        .insert(sessionState)
-        .values({
-          sessionId,
-          lastTurnIndex: 0,
-          updatedAt: new Date(),
-        })
-        .onConflictDoNothing();
-
-      const stateRows = await tx.execute(sql`
-        SELECT last_turn_index AS "lastTurnIndex"
-        FROM session_state
-        WHERE session_id = ${sessionId}
-        FOR UPDATE
-      `);
-      const maxRows = await tx.execute(sql`
-        SELECT MAX(turn_index) AS "maxTurnIndex"
-        FROM chat_messages
-        WHERE session_id = ${sessionId}
-      `);
-
-      const stateLastRaw = stateRows.rows[0]?.lastTurnIndex;
-      const maxRaw = maxRows.rows[0]?.maxTurnIndex;
-      const { userTurnIndex, assistantTurnIndex } = calculateNextTurnIndexes({
-        sessionStateLastTurnIndex:
-          typeof stateLastRaw === "number"
-            ? stateLastRaw
-            : stateLastRaw === null || stateLastRaw === undefined
-              ? null
-              : Number(stateLastRaw),
-        maxMessageTurnIndex:
-          typeof maxRaw === "number"
-            ? maxRaw
-            : maxRaw === null || maxRaw === undefined
-              ? null
-              : Number(maxRaw),
-      });
-
-      const userMsgId = uuidv4();
-      const assistantMsgId = uuidv4();
-      const now = new Date();
-
-      await tx.insert(chatMessages).values([
-        {
-          id: userMsgId,
-          sessionId,
-          turnIndex: userTurnIndex,
-          role: "user",
-          content: userMessage,
-          validatorResult: null,
-          thoughts: null,
-        },
-        {
-          id: assistantMsgId,
-          sessionId,
-          turnIndex: assistantTurnIndex,
-          role: "assistant",
-          content: result.content,
-          validatorResult: result.validatorResult as unknown as Record<
-            string,
-            unknown
-          >,
-          thoughts: thoughtsAcc.length > 0 ? thoughtsAcc : null,
-        },
-      ]);
-
-      await tx
-        .insert(sessionState)
-        .values({
-          sessionId,
-          derivedState: context.derivedState,
-          lastTurnIndex: assistantTurnIndex,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: sessionState.sessionId,
-          set: {
-            derivedState: context.derivedState,
-            lastTurnIndex: assistantTurnIndex,
-            updatedAt: now,
-          },
-        });
-
-      await tx
-        .update(chatSessions)
-        .set({ updatedAt: now })
-        .where(eq(chatSessions.sessionId, sessionId));
-
-      const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
-      const jobId = newPostTurnJobId();
-      const payload: PostTurnJobPayloadV1 = {
-        version: 1,
-        sessionId,
-        userMessage,
-        assistantReply: result.content,
-        session: sessionSnapshotFromChatSession(session),
-        derivedState: context.derivedState,
-        shouldWriteMemory,
-        userTurnIndex,
-        assistantTurnIndex,
-        userMessageId: userMsgId,
-        assistantMessageId: assistantMsgId,
-        recentMemorySummaries: context.memories
-          .slice(0, 3)
-          .map((m) => m.summary),
-      };
-
-      await tx.insert(postTurnJobs).values({
-        id: jobId,
-        sessionId,
-        userMessageId: userMsgId,
-        assistantMessageId: assistantMsgId,
-        status: "pending",
-        attempts: 0,
-        maxAttempts: env.POST_TURN_JOB_MAX_ATTEMPTS,
-        runAfter: now,
-        stepStatus: { ...INITIAL_POST_TURN_STEP_STATUS },
-        payload: payload as unknown as Record<string, unknown>,
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      return {
-        userMessageId: userMsgId,
-        assistantMessageId: assistantMsgId,
-        assistantTurnIndex,
-        jobId,
-      };
+    const persisted = await persistCompletedTurn({
+      session,
+      userMessage,
+      assistantReply: result.content,
+      validatorResult: result.validatorResult,
+      derivedState: context.derivedState,
+      memories: context.memories,
+      thoughts: thoughtsAcc,
     });
 
     postTurnRunner.wake();
