@@ -28,6 +28,8 @@ import {
   type PostTurnStepStatus,
 } from "./postTurnJobPayload";
 import { shouldSuppressExtractorSessionChunks } from "./postTurnSessionChunkPolicy";
+import { maybeEnqueueStructMemConsolidation } from "../memory/structmemConsolidationRepo";
+import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
 
 const tracedExtract = traceStage(
   "llm.extract_post_turn_signals",
@@ -267,6 +269,19 @@ class PostTurnRunner {
           payload,
           stepStatus,
         );
+      }
+
+      if (
+        env.STRUCTMEM_ENABLED &&
+        env.STRUCTMEM_CONSOLIDATION_ENABLED &&
+        session.mode !== "sandbox"
+      ) {
+        const enqueueResult = await maybeEnqueueStructMemConsolidation({
+          session,
+        });
+        if (enqueueResult.status === "enqueued") {
+          structmemConsolidationRunner.wake();
+        }
       }
 
       if (!isStepComplete(stepStatus, "session_chunks")) {

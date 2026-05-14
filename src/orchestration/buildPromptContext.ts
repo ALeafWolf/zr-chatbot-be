@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   CharacterDefaults,
   PersonaOverlayDefaults,
 } from "../character/characterDefaults";
@@ -14,6 +14,7 @@ import type { ChatSession } from "../db/schema/chat";
 import type { SessionSummary } from "../db/schema/memory";
 import type { RetrievedSessionMemoryChunk } from "../retrieval/retrieveSessionMemoryChunks";
 import type { RetrievedStructMemEntry } from "../retrieval/retrieveStructMemEntries";
+import type { RetrievedStructMemConsolidation } from "../retrieval/retrieveStructMemConsolidations";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/rewriteQuery";
@@ -24,6 +25,7 @@ import {
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
+const STRUCTURED_MEMORY_SYNTHESIS_MAX_CHARS_PER_ITEM = 1400;
 
 function formatStructMemEntriesForPrompt(entries: RetrievedStructMemEntry[]): string {
   const lines = entries.map((e) => {
@@ -47,6 +49,23 @@ function formatSessionRecall(chunks: RetrievedSessionMemoryChunk[]): string {
     return `${label}\n${body}`;
   });
   return `以下内容来自本会话更早片段的语义检索，可能比 RECENT CHAT 更不新；仍以 RECENT CHAT 与用户当前消息为准。\n\n${lines.join("\n\n")}`;
+}
+
+function formatStructMemConsolidationsForPrompt(
+  consolidations: RetrievedStructMemConsolidation[],
+): string {
+  const lines = consolidations.map((c) => {
+    let body = c.summaryText.trim();
+    if (body.length > STRUCTURED_MEMORY_SYNTHESIS_MAX_CHARS_PER_ITEM) {
+      body = `${body.slice(0, STRUCTURED_MEMORY_SYNTHESIS_MAX_CHARS_PER_ITEM)}...`;
+    }
+    const range =
+      c.turnStart != null && c.turnEnd != null
+        ? `turns ${c.turnStart}-${c.turnEnd}`
+        : "turn range unknown";
+    return `- [${range}] ${body}`;
+  });
+  return `The following is synthesized current-session memory derived from multiple StructMem entries. It is lower priority than RECENT CHAT, SESSION SUMMARY, RELEVANT SESSION RECALL, and STRUCTURED EVENT MEMORY. Use it for continuity only when it does not conflict with more direct sources.\n\n${lines.join("\n")}`;
 }
 
 export interface PromptContext {
@@ -74,6 +93,7 @@ export function buildPromptContext(input: {
   sessionSummary?: SessionSummary | null;
   sessionRecall?: RetrievedSessionMemoryChunk[];
   structMemEntries?: RetrievedStructMemEntry[];
+  structMemConsolidations?: RetrievedStructMemConsolidation[];
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -89,6 +109,7 @@ export function buildPromptContext(input: {
     sessionSummary,
     sessionRecall = [],
     structMemEntries = [],
+    structMemConsolidations = [],
     userMessage,
     queryRewrite,
   } = input;
@@ -202,6 +223,17 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
           buildBlock(
             "STRUCTURED EVENT MEMORY",
             formatStructMemEntriesForPrompt(structMemEntries),
+          ),
+        ]
+      : []),
+
+    ...(env.STRUCTMEM_ENABLED &&
+    env.STRUCTMEM_CONSOLIDATION_ENABLED &&
+    structMemConsolidations.length > 0
+      ? [
+          buildBlock(
+            "STRUCTURED MEMORY SYNTHESIS",
+            formatStructMemConsolidationsForPrompt(structMemConsolidations),
           ),
         ]
       : []),

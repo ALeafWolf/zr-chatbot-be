@@ -123,6 +123,7 @@ export async function* runCharacterTurnStream(
       sessionSummary: context.sessionSummary,
       sessionRecall: context.sessionRecall,
       structMemEntries: context.structMemEntries,
+      structMemConsolidations: context.structMemConsolidations,
       userMessage,
       queryRewrite: context.queryRewrite,
     });

@@ -161,6 +161,80 @@ const envSchema = z.object({
       return Math.min(40, n);
     }),
 
+  /** Phase 3: in-process current-session consolidation worker. */
+  STRUCTMEM_CONSOLIDATION_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_CONSOLIDATION_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  STRUCTMEM_MIN_UNCONSOLIDATED_TURNS: z
+    .string()
+    .default("8")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 8;
+      return Math.min(100, n);
+    }),
+  STRUCTMEM_MIN_UNCONSOLIDATED_ENTRIES: z
+    .string()
+    .default("12")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 12;
+      return Math.min(200, n);
+    }),
+  STRUCTMEM_SEED_K: z
+    .string()
+    .default("5")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 0) return 5;
+      return Math.min(20, n);
+    }),
+  STRUCTMEM_MAX_SEED_EVENTS: z
+    .string()
+    .default("5")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 0) return 5;
+      return Math.min(20, n);
+    }),
+  STRUCTMEM_MAX_ENTRIES_PER_EVENT: z
+    .string()
+    .default("6")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 6;
+      return Math.min(20, n);
+    }),
+  STRUCTMEM_MAX_BUFFER_ENTRIES: z
+    .string()
+    .default("20")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 20;
+      return Math.min(100, n);
+    }),
+  STRUCTMEM_MAX_SYNTHESIS_INPUT_TOKENS: z
+    .string()
+    .default("5000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 500) return 5000;
+      return Math.min(20000, n);
+    }),
+  STRUCTMEM_JOB_MAX_ATTEMPTS: z
+    .string()
+    .default("3")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 3;
+      return Math.min(10, n);
+    }),
+
   POST_TURN_JOB_POLL_INTERVAL_MS: z
     .string()
     .default("5000")

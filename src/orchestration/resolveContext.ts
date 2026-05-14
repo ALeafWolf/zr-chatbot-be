@@ -28,6 +28,10 @@ import {
   retrieveStructMemEntriesTraced,
   type RetrievedStructMemEntry,
 } from "../retrieval/retrieveStructMemEntries";
+import {
+  retrieveStructMemConsolidationsTraced,
+  type RetrievedStructMemConsolidation,
+} from "../retrieval/retrieveStructMemConsolidations";
 import { env } from "../config/env";
 import { rewriteQuery, type QueryRewriteResult } from "../retrieval/rewriteQuery";
 
@@ -44,6 +48,8 @@ export interface ResolvedContext {
   sessionRecall: RetrievedSessionMemoryChunk[];
   /** StructMem Phase 1: extracted entries before the raw recent window. */
   structMemEntries: RetrievedStructMemEntry[];
+  /** StructMem Phase 3: synthesized current-session memory before the raw recent window. */
+  structMemConsolidations: RetrievedStructMemConsolidation[];
   queryRewrite: QueryRewriteResult;
 }
 
@@ -156,7 +162,7 @@ export async function resolveContext(input: {
     latestFrontierTurn,
   );
 
-  const [sessionRecall, structMemEntries] =
+  const [sessionRecall, structMemEntries, structMemConsolidations] =
     latestFrontierTurn >= 0
       ? await Promise.all([
           retrieveSessionMemoryChunksTraced({
@@ -175,8 +181,17 @@ export async function resolveContext(input: {
                 latestFrontierTurnIndex: latestFrontierTurn,
               })
             : Promise.resolve([] as RetrievedStructMemEntry[]),
+          env.STRUCTMEM_ENABLED && env.STRUCTMEM_CONSOLIDATION_ENABLED
+            ? retrieveStructMemConsolidationsTraced({
+                queryEmbedding,
+                sessionId: session.sessionId,
+                characterId: session.characterId,
+                exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+                latestFrontierTurnIndex: latestFrontierTurn,
+              })
+            : Promise.resolve([] as RetrievedStructMemConsolidation[]),
         ])
-      : [[], []];
+      : [[], [], []];
 
   const derivedState = computeDerivedState(
     recentTurns.length,
@@ -195,6 +210,7 @@ export async function resolveContext(input: {
     sessionSummary,
     sessionRecall,
     structMemEntries,
+    structMemConsolidations,
     queryRewrite,
   };
 }

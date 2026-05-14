@@ -5,7 +5,7 @@ export interface ModelBinding {
   model: string;
 }
 
-function parseModelBinding(value: string): ModelBinding {
+export function parseModelBinding(value: string): ModelBinding {
   const colonIdx = value.indexOf(":");
   if (colonIdx === -1) {
     throw new Error(
@@ -20,14 +20,31 @@ function parseModelBinding(value: string): ModelBinding {
   return { provider, model };
 }
 
+export function resolveConsolidationModelBinding(
+  value: string,
+  extractor: ModelBinding,
+): ModelBinding {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "EXTRACTOR_MODEL") {
+    return extractor;
+  }
+  return parseModelBinding(trimmed);
+}
+
+const extractor = parseModelBinding(env.EXTRACTOR_MODEL);
+
 export const models = {
   generation: parseModelBinding(env.GENERATION_MODEL),
   validator: parseModelBinding(env.VALIDATOR_MODEL),
-  extractor: parseModelBinding(env.EXTRACTOR_MODEL),
+  extractor,
   attributionJudge: parseModelBinding(
     env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL?.trim()
       ? env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL.trim()
       : env.EXTRACTOR_MODEL,
   ),
   embedding: parseModelBinding(env.EMBEDDING_MODEL),
+  consolidation: resolveConsolidationModelBinding(
+    env.STRUCTMEM_CONSOLIDATION_MODEL,
+    extractor,
+  ),
 } as const;
