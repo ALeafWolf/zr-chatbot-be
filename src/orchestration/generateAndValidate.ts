@@ -8,6 +8,7 @@ import type { ChatSession } from "../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../character/characterDefaults";
 import { loadCharacterDefaults } from "../character/characterDefaults";
 import {
+  traceLLMStage,
   traceStage,
   traceStreamingLLM,
 } from "../observability/langsmithTracing";
@@ -45,16 +46,29 @@ export type GenerateAndValidateYield =
 const tracedResponseGeneration = traceStreamingLLM(
   "llm.response_generation",
   generateWithToolsStream,
-  { tags: ["stage:draft"] },
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.generation, modelRole: "generation" },
+  },
 );
-const tracedValidate = traceStage(
+const tracedValidate = traceLLMStage(
   "llm.run_response_validator",
   runResponseValidator,
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.validator, modelRole: "validator" },
+  },
 );
 const tracedResponseRewriteGeneration = traceStreamingLLM(
   "llm.response_rewrite_generation",
   generateWithToolsStream,
-  { tags: ["stage:rewrite"] },
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.generation, modelRole: "generation" },
+  },
 );
 
 function buildToolMessages(

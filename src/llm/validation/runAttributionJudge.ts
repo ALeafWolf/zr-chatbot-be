@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { traceable } from "langsmith/traceable";
-import { env } from "../../config/env";
 import { models } from "../../config/models";
 import { chatJsonStream } from "../providers";
+import { traceLLMStage } from "../../observability/langsmithTracing";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
 export interface AttributionJudgeResult {
   has_attribution_claim: boolean;
@@ -77,17 +77,30 @@ Return the JSON object.`.trim();
   );
 
   if (!res.ok) {
-    return { verdict: FAIL_OPEN_VERDICT, usedFailOpen: true };
+    return attachTraceLlmMetadata(
+      { verdict: FAIL_OPEN_VERDICT, usedFailOpen: true },
+      {
+        binding: models.attributionJudge,
+        modelRole: "attributionJudge",
+        usage: res,
+      },
+    );
   }
 
-  return { verdict: res.data, usedFailOpen: false };
+  return attachTraceLlmMetadata(
+    { verdict: res.data, usedFailOpen: false },
+    {
+      binding: models.attributionJudge,
+      modelRole: "attributionJudge",
+      usage: res,
+    },
+  );
 }
 
-export const runAttributionJudge = traceable(attributionJudgeCore, {
-  name: "llm.run_attribution_judge",
-  run_type: "llm",
-  project_name: env.LANGSMITH_PROJECT,
-  tags: ["phase1", "llm", "phase:tier4", "subsystem:llm"],
+export const runAttributionJudge = traceLLMStage("llm.run_attribution_judge", attributionJudgeCore, {
+  subsystem: "llm",
+  turn: "foreground",
+  llm: { binding: models.attributionJudge, modelRole: "attributionJudge" },
   processInputs: (inputs: Readonly<Record<string, unknown>>) => ({
     draft_chars: typeof inputs.draft === "string" ? inputs.draft.length : 0,
     canon_chars:

@@ -274,6 +274,10 @@ const envSchema = z.object({
 
   // LangSmith
   // Optional tracing, project metadata, and eval dataset name.
+  TRACE_ENVIRONMENT: z.string().default(process.env.NODE_ENV ?? "development"),
+  APP_VERSION: z.string().default("dev"),
+  GIT_SHA: z.string().default("unknown"),
+  TRACE_PLAYER_HASH_SALT: z.string().default("zuoran-local-trace-salt"),
   LANGSMITH_TRACING: z
     .string()
     .default("false")

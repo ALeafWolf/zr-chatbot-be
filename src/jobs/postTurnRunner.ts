@@ -12,10 +12,14 @@ import {
 import type { SessionChunkTypePersisted } from "../memory/session/writeSessionMemoryChunk";
 import type { MemoryNamespace } from "../memory/shared/memoryNamespace";
 import {
+  traceLLMStage,
   traceStage,
   traceStageWithIO,
+  withTraceContext,
 } from "../observability/langsmithTracing";
 import { env } from "../config/env";
+import { models } from "../config/models";
+import { buildTraceBaseMetadata } from "../observability/traceMetadata";
 import { collectPhase1StructMemPersistRows } from "../memory/structmem/structmemMapping";
 import { writeStructMemTurn } from "../memory/structmem/writeStructMemTurn";
 import { eq, sql } from "drizzle-orm";
@@ -53,9 +57,14 @@ function unwrapPostTurnWritePlanTraceInput(
   return inputs as unknown as PostTurnWritePlanTraceInput;
 }
 
-const tracedExtract = traceStage(
+const tracedExtract = traceLLMStage(
   "llm.extract_post_turn_signals",
   extractPostTurnSignals,
+  {
+    subsystem: "llm",
+    turn: "background",
+    llm: { binding: models.extractor, modelRole: "extractor" },
+  },
 );
 
 const tracedBuildPostTurnWritePlan = traceStageWithIO(
@@ -63,7 +72,8 @@ const tracedBuildPostTurnWritePlan = traceStageWithIO(
   async (input: PostTurnWritePlanTraceInput) =>
     buildPostTurnWritePlan(input.session, input.env, input.signals),
   {
-    tags: ["post_turn", "policy"],
+    subsystem: "post_turn",
+    turn: "background",
     processInputs: (inputs) => {
       const input = unwrapPostTurnWritePlanTraceInput(inputs);
       return {
@@ -230,6 +240,23 @@ class PostTurnRunner extends BackgroundRunner {
         .slice(0, 3)
         .join("\n");
 
+      await withTraceContext(
+        {
+          baseMetadata: buildTraceBaseMetadata({
+            session,
+            turnIndex: payload.assistantTurnIndex,
+            extra: {
+              postTurnJobId: job.id,
+              userMessageId: payload.userMessageId,
+              assistantMessageId: payload.assistantMessageId,
+              userTurnIndex: payload.userTurnIndex,
+              assistantTurnIndex: payload.assistantTurnIndex,
+            },
+          }),
+          characterId: session.characterId,
+          turn: "background",
+        },
+        async () => {
       if (!isStepComplete(stepStatus, "raw_chunk")) {
         await writeRawTurnPairSessionChunkTraced({
           session,
@@ -396,6 +423,8 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       await this.completeJob(job.id);
+        },
+      );
     } catch (err) {
       await this.failJob(job, err);
     }

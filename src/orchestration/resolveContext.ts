@@ -115,7 +115,8 @@ const tracedRetrievalDiagnostics = traceStageWithIO(
   "retrieval.context_diagnostics",
   async (input: Record<string, unknown>) => input,
   {
-    tags: ["retrieval", "diagnostics"],
+    subsystem: "retrieval",
+    turn: "foreground",
     processOutputs: (outputs) => outputs,
   },
 );
@@ -124,7 +125,8 @@ const tracedPromptMemorySelector = traceStageWithIO(
   async (input: Parameters<typeof selectPromptMemoryContext>[0]) =>
     selectPromptMemoryContext(input),
   {
-    tags: ["retrieval", "selection"],
+    subsystem: "retrieval",
+    turn: "foreground",
     processInputs: (inputs) => {
       const input = inputs as unknown as Parameters<
         typeof selectPromptMemoryContext

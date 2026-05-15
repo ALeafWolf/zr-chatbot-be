@@ -2,6 +2,7 @@ import { z } from "zod";
 import { models } from "../../config/models";
 import { chatJsonStream } from "../../llm/providers";
 import { traceLLMStage, traceStage } from "../../observability/langsmithTracing";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { CANON_RETRIEVAL, CANON_TIER3 } from "../../character/canonRules";
 import { env } from "../../config/env";
 import { REWRITE_ANNOTATION_INSTRUCTIONS } from "../../orchestration/userMessageAnnotations";
@@ -260,9 +261,17 @@ const tracedPhaseB = traceLLMStage(
     );
 
     if (!res.ok) return null;
-    return res.data;
+    return attachTraceLlmMetadata(res.data, {
+      binding: models.extractor,
+      modelRole: "extractor",
+      usage: res,
+    });
   },
-  { tags: ["phase:tier3"] },
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.extractor, modelRole: "extractor" },
+  },
 );
 
 export function shouldUseAnnotationFallback(q: QueryRewriteResult): boolean {
@@ -345,7 +354,7 @@ async function rewriteQueryImpl(
 export const rewriteQuery = traceStage(
   "retrieval.query_rewrite",
   rewriteQueryImpl,
-  { tags: ["phase:tier3", "subsystem:retrieval.rewrite"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 // re-export parse for tests

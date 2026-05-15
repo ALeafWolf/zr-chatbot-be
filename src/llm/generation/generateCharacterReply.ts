@@ -120,4 +120,9 @@ async function* generateCharacterReplyStreamInner(
 export const generateCharacterReplyStream = traceStreamingLLM(
   "llm.generate_character_reply_stream",
   generateCharacterReplyStreamInner,
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.generation, modelRole: "generation" },
+  },
 );

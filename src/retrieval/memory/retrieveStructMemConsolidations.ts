@@ -165,5 +165,5 @@ async function retrieveStructMemConsolidationsInner(input: {
 export const retrieveStructMemConsolidationsTraced = traceStage(
   "retrieval.structmem_consolidations",
   retrieveStructMemConsolidationsInner,
-  { tags: ["structmem", "phase3", "phase4"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );

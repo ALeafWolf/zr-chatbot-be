@@ -7,6 +7,7 @@ import {
   runAttributionJudge,
   type AttributionJudgeResult,
 } from "./runAttributionJudge";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -358,7 +359,14 @@ Return the JSON validation result.`.trim();
       "[runResponseValidator] validator JSON parse failed; fail-open (accept draft).",
       result.error,
     );
-    return VALIDATOR_FAIL_OPEN;
+    return attachTraceLlmMetadata(
+      { ...VALIDATOR_FAIL_OPEN },
+      {
+        binding: models.validator,
+        modelRole: "validator",
+        usage: result,
+      },
+    );
   }
 
   let parsed = result.data;
@@ -405,8 +413,15 @@ Return the JSON validation result.`.trim();
     }
   }
 
-  return {
-    ...parsed,
-    ...(attributionJudgeMeta ? { attribution_judge: attributionJudgeMeta } : {}),
-  };
+  return attachTraceLlmMetadata(
+    {
+      ...parsed,
+      ...(attributionJudgeMeta ? { attribution_judge: attributionJudgeMeta } : {}),
+    },
+    {
+      binding: models.validator,
+      modelRole: "validator",
+      usage: result,
+    },
+  );
 }

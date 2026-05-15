@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { traceable } from "langsmith/traceable";
-import { env } from "../../config/env";
 import { models } from "../../config/models";
 import { chatJsonStream } from "../providers";
+import { traceLLMStage } from "../../observability/langsmithTracing";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
 export type MemoryDedupJudgeDecision =
   | "same"
@@ -62,21 +62,34 @@ Return the JSON object.`.trim();
   );
 
   if (!res.ok) {
-    return { decision: "distinct", usedFailOpen: true };
+    return attachTraceLlmMetadata(
+      { decision: "distinct", usedFailOpen: true },
+      {
+        binding: models.validator,
+        modelRole: "memoryDedupJudge",
+        usage: res,
+      },
+    );
   }
 
-  return {
-    decision: res.data.decision,
-    matchingCandidateId: res.data.matchingCandidateId,
-    usedFailOpen: false,
-  };
+  return attachTraceLlmMetadata(
+    {
+      decision: res.data.decision,
+      matchingCandidateId: res.data.matchingCandidateId,
+      usedFailOpen: false,
+    },
+    {
+      binding: models.validator,
+      modelRole: "memoryDedupJudge",
+      usage: res,
+    },
+  );
 }
 
-export const runMemoryDedupJudge = traceable(memoryDedupJudgeCore, {
-  name: "llm.run_memory_dedup_judge",
-  run_type: "llm",
-  project_name: env.LANGSMITH_PROJECT,
-  tags: ["phase1", "llm", "retrieval", "dedup"],
+export const runMemoryDedupJudge = traceLLMStage("llm.run_memory_dedup_judge", memoryDedupJudgeCore, {
+  subsystem: "llm",
+  turn: "background",
+  llm: { binding: models.validator, modelRole: "memoryDedupJudge" },
   processInputs: (inputs: Readonly<Record<string, unknown>>) => ({
     new_memory_chars:
       typeof inputs.newMemorySummary === "string"

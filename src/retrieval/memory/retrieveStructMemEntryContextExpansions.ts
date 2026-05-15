@@ -128,5 +128,5 @@ async function retrieveStructMemEntryContextExpansions(input: {
 export const retrieveStructMemEntryContextExpansionsTraced = traceStage(
   "retrieval.structmem_entry_context_expansions",
   retrieveStructMemEntryContextExpansions,
-  { tags: ["retrieval", "structmem"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );

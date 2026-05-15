@@ -8,6 +8,11 @@ import {
   failStructMemConsolidationJob,
   runStructMemConsolidation,
 } from "../memory/structmem/structmemConsolidationRepo";
+import { withTraceContext } from "../observability/langsmithTracing";
+import {
+  buildTraceBaseMetadata,
+  hashPlayerId,
+} from "../observability/traceMetadata";
 
 async function claimStructMemConsolidationJobImpl(
   workerId: string,
@@ -79,7 +84,26 @@ class StructMemConsolidationRunner extends BackgroundRunner {
       const job = await claimStructMemConsolidationJob(this.workerId);
       if (!job) return;
       try {
-        await runStructMemConsolidation(job);
+        await withTraceContext(
+          {
+            baseMetadata: buildTraceBaseMetadata({
+              extra: {
+                structmemConsolidationJobId: job.id,
+                sessionId: job.sessionId,
+                characterId: job.characterId,
+                playerIdHash: hashPlayerId(job.playerId),
+                memoryNamespace: job.memoryNamespace,
+                turnStart: job.turnStart,
+                turnEnd: job.turnEnd,
+              },
+            }),
+            characterId: job.characterId,
+            turn: "background",
+          },
+          async () => {
+            await runStructMemConsolidation(job);
+          },
+        );
       } catch (err) {
         await failStructMemConsolidationJob(job, err);
         console.error(

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { chatJson } from "../providers";
 import { models } from "../../config/models";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
+import { traceLLMStage } from "../../observability/langsmithTracing";
 import type { MessageRow } from "../../retrieval/conversation/getMessagesByTurnRange";
 import {
   SESSION_SUMMARY_MAX_SITUATION_CHARS,
@@ -86,7 +88,7 @@ export interface RunSessionSummaryMergerResult {
  * Merge existing structured summary with a compacted transcript segment (Phase 2).
  * Renders summary_text from summary_json for a single source of truth.
  */
-export async function runSessionSummaryMerger(
+async function runSessionSummaryMergerImpl(
   input: RunSessionSummaryMergerInput,
 ): Promise<RunSessionSummaryMergerResult> {
   const existing = normalizeSessionSummaryJson(input.existingSummaryJson);
@@ -119,10 +121,17 @@ ${segmentBody || "（空片段）"}
       result.error,
     );
     const fallback = buildFallbackSummary(existing, segmentBody);
-    return {
-      summaryJson: fallback,
-      summaryText: renderSessionSummaryForPrompt(fallback),
-    };
+    return attachTraceLlmMetadata(
+      {
+        summaryJson: fallback,
+        summaryText: renderSessionSummaryForPrompt(fallback),
+      },
+      {
+        binding: models.extractor,
+        modelRole: "extractor",
+        usage: result,
+      },
+    );
   }
 
   const body = extractMergerEnvelopeBody(result.data);
@@ -131,16 +140,40 @@ ${segmentBody || "（空片段）"}
       "[runSessionSummaryMerger] missing or empty summary body after parse; using tail-append fallback.",
     );
     const fallback = buildFallbackSummary(existing, segmentBody);
-    return {
-      summaryJson: fallback,
-      summaryText: renderSessionSummaryForPrompt(fallback),
-    };
+    return attachTraceLlmMetadata(
+      {
+        summaryJson: fallback,
+        summaryText: renderSessionSummaryForPrompt(fallback),
+      },
+      {
+        binding: models.extractor,
+        modelRole: "extractor",
+        usage: result,
+      },
+    );
   }
 
   const summaryJson = mergeMergerPayloadIntoExisting(existing, body);
 
-  return {
-    summaryJson,
-    summaryText: renderSessionSummaryForPrompt(summaryJson),
-  };
+  return attachTraceLlmMetadata(
+    {
+      summaryJson,
+      summaryText: renderSessionSummaryForPrompt(summaryJson),
+    },
+    {
+      binding: models.extractor,
+      modelRole: "extractor",
+      usage: result,
+    },
+  );
 }
+
+export const runSessionSummaryMerger = traceLLMStage(
+  "llm.session_summary_merger",
+  runSessionSummaryMergerImpl,
+  {
+    subsystem: "llm",
+    turn: "background",
+    llm: { binding: models.extractor, modelRole: "extractor" },
+  },
+);

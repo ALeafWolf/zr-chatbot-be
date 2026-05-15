@@ -11,7 +11,11 @@ import { generateAndValidateStream } from "./generateAndValidate";
 import { postTurnRunner } from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
 import { CANON_RETRIEVAL } from "../character/canonRules";
-import { traceStage } from "../observability/langsmithTracing";
+import {
+  traceStage,
+  withTraceContext,
+} from "../observability/langsmithTracing";
+import { buildTraceBaseMetadata } from "../observability/traceMetadata";
 import type { Thought } from "./thoughtTypes";
 import { generateThoughtSummary } from "../llm/generation/generateThoughtSummary";
 import {
@@ -326,10 +330,34 @@ async function _runCharacterTurnStreamTraced(input: StreamTurnInput): Promise<vo
   }
 }
 
-export const runCharacterTurnStreamTraced = traceStage(
+async function loadTraceSession(sessionId: string): Promise<ChatSession | null> {
+  const rows = await db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.sessionId, sessionId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+const tracedRunCharacterTurnStream = traceStage(
   "orchestration.run_character_turn_stream",
   _runCharacterTurnStreamTraced,
+  { root: true, subsystem: "orchestration" },
 );
+
+export async function runCharacterTurnStreamTraced(
+  input: StreamTurnInput,
+): Promise<void> {
+  const session = await loadTraceSession(input.sessionId);
+  return await withTraceContext(
+    {
+      baseMetadata: buildTraceBaseMetadata({ session }),
+      characterId: session?.characterId,
+      turn: "foreground",
+    },
+    async () => await tracedRunCharacterTurnStream(input),
+  );
+}
 
 async function _runCharacterTurn(input: TurnInput): Promise<TurnOutput> {
   let output: TurnOutput | undefined;
@@ -353,7 +381,20 @@ async function _runCharacterTurn(input: TurnInput): Promise<TurnOutput> {
   return output;
 }
 
-export const runCharacterTurn = traceStage(
+const tracedRunCharacterTurn = traceStage(
   "orchestration.run_character_turn",
   _runCharacterTurn,
+  { root: true, subsystem: "orchestration" },
 );
+
+export async function runCharacterTurn(input: TurnInput): Promise<TurnOutput> {
+  const session = await loadTraceSession(input.sessionId);
+  return await withTraceContext(
+    {
+      baseMetadata: buildTraceBaseMetadata({ session }),
+      characterId: session?.characterId,
+      turn: "foreground",
+    },
+    async () => await tracedRunCharacterTurn(input),
+  );
+}

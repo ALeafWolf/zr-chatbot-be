@@ -2,6 +2,7 @@ import { z } from "zod";
 import { models } from "../../config/models";
 import { env } from "../../config/env";
 import { chatJson } from "../providers";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { scoreMemoryImportance } from "../../memory/shared/scoreMemoryImportance";
 import type { MemoryCandidate, MemoryScope } from "../../memory/interactive/writeInteractiveMemory";
 import type { RawImportanceComponents } from "../../memory/shared/scoreMemoryImportance";
@@ -337,15 +338,22 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
       "[extractPostTurnSignals] chatJson failed; no memories extracted.",
       result.error,
     );
-    return {
-      memoryFacts: [],
-      structMemEntries: [],
-      emotionalDelta: null,
-      modelReportedConfidence: {
-        memoryFacts: 0,
-        emotionalDelta: 0,
+    return attachTraceLlmMetadata(
+      {
+        memoryFacts: [],
+        structMemEntries: [],
+        emotionalDelta: null,
+        modelReportedConfidence: {
+          memoryFacts: 0,
+          emotionalDelta: 0,
+        },
       },
-    };
+      {
+        binding: models.extractor,
+        modelRole: "extractor",
+        usage: result,
+      },
+    );
   }
 
   const parsed = result.data;
@@ -389,13 +397,20 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
     }
   }
 
-  return {
-    memoryFacts,
-    structMemEntries,
-    emotionalDelta: null,
-    modelReportedConfidence: {
-      memoryFacts: parsed.confidence ?? 0,
-      emotionalDelta: 0,
+  return attachTraceLlmMetadata(
+    {
+      memoryFacts,
+      structMemEntries,
+      emotionalDelta: null,
+      modelReportedConfidence: {
+        memoryFacts: parsed.confidence ?? 0,
+        emotionalDelta: 0,
+      },
     },
-  };
+    {
+      binding: models.extractor,
+      modelRole: "extractor",
+      usage: result,
+    },
+  );
 }

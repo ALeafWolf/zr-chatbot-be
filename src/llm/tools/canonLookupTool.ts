@@ -79,7 +79,8 @@ const runCanonLookupTraced = traceStageWithIO(
     }
   },
   {
-    tags: ["phase:tier4", "subsystem:tool"],
+    subsystem: "retrieval",
+    turn: "foreground",
     processInputs: (inputs) => {
       const q = typeof inputs.query === "string" ? inputs.query : "";
       return {

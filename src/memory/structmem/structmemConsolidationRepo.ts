@@ -172,7 +172,7 @@ async function maybeEnqueueStructMemConsolidationImpl(input: {
 export const maybeEnqueueStructMemConsolidation = traceStage(
   "memory.maybe_enqueue_structmem_consolidation",
   maybeEnqueueStructMemConsolidationImpl,
-  { tags: ["structmem", "phase3"] },
+  { subsystem: "structmem", turn: "background" },
 );
 
 async function fetchBufferEntries(
@@ -471,7 +471,7 @@ async function maybeWriteCrossSessionConsolidations(input: {
 export const maybeWriteCrossSessionStructMemConsolidations = traceStage(
   "memory.write_cross_session_structmem_consolidations",
   maybeWriteCrossSessionConsolidations,
-  { tags: ["structmem", "phase4"] },
+  { subsystem: "structmem", turn: "background" },
 );
 
 async function runStructMemConsolidationImpl(
@@ -580,7 +580,7 @@ async function runStructMemConsolidationImpl(
 export const runStructMemConsolidation = traceStage(
   "memory.run_structmem_consolidation",
   runStructMemConsolidationImpl,
-  { tags: ["structmem", "phase3"] },
+  { subsystem: "structmem", turn: "background" },
 );
 
 export async function failStructMemConsolidationJob(

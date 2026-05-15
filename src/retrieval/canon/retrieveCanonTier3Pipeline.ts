@@ -202,7 +202,7 @@ const tracedSceneSummarySearch = traceStage(
       p.limit,
       p.rrfK,
     ),
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 const tracedFactSearch = traceStage(
@@ -223,7 +223,7 @@ const tracedFactSearch = traceStage(
       p.limit,
       p.rrfK,
     ),
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 const tracedUnitSearch = traceStage(
@@ -244,7 +244,7 @@ const tracedUnitSearch = traceStage(
       p.limit,
       p.rrfK,
     ),
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 const tracedLexicalSearch = traceStage(
@@ -270,7 +270,7 @@ const tracedLexicalSearch = traceStage(
     });
     return sceneIdsFromLexHits(hits);
   },
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 const tracedAnchorFusion = traceStage(
@@ -284,13 +284,13 @@ const tracedAnchorFusion = traceStage(
     Promise.resolve(
       fuseAnchorScenes(input.lists, input.rrfK, input.topN, input.weights),
     ),
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 const tracedFineExpansion = traceStage(
   "retrieval.canon.fine_expansion",
   expandAnchorScenes,
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );
 
 async function runTier3Core(input: {
@@ -389,5 +389,5 @@ async function runTier3Core(input: {
 export const retrieveCanonCoarseToFine = traceStage(
   "retrieval.canon",
   runTier3Core,
-  { tags: ["phase:tier3", "subsystem:retrieval.canon"] },
+  { subsystem: "retrieval", turn: "foreground" },
 );

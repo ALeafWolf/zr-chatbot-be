@@ -2,6 +2,7 @@ import { z } from "zod";
 import { models } from "../../config/models";
 import { chatJson } from "../../llm/providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import type { ConsolidationCandidateEntry } from "./structmemConsolidationSelection";
 import type { StructMemStableCategory } from "./structmemPhase4Policy";
 import { normalizeStableCategory } from "./structmemPhase4Policy";
@@ -143,7 +144,29 @@ async function synthesizeStructMemConsolidationImpl(input: {
 export const synthesizeStructMemConsolidation = traceLLMStage(
   "llm.structmem_consolidation",
   synthesizeStructMemConsolidationImpl,
-  { tags: ["structmem", "phase3"] },
+  {
+    subsystem: "llm",
+    turn: "background",
+    llm: { binding: models.consolidation, modelRole: "consolidation" },
+    getUsage: (outputs) => {
+      const telemetry = (outputs as { telemetry?: unknown })?.telemetry;
+      if (!telemetry || typeof telemetry !== "object") return undefined;
+      const usage = telemetry as {
+        inputTokens?: unknown;
+        outputTokens?: unknown;
+      };
+      if (
+        typeof usage.inputTokens !== "number" ||
+        typeof usage.outputTokens !== "number"
+      ) {
+        return undefined;
+      }
+      return {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      };
+    },
+  },
 );
 
 function buildCrossSessionDistillationPrompt(input: {
@@ -191,11 +214,22 @@ async function distillCrossSessionStructMemImpl(input: {
     throw new Error(`StructMem cross-session distillation failed: ${result.error}`);
   }
 
-  return StructMemCrossSessionDistillationOutputSchema.parse(result.data);
+  return attachTraceLlmMetadata(
+    StructMemCrossSessionDistillationOutputSchema.parse(result.data),
+    {
+      binding: models.consolidation,
+      modelRole: "consolidation",
+      usage: result,
+    },
+  );
 }
 
 export const distillCrossSessionStructMem = traceLLMStage(
   "llm.structmem_cross_session_distillation",
   distillCrossSessionStructMemImpl,
-  { tags: ["structmem", "phase4"] },
+  {
+    subsystem: "llm",
+    turn: "background",
+    llm: { binding: models.consolidation, modelRole: "consolidation" },
+  },
 );
