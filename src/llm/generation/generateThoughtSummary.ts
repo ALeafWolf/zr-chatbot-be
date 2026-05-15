@@ -2,12 +2,20 @@ import { createHash } from "crypto";
 import { getProvider } from "../providers";
 import { models } from "../../config/models";
 import type { ThoughtKind } from "../../orchestration/thoughtTypes";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
 export interface ThoughtSummaryInput {
   characterName: string;
   stage: ThoughtKind;
   context: Record<string, unknown>;
   voiceHints?: string;
+}
+
+export interface ThoughtSummaryResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheHit: boolean;
 }
 
 function hashKey(parts: unknown[]): string {
@@ -26,9 +34,24 @@ export async function generateThoughtSummary(
   input: ThoughtSummaryInput,
   cache: Map<string, string>,
 ): Promise<string> {
+  const result = await generateThoughtSummaryWithUsage(input, cache);
+  return result.text;
+}
+
+export async function generateThoughtSummaryWithUsage(
+  input: ThoughtSummaryInput,
+  cache: Map<string, string>,
+): Promise<ThoughtSummaryResult> {
   const key = hashKey([input.stage, input.characterName, input.context]);
   const hit = cache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    return {
+      text: hit,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheHit: true,
+    };
+  }
 
   const provider = getProvider(models.extractor);
 
@@ -61,5 +84,20 @@ export async function generateThoughtSummary(
     res.content.replace(/\s+/g, " ").trim().slice(0, 80) ||
     "我得先理清这些。";
   cache.set(key, line);
-  return line;
+  return attachTraceLlmMetadata(
+    {
+      text: line,
+      inputTokens: res.inputTokens,
+      outputTokens: res.outputTokens,
+      cacheHit: false,
+    },
+    {
+      binding: models.extractor,
+      modelRole: "extractor",
+      usage: {
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
+      },
+    },
+  );
 }

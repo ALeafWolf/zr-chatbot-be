@@ -6,18 +6,26 @@ import {
   loadPersonaOverlay,
 } from "../character/characterDefaults";
 import { resolveContext } from "./resolveContext";
-import { buildPromptContext } from "./buildPromptContext";
+import { buildPromptContextTraced } from "./buildPromptContext";
 import { generateAndValidateStream } from "./generateAndValidate";
 import { postTurnRunner } from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
 import { CANON_RETRIEVAL } from "../character/canonRules";
 import {
+  traceLLMStage,
   traceStage,
   withTraceContext,
 } from "../observability/langsmithTracing";
-import { buildTraceBaseMetadata } from "../observability/traceMetadata";
+import {
+  attachTraceLlmMetadata,
+  buildTraceBaseMetadata,
+} from "../observability/traceMetadata";
+import { models } from "../config/models";
 import type { Thought } from "./thoughtTypes";
-import { generateThoughtSummary } from "../llm/generation/generateThoughtSummary";
+import {
+  generateThoughtSummary,
+  generateThoughtSummaryWithUsage,
+} from "../llm/generation/generateThoughtSummary";
 import {
   persistCompletedTurn,
   updateAssistantMessageThoughts,
@@ -27,6 +35,94 @@ import {
   takeReadyRecallThought,
   waitForRecallThought,
 } from "./recallThoughtTask";
+
+type RecallThoughtTraceInput = {
+  characterName: string;
+  context: {
+    memories: Array<{ type: string; summary: string }>;
+    canon: Array<{ excerpt: string }>;
+  };
+  voiceHints: string;
+  cache: Map<string, string>;
+  traceState: { timedOutBeforeFinalReplay: boolean };
+};
+
+type RecallThoughtTraceOutput = {
+  text: string;
+  memoryContextPresent: boolean;
+  canonContextPresent: boolean;
+  memoryContextCount: number;
+  canonContextCount: number;
+  outputChars: number;
+  timedOutBeforeFinalReplay: boolean;
+};
+
+const tracedRecallThought = traceLLMStage(
+  "llm.recall_thought",
+  async (input: RecallThoughtTraceInput): Promise<RecallThoughtTraceOutput> => {
+    const thought = await generateThoughtSummaryWithUsage(
+      {
+        characterName: input.characterName,
+        stage: "recall",
+        context: input.context,
+        voiceHints: input.voiceHints,
+      },
+      input.cache,
+    );
+    const output = {
+      text: thought.text,
+      memoryContextPresent: input.context.memories.length > 0,
+      canonContextPresent: input.context.canon.length > 0,
+      memoryContextCount: input.context.memories.length,
+      canonContextCount: input.context.canon.length,
+      outputChars: thought.text.length,
+      timedOutBeforeFinalReplay: input.traceState.timedOutBeforeFinalReplay,
+    };
+    if (thought.cacheHit) return output;
+    return attachTraceLlmMetadata(output, {
+      binding: models.extractor,
+      modelRole: "extractor",
+      usage: {
+        inputTokens: thought.inputTokens,
+        outputTokens: thought.outputTokens,
+      },
+    });
+  },
+  {
+    subsystem: "llm",
+    turn: "foreground",
+    llm: { binding: models.extractor, modelRole: "extractor" },
+    processInputs: (inputs) => {
+      const input = unwrapRecallThoughtInput(inputs);
+      return {
+        memoryContextPresent: input.context.memories.length > 0,
+        canonContextPresent: input.context.canon.length > 0,
+        memoryContextCount: input.context.memories.length,
+        canonContextCount: input.context.canon.length,
+      };
+    },
+    processOutputs: (outputs) => {
+      const out = outputs as unknown as RecallThoughtTraceOutput;
+      return {
+        memoryContextPresent: out.memoryContextPresent,
+        canonContextPresent: out.canonContextPresent,
+        memoryContextCount: out.memoryContextCount,
+        canonContextCount: out.canonContextCount,
+        outputChars: out.outputChars,
+        timedOutBeforeFinalReplay: out.timedOutBeforeFinalReplay,
+      };
+    },
+  },
+);
+
+function unwrapRecallThoughtInput(
+  inputs: Record<string, unknown>,
+): RecallThoughtTraceInput {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as RecallThoughtTraceInput;
+  }
+  return inputs as unknown as RecallThoughtTraceInput;
+}
 
 export interface TurnInput {
   sessionId: string;
@@ -112,7 +208,7 @@ export async function* runCharacterTurnStream(
       characterDefaults,
     });
 
-    const promptContext = buildPromptContext({
+    const promptContext = await buildPromptContextTraced({
       characterDefaults,
       personaOverlay,
       session,
@@ -136,6 +232,7 @@ export async function* runCharacterTurnStream(
 
     const thoughtSummaryCache = new Map<string, string>();
     const thoughtsAcc: Thought[] = [];
+    const recallTraceState = { timedOutBeforeFinalReplay: false };
 
     const canonExcerptsForThought =
       context.canonScenes.length > 0
@@ -149,10 +246,9 @@ export async function* runCharacterTurnStream(
     const recallThoughtTask =
       context.memories.length > 0 || canonExcerptsForThought.length > 0
         ? createRecallThoughtTask(async () => {
-            const recallLine = await generateThoughtSummary(
+            const recallRun = await tracedRecallThought(
               {
                 characterName: characterDefaults.name,
-                stage: "recall",
                 context: {
                   memories: context.memories.slice(0, 5).map((m) => ({
                     type: m.memoryType,
@@ -161,12 +257,13 @@ export async function* runCharacterTurnStream(
                   canon: canonExcerptsForThought,
                 },
                 voiceHints,
+                cache: thoughtSummaryCache,
+                traceState: recallTraceState,
               },
-              thoughtSummaryCache,
             );
             return {
               kind: "recall",
-              text: recallLine,
+              text: recallRun.text,
               ts: Date.now(),
             };
           })
@@ -268,6 +365,9 @@ export async function* runCharacterTurnStream(
 
     const result = resultPayload;
     const finalRecallThought = await waitForRecallThought(recallThoughtTask);
+    if (finalRecallThought.timedOut) {
+      recallTraceState.timedOutBeforeFinalReplay = true;
+    }
     if (finalRecallThought.thought) {
       thoughtsAcc.push(finalRecallThought.thought);
       yield { event: "thought", data: finalRecallThought.thought };

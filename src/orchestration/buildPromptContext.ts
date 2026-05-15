@@ -29,6 +29,12 @@ import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
 } from "./memoryCorrections";
+import { traceStageWithIO } from "../observability/langsmithTracing";
+import {
+  attachTracePayload,
+  buildPromptTracePayload,
+  getAttachedTracePayload,
+} from "../observability/tracePayloads";
 
 export interface PromptContext {
   systemPrompt: string;
@@ -36,6 +42,8 @@ export interface PromptContext {
   /** Plain text of canon section for validator attribution checks. */
   retrievedCanonNarrative?: string;
 }
+
+export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
 
 /**
  * Build the full prompt context following the Phase 1-2 block order:
@@ -267,6 +275,67 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     conversationHistory,
     retrievedCanonNarrative: canonNarrativeBody,
   };
+}
+
+async function buildPromptContextTracedImpl(
+  input: BuildPromptContextInput,
+): Promise<PromptContext> {
+  const promptContext = buildPromptContext(input);
+  return attachTracePayload(
+    promptContext,
+    {
+      ...buildPromptTracePayload({
+      ...promptContext,
+      selectedSourceCounts: {
+        memories: input.memories.length,
+        canonChunks: input.canonChunks.length,
+        canonScenes: input.canonScenes?.length ?? 0,
+        recentTurns: input.recentTurns.length,
+        openThreads: input.openThreads?.length ?? 0,
+        memoryCorrections: input.memoryCorrections?.length ?? 0,
+        sessionRecall: input.sessionRecall?.length ?? 0,
+        structMemEntries: input.structMemEntries?.length ?? 0,
+        structMemEntryContextExpansions:
+          input.structMemEntryContextExpansions?.length ?? 0,
+        structMemConsolidations: input.structMemConsolidations?.length ?? 0,
+      },
+      }),
+    },
+  );
+}
+
+export const buildPromptContextTraced = traceStageWithIO(
+  "prompt.build_context",
+  buildPromptContextTracedImpl,
+  {
+    subsystem: "orchestration",
+    turn: "foreground",
+    processInputs: (inputs) => {
+      const input = unwrapBuildPromptContextInput(inputs);
+      return {
+        selectedSourceCounts: {
+          memories: input.memories.length,
+          canonChunks: input.canonChunks.length,
+          canonScenes: input.canonScenes?.length ?? 0,
+          recentTurns: input.recentTurns.length,
+          openThreads: input.openThreads?.length ?? 0,
+          sessionRecall: input.sessionRecall?.length ?? 0,
+          structMemEntries: input.structMemEntries?.length ?? 0,
+          structMemConsolidations: input.structMemConsolidations?.length ?? 0,
+        },
+      };
+    },
+    processOutputs: (outputs) => getAttachedTracePayload(outputs) ?? {},
+  },
+);
+
+function unwrapBuildPromptContextInput(
+  inputs: Record<string, unknown>,
+): BuildPromptContextInput {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as BuildPromptContextInput;
+  }
+  return inputs as unknown as BuildPromptContextInput;
 }
 
 function buildBlock(label: string, content: string): string {

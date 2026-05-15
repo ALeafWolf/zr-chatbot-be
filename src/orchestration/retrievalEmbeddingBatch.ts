@@ -1,3 +1,8 @@
+import { models } from "../config/models";
+import { embedText } from "../llm/embeddings/embedText";
+import { traceStageWithIO } from "../observability/langsmithTracing";
+import { estimateTextTokens } from "../observability/tracePayloads";
+
 export type RetrievalEmbeddingKey = "memory" | "canon" | "rawMemory" | "hyde";
 
 export interface RetrievalEmbeddingRequest {
@@ -20,6 +25,22 @@ export interface RetrievalEmbeddingBatchResult {
   canonQueryEmbedding: number[];
   rawMemoryQueryEmbedding?: number[];
   hypotheticalQueryEmbedding?: number[];
+}
+
+export interface RetrievalEmbeddingBatchTraceResult
+  extends RetrievalEmbeddingBatchResult {
+  trace: RetrievalEmbeddingBatchTracePayload;
+}
+
+export interface RetrievalEmbeddingBatchTracePayload {
+  queryKinds: RetrievalEmbeddingKey[];
+  embeddingModelProvider: string;
+  embeddingModelName: string;
+  inputCharCounts: Record<RetrievalEmbeddingKey, number>;
+  estimatedInputTokens: Record<RetrievalEmbeddingKey, number>;
+  requestedCount: number;
+  failedCount: number;
+  durationMs: number;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -69,4 +90,94 @@ export function mapRetrievalEmbeddingResults(
     rawMemoryQueryEmbedding: byKey.get("rawMemory"),
     hypotheticalQueryEmbedding: byKey.get("hyde"),
   };
+}
+
+export function buildRetrievalEmbeddingBatchTracePayload(input: {
+  requests: RetrievalEmbeddingRequest[];
+  failedCount: number;
+  durationMs: number;
+}): RetrievalEmbeddingBatchTracePayload {
+  return {
+    queryKinds: input.requests.map((request) => request.key),
+    embeddingModelProvider: models.embedding.provider,
+    embeddingModelName: models.embedding.model,
+    inputCharCounts: Object.fromEntries(
+      input.requests.map((request) => [request.key, request.text.length]),
+    ) as Record<RetrievalEmbeddingKey, number>,
+    estimatedInputTokens: Object.fromEntries(
+      input.requests.map((request) => [
+        request.key,
+        estimateTextTokens(request.text),
+      ]),
+    ) as Record<RetrievalEmbeddingKey, number>,
+    requestedCount: input.requests.length,
+    failedCount: input.failedCount,
+    durationMs: input.durationMs,
+  };
+}
+
+async function runRetrievalEmbeddingBatchInner(input: {
+  requests: RetrievalEmbeddingRequest[];
+  embed?: (text: string) => Promise<number[]>;
+}): Promise<RetrievalEmbeddingBatchTraceResult> {
+  const startedAt = Date.now();
+  const embed = input.embed ?? embedText;
+  try {
+    const embeddings = await Promise.all(
+      input.requests.map((request) => embed(request.text)),
+    );
+    return {
+      ...mapRetrievalEmbeddingResults(input.requests, embeddings),
+      trace: buildRetrievalEmbeddingBatchTracePayload({
+        requests: input.requests,
+        failedCount: 0,
+        durationMs: Date.now() - startedAt,
+      }),
+    };
+  } catch (err) {
+    (err as Error & { trace?: RetrievalEmbeddingBatchTracePayload }).trace =
+      buildRetrievalEmbeddingBatchTracePayload({
+        requests: input.requests,
+        failedCount: 1,
+        durationMs: Date.now() - startedAt,
+      });
+    throw err;
+  }
+}
+
+export const runRetrievalEmbeddingBatch = traceStageWithIO(
+  "embedding.query_batch",
+  runRetrievalEmbeddingBatchInner,
+  {
+    subsystem: "retrieval",
+    turn: "foreground",
+    metadata: {
+      modelProvider: models.embedding.provider,
+      modelName: models.embedding.model,
+      modelRole: "embedding",
+    },
+    processInputs: (inputs) => {
+      const input = unwrapEmbeddingTraceInput(inputs);
+      return {
+        ...buildRetrievalEmbeddingBatchTracePayload({
+        requests: input.requests,
+        failedCount: 0,
+        durationMs: 0,
+        }),
+      };
+    },
+    processOutputs: (outputs) => {
+      const result = outputs as unknown as RetrievalEmbeddingBatchTraceResult;
+      return { ...result.trace };
+    },
+  },
+);
+
+function unwrapEmbeddingTraceInput(inputs: Record<string, unknown>): {
+  requests: RetrievalEmbeddingRequest[];
+} {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as { requests: RetrievalEmbeddingRequest[] };
+  }
+  return inputs as unknown as { requests: RetrievalEmbeddingRequest[] };
 }

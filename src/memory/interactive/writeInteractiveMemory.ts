@@ -8,6 +8,7 @@ import {
 } from "../shared/memoryNamespace";
 import { deduplicateMemory } from "./deduplicateMemory";
 import { MEMORY_IMPORTANCE_THRESHOLD } from "../../character/canonRules";
+import { traceStageWithIO } from "../../observability/langsmithTracing";
 
 export type MemoryScope = "cross_session" | "current_session";
 
@@ -48,7 +49,7 @@ export interface WriteMemoryInput {
  * Repository guard: throws if the namespace does not match the
  * session's continuity family, preventing AU/main-world cross-writes.
  */
-export async function writeInteractiveMemory(
+async function writeInteractiveMemoryImpl(
   input: WriteMemoryInput,
 ): Promise<"written" | "deduplicated" | "below_threshold"> {
   const {
@@ -100,4 +101,58 @@ export async function writeInteractiveMemory(
 
   await db.insert(interactiveMemoryEvents).values(row);
   return "written";
+}
+
+export const writeInteractiveMemory = traceStageWithIO(
+  "memory.write_durable_memory",
+  writeInteractiveMemoryImpl,
+  {
+    subsystem: "memory",
+    turn: "background",
+    processInputs: (inputs) => {
+      const input = unwrapWriteMemoryInput(inputs);
+      return {
+        sessionId: input.sessionId,
+        characterId: input.characterId,
+        continuityScope: input.continuityScope,
+        continuityFamily: input.continuityFamily,
+        memoryNamespace: input.memoryNamespace,
+        candidateType: input.candidate.memoryType,
+        importanceScore: input.candidate.importanceScore,
+        emotionScore: input.candidate.emotionScore,
+        summaryChars: input.candidate.summary.length,
+        tagCount: input.candidate.tags?.length ?? 0,
+      };
+    },
+    processOutputs: (outputs) =>
+      buildDurableMemoryWriteTraceOutput(
+        ((outputs as { outputs?: unknown }).outputs ?? outputs) as
+          | "written"
+          | "deduplicated"
+          | "below_threshold",
+      ),
+  },
+);
+
+export function buildDurableMemoryWriteTraceOutput(
+  status: "written" | "deduplicated" | "below_threshold",
+): {
+  status: "written" | "deduplicated" | "below_threshold";
+  written: boolean;
+  deduplicated: boolean;
+  skippedBelowThreshold: boolean;
+} {
+  return {
+    status,
+    written: status === "written",
+    deduplicated: status === "deduplicated",
+    skippedBelowThreshold: status === "below_threshold",
+  };
+}
+
+function unwrapWriteMemoryInput(inputs: Record<string, unknown>): WriteMemoryInput {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as WriteMemoryInput;
+  }
+  return inputs as unknown as WriteMemoryInput;
 }

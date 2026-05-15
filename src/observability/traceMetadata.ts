@@ -57,6 +57,8 @@ export interface TraceBaseMetadata {
 export interface TraceLlmMetadata {
   modelProvider: ModelBinding["provider"];
   modelName: string;
+  ls_provider: ModelBinding["provider"];
+  ls_model_name: string;
   modelRole?: TraceModelRole;
   inputTokens?: number;
   outputTokens?: number;
@@ -165,6 +167,8 @@ export function buildLlmTraceMetadata(input: {
   return {
     modelProvider: input.binding.provider,
     modelName: input.binding.model,
+    ls_provider: input.binding.provider,
+    ls_model_name: input.binding.model,
     ...(input.modelRole ? { modelRole: input.modelRole } : {}),
     ...(usage ?? {}),
   };
@@ -226,7 +230,7 @@ export function attachTraceLlmMetadata<T extends object>(
 ): T {
   Object.defineProperty(value, TRACE_LLM_METADATA_SYMBOL, {
     value: buildLlmTraceMetadata(input),
-    enumerable: false,
+    enumerable: true,
     configurable: true,
   });
   return value;
@@ -239,6 +243,23 @@ export function getAttachedTraceLlmMetadata(
   return (value as Record<symbol, unknown>)[TRACE_LLM_METADATA_SYMBOL] as
     | TraceLlmMetadata
     | undefined;
+}
+
+export function findAttachedTraceLlmMetadata(
+  value: unknown,
+): TraceLlmMetadata | undefined {
+  const direct = getAttachedTraceLlmMetadata(value);
+  if (direct) return direct;
+
+  if (!value || typeof value !== "object") return undefined;
+  const rec = value as Record<string, unknown>;
+
+  for (const key of ["output", "outputs", "result", "data"] as const) {
+    const nested = getAttachedTraceLlmMetadata(rec[key]);
+    if (nested) return nested;
+  }
+
+  return undefined;
 }
 
 export function formatModelBinding(binding: ModelBinding): string {

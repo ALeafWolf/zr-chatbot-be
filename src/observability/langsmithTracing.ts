@@ -5,7 +5,7 @@ import type { ModelBinding } from "../config/models";
 import { env } from "../config/env";
 import {
   buildLlmTraceMetadata,
-  getAttachedTraceLlmMetadata,
+  findAttachedTraceLlmMetadata,
   type TraceLlmMetadata,
   type TraceModelRole,
   type TraceUsageInput,
@@ -59,6 +59,18 @@ export interface TraceWrapperOptions {
 }
 
 const traceContextStorage = new AsyncLocalStorage<TraceRuntimeContext>();
+
+function isTestProcess(): boolean {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.npm_lifecycle_event === "test:unit" ||
+    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test="))
+  );
+}
+
+function shouldTraceLangSmith(): boolean {
+  return env.LANGSMITH_TRACING && !isTestProcess();
+}
 
 export function getTraceContext(): TraceRuntimeContext | undefined {
   return traceContextStorage.getStore();
@@ -179,7 +191,7 @@ function extractLlmMetadata(
   outputs: unknown,
   opts: TraceWrapperOptions,
 ): TraceLlmMetadata | undefined {
-  const attached = getAttachedTraceLlmMetadata(outputs);
+  const attached = findAttachedTraceLlmMetadata(outputs);
   if (attached) return attached;
   const usage = opts.getUsage?.(outputs) ?? usageFromOutputShape(outputs);
   if (!usage || !opts.llm) return undefined;
@@ -193,8 +205,14 @@ function extractLlmMetadata(
 function usageFromOutputShape(outputs: unknown): TraceUsageInput | undefined {
   if (!outputs || typeof outputs !== "object") return undefined;
   const rec = outputs as Record<string, unknown>;
-  const inputTokens = rec.inputTokens;
-  const outputTokens = rec.outputTokens;
+  const shaped =
+    rec.inputTokens !== undefined || rec.outputTokens !== undefined
+      ? rec
+      : typeof rec.output === "object" && rec.output
+        ? (rec.output as Record<string, unknown>)
+        : rec;
+  const inputTokens = shaped.inputTokens;
+  const outputTokens = shaped.outputTokens;
   if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
     return undefined;
   }
@@ -214,6 +232,8 @@ function withLlmOutputMetadata(
     estimatedCostUsd: llmMetadata.estimatedCostUsd,
     pricingKnown: llmMetadata.pricingKnown,
     pricingVersion: llmMetadata.pricingVersion,
+    ls_provider: llmMetadata.ls_provider,
+    ls_model_name: llmMetadata.ls_model_name,
     usage_metadata: llmMetadata.usage_metadata,
   };
 }
@@ -260,6 +280,9 @@ export function traceStage<TInput extends unknown[], TOutput>(
   options?: Record<string, unknown> | TraceWrapperOptions,
 ): (...args: TInput) => Promise<TOutput> {
   return async (...args: TInput) => {
+    if (!shouldTraceLangSmith()) {
+      return await fn(...args);
+    }
     const opts = normalizeOptions(options);
     const traced = traceable(fn, traceConfig(name, "chain", opts)) as unknown as (
       ...innerArgs: TInput
@@ -282,6 +305,9 @@ export function traceLLMStage<TInput extends unknown[], TOutput>(
   options?: Record<string, unknown> | TraceWrapperOptions,
 ): (...args: TInput) => Promise<TOutput> {
   return async (...args: TInput) => {
+    if (!shouldTraceLangSmith()) {
+      return await fn(...args);
+    }
     const opts = normalizeOptions(options);
     const traced = traceable(fn, traceConfig(name, "llm", opts)) as unknown as (
       ...innerArgs: TInput
@@ -301,6 +327,9 @@ export function traceStreamingLLM<
   options?: Record<string, unknown> | TraceWrapperOptions,
 ): (...args: TInput) => AsyncGenerator<TYield, TReturn, TNext> {
   return (...args: TInput) => {
+    if (!shouldTraceLangSmith()) {
+      return fn(...args);
+    }
     const opts = normalizeOptions(options);
     const traced = traceable(fn, {
       ...traceConfig(name, "llm", opts),
@@ -322,6 +351,10 @@ export function traceStreamingLLM<
 export const __testing = {
   buildTags,
   buildMetadata,
+  buildProcessOutputs,
+  extractLlmMetadata,
+  isTestProcess,
+  shouldTraceLangSmith,
   withLlmOutputMetadata,
 };
 

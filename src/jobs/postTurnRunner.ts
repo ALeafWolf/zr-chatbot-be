@@ -257,6 +257,33 @@ class PostTurnRunner extends BackgroundRunner {
           turn: "background",
         },
         async () => {
+          const tracedPostTurnJob = traceStageWithIO(
+            "post_turn.job",
+            async (input: {
+              jobId: string;
+              run: () => Promise<{
+                status: "completed";
+                completedSteps: string[];
+              }>;
+            }) => input.run(),
+            {
+              subsystem: "post_turn",
+              turn: "background",
+              processInputs: () => ({
+                postTurnJobId: job.id,
+                sessionId: payload.sessionId,
+                userMessageId: payload.userMessageId,
+                assistantMessageId: payload.assistantMessageId,
+                userTurnIndex: payload.userTurnIndex,
+                assistantTurnIndex: payload.assistantTurnIndex,
+                attempts: job.attempts,
+              }),
+              processOutputs: (outputs) => outputs,
+            },
+          );
+          await tracedPostTurnJob({
+            jobId: job.id,
+            run: async () => {
       if (!isStepComplete(stepStatus, "raw_chunk")) {
         await writeRawTurnPairSessionChunkTraced({
           session,
@@ -423,6 +450,14 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       await this.completeJob(job.id);
+              return {
+                status: "completed" as const,
+                completedSteps: Object.entries(stepStatus)
+                  .filter(([, status]) => status === "completed")
+                  .map(([step]) => step),
+              };
+            },
+          });
         },
       );
     } catch (err) {

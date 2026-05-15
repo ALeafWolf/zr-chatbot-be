@@ -18,6 +18,12 @@ import type { DerivedState } from "../state/sessionStateRepo";
 import type { Thought } from "./thoughtTypes";
 import { calculateNextTurnIndexes } from "./turnIndexAllocator";
 import { deriveTurnDelta } from "./turnDelta";
+import { traceStageWithIO } from "../observability/langsmithTracing";
+import {
+  attachTracePayload,
+  buildDurationPayload,
+  getAttachedTracePayload,
+} from "../observability/tracePayloads";
 
 export interface PersistCompletedTurnInput {
   session: ChatSession;
@@ -36,13 +42,14 @@ export interface PersistCompletedTurnResult {
   jobId: string;
 }
 
-export async function persistCompletedTurn(
+async function persistCompletedTurnImpl(
   input: PersistCompletedTurnInput,
 ): Promise<PersistCompletedTurnResult> {
   const { session } = input;
   const sessionId = session.sessionId;
+  const transactionStartedAt = Date.now();
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await tx
       .insert(sessionState)
       .values({
@@ -182,6 +189,59 @@ export async function persistCompletedTurn(
       jobId,
     };
   });
+
+  return attachTracePayload(
+    result,
+    buildCompletedTurnPersistenceTracePayload({
+      result,
+      session,
+      transactionDurationMs: buildDurationPayload(transactionStartedAt).durationMs,
+    }),
+  );
+}
+
+export function buildCompletedTurnPersistenceTracePayload(input: {
+  result: PersistCompletedTurnResult;
+  session: Pick<ChatSession, "sessionId" | "writebackPolicy">;
+  transactionDurationMs: number;
+}): Record<string, unknown> {
+  return {
+    ...input.result,
+    sessionId: input.session.sessionId,
+    writebackEnabled: input.session.writebackPolicy !== "no_writeback",
+    transactionDurationMs: input.transactionDurationMs,
+  };
+}
+
+export const persistCompletedTurn = traceStageWithIO(
+  "persistence.completed_turn",
+  persistCompletedTurnImpl,
+  {
+    subsystem: "memory",
+    turn: "foreground",
+    processInputs: (inputs) => {
+      const input = unwrapPersistCompletedTurnInput(inputs);
+      return {
+        sessionId: input.session.sessionId,
+        characterId: input.session.characterId,
+        writebackEnabled: input.session.writebackPolicy !== "no_writeback",
+        userMessageChars: input.userMessage.length,
+        assistantReplyChars: input.assistantReply.length,
+        memoryCount: input.memories.length,
+        thoughtCount: input.thoughts.length,
+      };
+    },
+    processOutputs: (outputs) => getAttachedTracePayload(outputs) ?? outputs,
+  },
+);
+
+function unwrapPersistCompletedTurnInput(
+  inputs: Record<string, unknown>,
+): PersistCompletedTurnInput {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as PersistCompletedTurnInput;
+  }
+  return inputs as unknown as PersistCompletedTurnInput;
 }
 
 export async function updateAssistantMessageThoughts(input: {

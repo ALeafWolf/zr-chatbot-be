@@ -1,4 +1,3 @@
-import { embedText } from "../llm/embeddings/embedText";
 import { resolveContinuityScope } from "../retrieval/scope/resolveContinuityScope";
 import { retrieveInteractiveMemories } from "../retrieval/memory/retrieveInteractiveMemories";
 import {
@@ -70,7 +69,7 @@ import {
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
 import {
   buildRetrievalEmbeddingRequests,
-  mapRetrievalEmbeddingResults,
+  runRetrievalEmbeddingBatch,
 } from "./retrievalEmbeddingBatch";
 import {
   retrieveActiveCorrections,
@@ -270,12 +269,9 @@ export async function resolveContext(input: {
     canonQueryEmbedding,
     rawMemoryQueryEmbedding,
     hypotheticalQueryEmbedding,
-  } = mapRetrievalEmbeddingResults(
-    embeddingRequests,
-    await Promise.all(
-      embeddingRequests.map((request) => embedText(request.text)),
-    ),
-  ));
+  } = await runRetrievalEmbeddingBatch({
+    requests: embeddingRequests,
+  }));
   embeddingsMs = Date.now() - embeddingsStartedAt;
 
   const mainRetrievalStartedAt = Date.now();

@@ -11,7 +11,10 @@ import {
 } from "../../db/schema/structmem";
 import { env } from "../../config/env";
 import { embedText } from "../../llm/embeddings/embedText";
-import { traceStage } from "../../observability/langsmithTracing";
+import {
+  traceStage,
+  traceStageWithIO,
+} from "../../observability/langsmithTracing";
 import type { MemoryNamespace } from "../shared/memoryNamespace";
 import {
   consolidationEligibility,
@@ -278,6 +281,100 @@ async function fetchSemanticSeedEntries(input: {
   });
 }
 
+async function selectConsolidationBufferImpl(input: {
+  sessionId: string;
+  characterId: string;
+}): Promise<{
+  bufferEntries: StructMemEntryRow[];
+  semanticSeedEntries: StructMemEntryRow[];
+  bufferCount: number;
+  semanticSeedCount: number;
+  turnStart: number | null;
+  turnEnd: number | null;
+  skippedReason?: string;
+}> {
+  const bufferEntries = await fetchBufferEntries(input.sessionId);
+  if (bufferEntries.length === 0) {
+    return {
+      bufferEntries,
+      semanticSeedEntries: [],
+      bufferCount: 0,
+      semanticSeedCount: 0,
+      turnStart: null,
+      turnEnd: null,
+      skippedReason: "empty_buffer",
+    };
+  }
+  const semanticSeedEntries = await fetchSemanticSeedEntries({
+    sessionId: input.sessionId,
+    characterId: input.characterId,
+    bufferEntries,
+  });
+  return {
+    bufferEntries,
+    semanticSeedEntries,
+    bufferCount: bufferEntries.length,
+    semanticSeedCount: semanticSeedEntries.length,
+    turnStart: Math.min(...bufferEntries.map((entry) => entry.turnIndex)),
+    turnEnd: Math.max(...bufferEntries.map((entry) => entry.turnIndex)),
+  };
+}
+
+const selectConsolidationBufferTraced = traceStageWithIO(
+  "memory.select_consolidation_buffer",
+  selectConsolidationBufferImpl,
+  {
+    subsystem: "structmem",
+    turn: "background",
+    processInputs: (inputs) => {
+      const input = unwrapSelectConsolidationBufferInput(inputs);
+      return {
+        sessionId: input.sessionId,
+        characterId: input.characterId,
+        maxBufferEntries: env.STRUCTMEM_MAX_BUFFER_ENTRIES,
+        seedK: env.STRUCTMEM_SEED_K,
+      };
+    },
+    processOutputs: (outputs) => {
+      const result = outputs as unknown as Awaited<
+        ReturnType<typeof selectConsolidationBufferImpl>
+      >;
+      return buildConsolidationBufferTraceOutput(result);
+    },
+  },
+);
+
+export function buildConsolidationBufferTraceOutput(input: {
+  bufferCount: number;
+  semanticSeedCount: number;
+  turnStart: number | null;
+  turnEnd: number | null;
+  skippedReason?: string;
+}): {
+  bufferCount: number;
+  semanticSeedCount: number;
+  turnStart: number | null;
+  turnEnd: number | null;
+  skippedReason: string | null;
+} {
+  return {
+    bufferCount: input.bufferCount,
+    semanticSeedCount: input.semanticSeedCount,
+    turnStart: input.turnStart,
+    turnEnd: input.turnEnd,
+    skippedReason: input.skippedReason ?? null,
+  };
+}
+
+function unwrapSelectConsolidationBufferInput(
+  inputs: Record<string, unknown>,
+): { sessionId: string; characterId: string } {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as { sessionId: string; characterId: string };
+  }
+  return inputs as unknown as { sessionId: string; characterId: string };
+}
+
 async function markJob(input: {
   jobId: string;
   status: "completed" | "skipped" | "failed" | "dead_letter";
@@ -477,17 +574,16 @@ export const maybeWriteCrossSessionStructMemConsolidations = traceStage(
 async function runStructMemConsolidationImpl(
   job: StructMemConsolidationJob,
 ): Promise<{ status: "completed" | "skipped"; consolidationId?: string }> {
-  const bufferEntries = await fetchBufferEntries(job.sessionId);
+  const selection = await selectConsolidationBufferTraced({
+    sessionId: job.sessionId,
+    characterId: job.characterId,
+  });
+  const bufferEntries = selection.bufferEntries;
   if (bufferEntries.length === 0) {
     await markJob({ jobId: job.id, status: "skipped" });
     return { status: "skipped" };
   }
-
-  const semanticSeedEntries = await fetchSemanticSeedEntries({
-    sessionId: job.sessionId,
-    characterId: job.characterId,
-    bufferEntries,
-  });
+  const semanticSeedEntries = selection.semanticSeedEntries;
 
   const synthesis = await synthesizeStructMemConsolidation({
     bufferEntries,
