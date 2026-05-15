@@ -70,6 +70,7 @@ export async function writeInteractiveMemory(
 
   const deduped = await deduplicateMemory({
     embedding: candidate.embedding,
+    summary: candidate.summary,
     namespace: memoryNamespace,
     characterId,
   });

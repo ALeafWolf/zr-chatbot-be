@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  olderRecallExclusiveFirstTurn,
   retrieveOlderRecall,
   shouldRetrieveStructMemConsolidations,
 } from "./olderRecall";
@@ -81,5 +82,11 @@ describe("olderRecall", () => {
       }),
       true,
     );
+  });
+
+  it("adds a small overlap to the older recall boundary", () => {
+    assert.equal(olderRecallExclusiveFirstTurn(20), 22);
+    assert.equal(olderRecallExclusiveFirstTurn(1), 3);
+    assert.equal(olderRecallExclusiveFirstTurn(1, 0), 1);
   });
 });

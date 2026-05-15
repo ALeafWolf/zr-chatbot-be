@@ -49,9 +49,21 @@ import {
 import { buildRetrievalQueryTexts } from "../retrieval/query/retrievalQueryTexts";
 import { fuseById } from "./retrievalFusion";
 import {
+  olderRecallExclusiveFirstTurn,
+  OLDER_RECALL_RECENT_OVERLAP_TURNS,
   retrieveOlderRecall,
   shouldRetrieveStructMemConsolidations,
 } from "./olderRecall";
+import {
+  buildRetrievalPlan,
+  type RetrievalPlan,
+} from "./retrievalPlan";
+import { selectPromptMemoryContext } from "./promptMemoryContextSelector";
+import {
+  readFreshTurnDelta,
+  type LatestTurnDelta,
+} from "./turnDelta";
+import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -69,7 +81,9 @@ export interface ResolvedContext {
   /** StructMem Phase 3: synthesized current-session memory before the raw recent window. */
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
+  latestTurnDelta: LatestTurnDelta | null;
   queryRewrite: QueryRewriteResult;
+  retrievalPlan: RetrievalPlan;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -89,6 +103,38 @@ const tracedRetrievalDiagnostics = traceStageWithIO(
   {
     tags: ["retrieval", "diagnostics"],
     processOutputs: (outputs) => outputs,
+  },
+);
+const tracedPromptMemorySelector = traceStageWithIO(
+  "retrieval.prompt_context_selector",
+  async (input: Parameters<typeof selectPromptMemoryContext>[0]) =>
+    selectPromptMemoryContext(input),
+  {
+    tags: ["retrieval", "selection"],
+    processInputs: (inputs) => {
+      const input = inputs as unknown as Parameters<
+        typeof selectPromptMemoryContext
+      >[0];
+      return {
+        memoryCount: input.memories.length,
+        sessionRecallCount: input.sessionRecall.length,
+        structMemEntryCount: input.structMemEntries.length,
+        structMemConsolidationCount: input.structMemConsolidations.length,
+        openThreadCount: input.openThreads.length,
+        recentTurnCount: input.recentTurns.length,
+        retrievalPlan: {
+          intent: input.retrievalPlan.intent,
+          canonMode: input.retrievalPlan.canonMode,
+          broadFailOpen: input.retrievalPlan.broadFailOpen,
+        },
+      };
+    },
+    processOutputs: (outputs) => {
+      const output = outputs as unknown as ReturnType<
+        typeof selectPromptMemoryContext
+      >;
+      return output.diagnostics as unknown as Record<string, unknown>;
+    },
   },
 );
 
@@ -167,6 +213,14 @@ export async function resolveContext(input: {
       confidenceThreshold: env.REWRITE_CONFIDENCE_THRESHOLD,
     },
   });
+  const retrievalPlan = buildRetrievalPlan({
+    queryRewrite,
+    userMessage,
+    annotationFallback: queryTextAnnotationFallback,
+    confidenceThreshold: env.REWRITE_CONFIDENCE_THRESHOLD,
+    structMemEntryDefaultTopK: env.STRUCTMEM_ENTRY_RETRIEVAL_TOP_K,
+    structMemConsolidationDefaultTopK: 4,
+  });
   const useFusedMemoryQuery =
     queryTexts.shouldFuseRawMemory &&
     queryTexts.rawText.trim() !== queryTexts.memoryText.trim();
@@ -212,11 +266,13 @@ export async function resolveContext(input: {
               queryEmbedding,
               memoryNamespace: session.memoryNamespace as MemoryNamespace,
               characterId: session.characterId,
+              limit: retrievalPlan.durableMemoryTopK,
             }),
             tracedRetrieveMemories({
               queryEmbedding: rawMemoryQueryEmbedding,
               memoryNamespace: session.memoryNamespace as MemoryNamespace,
               characterId: session.characterId,
+              limit: retrievalPlan.durableMemoryTopK,
             }),
           ]).then(([primary, secondary]) =>
             fuseMemories(primary, secondary),
@@ -225,16 +281,20 @@ export async function resolveContext(input: {
             queryEmbedding,
             memoryNamespace: session.memoryNamespace as MemoryNamespace,
             characterId: session.characterId,
+            limit: retrievalPlan.durableMemoryTopK,
           }),
-      env.CANON_RETRIEVAL_PIPELINE === "tier1"
+      env.CANON_RETRIEVAL_PIPELINE === "tier1" &&
+      retrievalPlan.canonMode !== "skip"
         ? tracedRetrieveCanonLeg({
             queryEmbedding: canonQueryEmbedding,
             userMessage: queryTexts.canonText,
             characterId: session.characterId,
             arcKeys: scopeResolution.arcKeys,
+            anchorTopK: retrievalPlan.canonMode === "compact" ? 2 : undefined,
           })
         : Promise.resolve([] as RetrievedCanonChunk[]),
-      env.CANON_RETRIEVAL_PIPELINE === "tier3"
+      env.CANON_RETRIEVAL_PIPELINE === "tier3" &&
+      retrievalPlan.canonMode !== "skip"
         ? retrieveCanonCoarseToFine({
             canonQueryEmbedding,
             hypotheticalQueryEmbedding,
@@ -242,6 +302,14 @@ export async function resolveContext(input: {
             characterId: session.characterId,
             arcKeys: scopeResolution.arcKeys,
             entities: queryRewrite.entities,
+            tier3Overrides:
+              retrievalPlan.canonMode === "compact"
+                ? {
+                    canonAnchorSceneTopK: 2,
+                    canonMaxTotalUnits: 40,
+                    canonMaxUnitsPerScene: 24,
+                  }
+                : undefined,
           })
         : Promise.resolve([] as RetrievedCanonScene[]),
       tracedRetrieveTurns(session.sessionId),
@@ -265,6 +333,9 @@ export async function resolveContext(input: {
   const recentWindowStartTurn = recentConversationWindowStartTurn(
     latestFrontierTurn,
   );
+  const olderRecallExclusiveFirst = olderRecallExclusiveFirstTurn(
+    recentWindowStartTurn,
+  );
 
   const retrieveStructMemConsolidations =
     shouldRetrieveStructMemConsolidations({
@@ -280,10 +351,14 @@ export async function resolveContext(input: {
       sessionId: session.sessionId,
       characterId: session.characterId,
       memoryNamespace: session.memoryNamespace,
-      exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+      exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
       latestFrontierTurnIndex: latestFrontierTurn,
       structMemEnabled: env.STRUCTMEM_ENABLED,
       retrieveStructMemConsolidations,
+      sessionRecallLimit: retrievalPlan.sessionRecallTopK,
+      structMemEntryLimit: retrievalPlan.structMemEntryTopK,
+      structMemConsolidationLimit:
+        retrievalPlan.structMemConsolidationTopK,
     },
     {
       sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
@@ -300,10 +375,14 @@ export async function resolveContext(input: {
             sessionId: session.sessionId,
             characterId: session.characterId,
             memoryNamespace: session.memoryNamespace,
-            exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
+            exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
             latestFrontierTurnIndex: latestFrontierTurn,
             structMemEnabled: env.STRUCTMEM_ENABLED,
             retrieveStructMemConsolidations,
+            sessionRecallLimit: retrievalPlan.sessionRecallTopK,
+            structMemEntryLimit: retrievalPlan.structMemEntryTopK,
+            structMemConsolidationLimit:
+              retrievalPlan.structMemConsolidationTopK,
           },
           {
             sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
@@ -341,27 +420,41 @@ export async function resolveContext(input: {
           structMemEnabled: env.STRUCTMEM_ENABLED,
           exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
           latestFrontierTurnIndex: latestFrontierTurn,
+          limit: retrievalPlan.openThreadTopK,
         })
       : [];
-
-  await tracedRetrievalDiagnostics({
-    memoryQueryMode: useFusedMemoryQuery ? "fused" : "single",
-    rewriteConfidence: queryRewrite.confidence ?? null,
-    annotationFallback: queryTextAnnotationFallback,
-    openThreadCount: openThreads.length,
-    sessionRecallCount: sessionRecall.length,
-    structMemEntryCount: structMemEntries.length,
-    structMemConsolidationCount: structMemConsolidations.length,
-  });
 
   const derivedState = computeDerivedState(
     recentTurns.length,
     userMessage,
     characterDefaults,
   );
+  const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
+  const selectedContext = await tracedPromptMemorySelector({
+    memories,
+    sessionRecall,
+    structMemEntries,
+    structMemConsolidations,
+    openThreads,
+    recentTurns,
+    retrievalPlan,
+  });
+
+  await tracedRetrievalDiagnostics(
+    buildRetrievalDiagnosticsPayload({
+      retrievalPlan,
+      memoryQueryMode: useFusedMemoryQuery ? "fused" : "single",
+      rewriteConfidence: queryRewrite.confidence ?? null,
+      annotationFallback: queryTextAnnotationFallback,
+      boundaryOverlapTurns: OLDER_RECALL_RECENT_OVERLAP_TURNS,
+      olderRecallExclusiveFirstTurn: olderRecallExclusiveFirst,
+      latestTurnDeltaActive: latestTurnDelta !== null,
+      selectionDiagnostics: selectedContext.diagnostics,
+    }),
+  );
 
   return {
-    memories,
+    memories: selectedContext.memories,
     canonChunks,
     canonScenes,
     recentTurns,
@@ -369,10 +462,12 @@ export async function resolveContext(input: {
     queryEmbedding,
     canonQueryEmbedding,
     sessionSummary,
-    sessionRecall,
-    structMemEntries,
-    structMemConsolidations,
-    openThreads,
+    sessionRecall: selectedContext.sessionRecall,
+    structMemEntries: selectedContext.structMemEntries,
+    structMemConsolidations: selectedContext.structMemConsolidations,
+    openThreads: selectedContext.openThreads,
+    latestTurnDelta,
     queryRewrite,
+    retrievalPlan,
   };
 }

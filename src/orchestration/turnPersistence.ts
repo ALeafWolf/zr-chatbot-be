@@ -17,6 +17,7 @@ import type { RetrievedMemory } from "../retrieval/memory/retrieveInteractiveMem
 import type { DerivedState } from "../state/sessionStateRepo";
 import type { Thought } from "./thoughtTypes";
 import { calculateNextTurnIndexes } from "./turnIndexAllocator";
+import { deriveTurnDelta } from "./turnDelta";
 
 export interface PersistCompletedTurnInput {
   session: ChatSession;
@@ -113,6 +114,12 @@ export async function persistCompletedTurn(
       .values({
         sessionId,
         derivedState: input.derivedState,
+        temporaryAssumptions: deriveTurnDelta({
+          userMessage: input.userMessage,
+          assistantReply: input.assistantReply,
+          userTurnIndex,
+          assistantTurnIndex,
+        }),
         lastTurnIndex: assistantTurnIndex,
         updatedAt: now,
       })
@@ -120,6 +127,12 @@ export async function persistCompletedTurn(
         target: sessionState.sessionId,
         set: {
           derivedState: input.derivedState,
+          temporaryAssumptions: deriveTurnDelta({
+            userMessage: input.userMessage,
+            assistantReply: input.assistantReply,
+            userTurnIndex,
+            assistantTurnIndex,
+          }),
           lastTurnIndex: assistantTurnIndex,
           updatedAt: now,
         },

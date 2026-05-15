@@ -1,0 +1,45 @@
+import type { PromptMemorySelectionDiagnostics } from "./promptMemoryContextSelector";
+import type { RetrievalPlan } from "./retrievalPlan";
+
+export interface RetrievalDiagnosticsPayloadInput {
+  retrievalPlan: RetrievalPlan;
+  memoryQueryMode: "single" | "fused";
+  rewriteConfidence: number | null;
+  annotationFallback: boolean;
+  boundaryOverlapTurns: number;
+  olderRecallExclusiveFirstTurn: number;
+  latestTurnDeltaActive: boolean;
+  selectionDiagnostics: PromptMemorySelectionDiagnostics;
+}
+
+export function buildRetrievalDiagnosticsPayload(
+  input: RetrievalDiagnosticsPayloadInput,
+): Record<string, unknown> {
+  return {
+    queryIntent: input.retrievalPlan.intent,
+    retrievalPlan: {
+      broadFailOpen: input.retrievalPlan.broadFailOpen,
+      canonMode: input.retrievalPlan.canonMode,
+      forceOpenThreads: input.retrievalPlan.forceOpenThreads,
+      durableMemoryTopK: input.retrievalPlan.durableMemoryTopK,
+      sessionRecallTopK: input.retrievalPlan.sessionRecallTopK,
+      structMemEntryTopK: input.retrievalPlan.structMemEntryTopK,
+      structMemConsolidationTopK:
+        input.retrievalPlan.structMemConsolidationTopK,
+      openThreadTopK: input.retrievalPlan.openThreadTopK,
+    },
+    memoryQueryMode: input.memoryQueryMode,
+    rewriteConfidence: input.rewriteConfidence,
+    annotationFallback: input.annotationFallback,
+    boundaryOverlapTurns: input.boundaryOverlapTurns,
+    olderRecallExclusiveFirstTurn: input.olderRecallExclusiveFirstTurn,
+    latestTurnDeltaActive: input.latestTurnDeltaActive,
+    openThreadCount: input.selectionDiagnostics.injectedCounts.open_thread,
+    retrievedCounts: input.selectionDiagnostics.retrievedCounts,
+    injectedCounts: input.selectionDiagnostics.injectedCounts,
+    droppedDuplicateCount: input.selectionDiagnostics.droppedDuplicateCount,
+    droppedLowScoreCount: input.selectionDiagnostics.droppedLowScoreCount,
+    topSources: input.selectionDiagnostics.topSources,
+    averageInjectedScore: input.selectionDiagnostics.averageInjectedScore,
+  };
+}

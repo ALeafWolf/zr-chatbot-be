@@ -100,3 +100,23 @@ describe("buildPromptContext open threads", () => {
     assert.equal(withThreads.systemPrompt.includes("answer the pending question"), true);
   });
 });
+
+describe("buildPromptContext latest turn delta", () => {
+  it("renders latest turn delta when present", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      latestTurnDelta: {
+        kind: "latest_turn_delta",
+        sourceTurnStart: 2,
+        sourceTurnEnd: 3,
+        expiresAfterTurn: 7,
+        facts: ["the user asked to resume the scene"],
+        pendingActions: [],
+        relationshipSignals: [],
+      },
+    }).systemPrompt;
+
+    assert.equal(prompt.includes("[LATEST TURN DELTA]"), true);
+    assert.equal(prompt.includes("the user asked to resume the scene"), true);
+  });
+});

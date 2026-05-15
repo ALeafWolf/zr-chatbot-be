@@ -4,6 +4,7 @@ import { pool } from "./db/client";
 import { postTurnRunner } from "./jobs/postTurnRunner";
 import { structmemConsolidationRunner } from "./jobs/structmemConsolidationRunner";
 import { createApp } from "./http/app";
+import { warnStructMemFlagConfig } from "./config/structMemConfigValidation";
 
 let server: Awaited<ReturnType<typeof createApp>> | null = null;
 
@@ -11,6 +12,7 @@ async function bootstrap(): Promise<void> {
   server = await createApp();
 
   warmCharacterCache();
+  warnStructMemFlagConfig(env, (message) => server?.log.warn(message));
   postTurnRunner.start();
   if (env.STRUCTMEM_ENABLED && env.STRUCTMEM_CONSOLIDATION_ENABLED) {
     structmemConsolidationRunner.start();
