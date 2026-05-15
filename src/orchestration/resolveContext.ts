@@ -64,6 +64,10 @@ import {
   type LatestTurnDelta,
 } from "./turnDelta";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
+import {
+  buildRetrievalEmbeddingRequests,
+  mapRetrievalEmbeddingResults,
+} from "./retrievalEmbeddingBatch";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -195,13 +199,22 @@ export async function resolveContext(input: {
   characterDefaults: CharacterDefaults;
 }): Promise<ResolvedContext> {
   const { session, userMessage, characterDefaults } = input;
+  const startedAt = Date.now();
+  let queryRewriteMs = 0;
+  let embeddingsMs = 0;
+  let mainRetrievalMs = 0;
+  let olderRecallMs = 0;
+  let openThreadsMs = 0;
+  let selectorMs = 0;
 
   const scopeResolution = resolveContinuityScope(
     session.continuityScope,
     session.continuityFamily as "main_world" | "au",
   );
 
+  const queryRewriteStartedAt = Date.now();
   const queryRewrite = await rewriteQuery(userMessage);
+  queryRewriteMs = Date.now() - queryRewriteStartedAt;
   const queryTextAnnotationFallback =
     shouldUseAnnotationFallback(queryRewrite) ||
     annotationHeuristicFallback(userMessage, queryRewrite);
@@ -228,36 +241,32 @@ export async function resolveContext(input: {
   let queryEmbedding: number[];
   let canonQueryEmbedding: number[];
   let rawMemoryQueryEmbedding: number[] | undefined;
-
-  if (env.CANON_RETRIEVAL_PIPELINE === "tier1") {
-    [queryEmbedding, canonQueryEmbedding, rawMemoryQueryEmbedding] =
-      await Promise.all([
-        embedText(queryTexts.memoryText),
-        embedText(queryTexts.canonText),
-        useFusedMemoryQuery
-          ? embedText(queryTexts.rawText)
-          : Promise.resolve(undefined),
-      ]);
-  } else {
-    [queryEmbedding, canonQueryEmbedding, rawMemoryQueryEmbedding] =
-      await Promise.all([
-        embedText(queryTexts.memoryText),
-        embedText(queryTexts.canonText),
-        useFusedMemoryQuery
-          ? embedText(queryTexts.rawText)
-          : Promise.resolve(undefined),
-      ]);
-  }
-
   let hypotheticalQueryEmbedding: number[] | undefined;
-  if (
-    env.CANON_QUERY_HYDE &&
-    env.CANON_RETRIEVAL_PIPELINE === "tier3" &&
-    queryRewrite.hypothetical?.trim()
-  ) {
-    hypotheticalQueryEmbedding = await embedText(queryRewrite.hypothetical.trim());
-  }
 
+  const embeddingsStartedAt = Date.now();
+  const embeddingRequests = buildRetrievalEmbeddingRequests({
+    memoryText: queryTexts.memoryText,
+    canonText: queryTexts.canonText,
+    rawText: queryTexts.rawText,
+    useFusedMemoryQuery,
+    hydeEnabled: env.CANON_QUERY_HYDE,
+    canonTier3: env.CANON_RETRIEVAL_PIPELINE === "tier3",
+    hypothetical: queryRewrite.hypothetical,
+  });
+  ({
+    queryEmbedding,
+    canonQueryEmbedding,
+    rawMemoryQueryEmbedding,
+    hypotheticalQueryEmbedding,
+  } = mapRetrievalEmbeddingResults(
+    embeddingRequests,
+    await Promise.all(
+      embeddingRequests.map((request) => embedText(request.text)),
+    ),
+  ));
+  embeddingsMs = Date.now() - embeddingsStartedAt;
+
+  const mainRetrievalStartedAt = Date.now();
   const [memories, canonChunksTier1, canonScenesTier3, recentTurns, sessionSummary, sessionStateRow] =
     await Promise.all([
       useFusedMemoryQuery && rawMemoryQueryEmbedding
@@ -316,6 +325,7 @@ export async function resolveContext(input: {
       tracedSessionSummary(session.sessionId),
       tracedSessionStateRow(session.sessionId),
     ]);
+  mainRetrievalMs = Date.now() - mainRetrievalStartedAt;
 
   let canonScenes: RetrievedCanonScene[] = canonScenesTier3;
   let canonChunks: RetrievedCanonChunk[] = canonChunksTier1;
@@ -345,31 +355,31 @@ export async function resolveContext(input: {
         env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED,
     });
 
-  const primaryOlderRecall = await retrieveOlderRecall(
-    {
-      queryEmbedding,
-      sessionId: session.sessionId,
-      characterId: session.characterId,
-      memoryNamespace: session.memoryNamespace,
-      exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
-      latestFrontierTurnIndex: latestFrontierTurn,
-      structMemEnabled: env.STRUCTMEM_ENABLED,
-      retrieveStructMemConsolidations,
-      sessionRecallLimit: retrievalPlan.sessionRecallTopK,
-      structMemEntryLimit: retrievalPlan.structMemEntryTopK,
-      structMemConsolidationLimit:
-        retrievalPlan.structMemConsolidationTopK,
-    },
-    {
-      sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
-      structMemEntries: retrieveStructMemEntriesTraced,
-      structMemConsolidations: retrieveStructMemConsolidationsTraced,
-    },
-  );
-
-  const secondaryOlderRecall =
+  const olderRecallStartedAt = Date.now();
+  const [primaryOlderRecall, secondaryOlderRecall] = await Promise.all([
+    retrieveOlderRecall(
+      {
+        queryEmbedding,
+        sessionId: session.sessionId,
+        characterId: session.characterId,
+        memoryNamespace: session.memoryNamespace,
+        exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
+        latestFrontierTurnIndex: latestFrontierTurn,
+        structMemEnabled: env.STRUCTMEM_ENABLED,
+        retrieveStructMemConsolidations,
+        sessionRecallLimit: retrievalPlan.sessionRecallTopK,
+        structMemEntryLimit: retrievalPlan.structMemEntryTopK,
+        structMemConsolidationLimit:
+          retrievalPlan.structMemConsolidationTopK,
+      },
+      {
+        sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
+        structMemEntries: retrieveStructMemEntriesTraced,
+        structMemConsolidations: retrieveStructMemConsolidationsTraced,
+      },
+    ),
     useFusedMemoryQuery && rawMemoryQueryEmbedding
-      ? await retrieveOlderRecall(
+      ? retrieveOlderRecall(
           {
             queryEmbedding: rawMemoryQueryEmbedding,
             sessionId: session.sessionId,
@@ -390,7 +400,9 @@ export async function resolveContext(input: {
             structMemConsolidations: retrieveStructMemConsolidationsTraced,
           },
         )
-      : undefined;
+      : Promise.resolve(undefined),
+  ]);
+  olderRecallMs = Date.now() - olderRecallStartedAt;
 
   const sessionRecall = secondaryOlderRecall
     ? fuseSessionRecall(
@@ -411,6 +423,7 @@ export async function resolveContext(input: {
       )
     : primaryOlderRecall.structMemConsolidations;
 
+  const openThreadsStartedAt = Date.now();
   const openThreads =
     latestFrontierTurn >= 0
       ? await retrieveOpenThreadsTraced({
@@ -423,6 +436,7 @@ export async function resolveContext(input: {
           limit: retrievalPlan.openThreadTopK,
         })
       : [];
+  openThreadsMs = Date.now() - openThreadsStartedAt;
 
   const derivedState = computeDerivedState(
     recentTurns.length,
@@ -430,6 +444,7 @@ export async function resolveContext(input: {
     characterDefaults,
   );
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
+  const selectorStartedAt = Date.now();
   const selectedContext = await tracedPromptMemorySelector({
     memories,
     sessionRecall,
@@ -439,6 +454,7 @@ export async function resolveContext(input: {
     recentTurns,
     retrievalPlan,
   });
+  selectorMs = Date.now() - selectorStartedAt;
 
   await tracedRetrievalDiagnostics(
     buildRetrievalDiagnosticsPayload({
@@ -449,6 +465,15 @@ export async function resolveContext(input: {
       boundaryOverlapTurns: OLDER_RECALL_RECENT_OVERLAP_TURNS,
       olderRecallExclusiveFirstTurn: olderRecallExclusiveFirst,
       latestTurnDeltaActive: latestTurnDelta !== null,
+      timingsMs: {
+        queryRewriteMs,
+        embeddingsMs,
+        mainRetrievalMs,
+        olderRecallMs,
+        openThreadsMs,
+        selectorMs,
+        totalResolveContextMs: Date.now() - startedAt,
+      },
       selectionDiagnostics: selectedContext.diagnostics,
     }),
   );

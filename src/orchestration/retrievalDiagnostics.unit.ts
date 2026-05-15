@@ -47,6 +47,15 @@ describe("buildRetrievalDiagnosticsPayload", () => {
       boundaryOverlapTurns: 2,
       olderRecallExclusiveFirstTurn: 14,
       latestTurnDeltaActive: true,
+      timingsMs: {
+        queryRewriteMs: 11,
+        embeddingsMs: 22,
+        mainRetrievalMs: 33,
+        olderRecallMs: 44,
+        openThreadsMs: 55,
+        selectorMs: 66,
+        totalResolveContextMs: 77,
+      },
       selectionDiagnostics: diagnostics,
     });
 
@@ -55,6 +64,15 @@ describe("buildRetrievalDiagnosticsPayload", () => {
     assert.equal(payload.rewriteConfidence, 0.82);
     assert.equal(payload.openThreadCount, 1);
     assert.equal(payload.droppedDuplicateCount, 2);
+    assert.deepEqual(payload.timingsMs, {
+      queryRewriteMs: 11,
+      embeddingsMs: 22,
+      mainRetrievalMs: 33,
+      olderRecallMs: 44,
+      openThreadsMs: 55,
+      selectorMs: 66,
+      totalResolveContextMs: 77,
+    });
     assert.deepEqual(payload.topSources, ["open_thread", "structmem_entry"]);
     assert.deepEqual(
       payload.retrievalPlan,

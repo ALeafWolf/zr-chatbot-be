@@ -9,7 +9,18 @@ export interface RetrievalDiagnosticsPayloadInput {
   boundaryOverlapTurns: number;
   olderRecallExclusiveFirstTurn: number;
   latestTurnDeltaActive: boolean;
+  timingsMs?: RetrievalTimingDiagnostics;
   selectionDiagnostics: PromptMemorySelectionDiagnostics;
+}
+
+export interface RetrievalTimingDiagnostics {
+  queryRewriteMs: number;
+  embeddingsMs: number;
+  mainRetrievalMs: number;
+  olderRecallMs: number;
+  openThreadsMs: number;
+  selectorMs: number;
+  totalResolveContextMs: number;
 }
 
 export function buildRetrievalDiagnosticsPayload(
@@ -41,5 +52,6 @@ export function buildRetrievalDiagnosticsPayload(
     droppedLowScoreCount: input.selectionDiagnostics.droppedLowScoreCount,
     topSources: input.selectionDiagnostics.topSources,
     averageInjectedScore: input.selectionDiagnostics.averageInjectedScore,
+    timingsMs: input.timingsMs ?? null,
   };
 }
