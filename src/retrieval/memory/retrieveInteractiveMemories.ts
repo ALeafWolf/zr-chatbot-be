@@ -43,6 +43,7 @@ export async function retrieveInteractiveMemories(input: {
     FROM interactive_memory_events
     WHERE memory_namespace = ${memoryNamespace}
       AND character_id = ${characterId}
+      AND status = 'active'
       AND embedding IS NOT NULL
     ORDER BY embedding <=> ${embeddingStr}::vector
     LIMIT ${limit}

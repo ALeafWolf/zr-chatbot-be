@@ -32,6 +32,11 @@ function select(input: {
   openThreads?: RetrievedOpenThread[];
   recentTurns?: ConversationTurn[];
   plan?: RetrievalPlan;
+  memoryCorrections?: Array<{
+    oldClaim: string;
+    correctedClaim: string;
+    sourceTurnIndex: number;
+  }>;
 }): PromptMemorySelectionDiagnostics {
   return selectPromptMemoryContext({
     memories: input.memories ?? [],
@@ -41,6 +46,7 @@ function select(input: {
     openThreads: input.openThreads ?? [],
     recentTurns: input.recentTurns ?? [],
     retrievalPlan: input.plan ?? retrievalPlan,
+    memoryCorrections: input.memoryCorrections,
   }).diagnostics;
 }
 
@@ -159,5 +165,38 @@ describe("selectPromptMemoryContext", () => {
     });
     assert.deepEqual(diagnostics.topSources, ["interactive_memory"]);
     assert.equal(typeof diagnostics.averageInjectedScore, "number");
+  });
+
+  it("drops durable and StructMem candidates that conflict with corrections", () => {
+    const diagnostics = select({
+      memories: [
+        {
+          id: "m1",
+          memoryType: "promise",
+          summary: "The meeting is tomorrow.",
+          importanceScore: 1,
+          emotionScore: 1,
+          reuseCount: 0,
+          cosineSimilarity: 0.8,
+        },
+      ],
+      structMemEntries: [entry("entry", 1, 0.9)],
+      memoryCorrections: [
+        {
+          oldClaim: "the meeting is tomorrow",
+          correctedClaim: "the meeting is Friday",
+          sourceTurnIndex: 10,
+        },
+        {
+          oldClaim: "entry entry",
+          correctedClaim: "corrected entry",
+          sourceTurnIndex: 11,
+        },
+      ],
+    });
+
+    assert.equal(diagnostics.injectedCounts.interactive_memory, 0);
+    assert.equal(diagnostics.injectedCounts.structmem_entry, 0);
+    assert.equal(diagnostics.droppedCorrectionCount, 2);
   });
 });

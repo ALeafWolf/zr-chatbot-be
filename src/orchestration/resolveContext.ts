@@ -72,6 +72,10 @@ import {
   buildRetrievalEmbeddingRequests,
   mapRetrievalEmbeddingResults,
 } from "./retrievalEmbeddingBatch";
+import {
+  retrieveActiveCorrections,
+  type MemoryCorrectionContext,
+} from "./memoryCorrections";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -90,6 +94,7 @@ export interface ResolvedContext {
   /** StructMem Phase 3: synthesized current-session memory before the raw recent window. */
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
+  memoryCorrections: MemoryCorrectionContext[];
   latestTurnDelta: LatestTurnDelta | null;
   queryRewrite: QueryRewriteResult;
   retrievalPlan: RetrievalPlan;
@@ -448,6 +453,7 @@ export async function resolveContext(input: {
     userMessage,
     characterDefaults,
   );
+  const memoryCorrections = retrieveActiveCorrections(sessionSummary);
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
   const selectorStartedAt = Date.now();
   const selectedContext = await tracedPromptMemorySelector({
@@ -458,6 +464,7 @@ export async function resolveContext(input: {
     openThreads,
     recentTurns,
     retrievalPlan,
+    memoryCorrections,
   });
   selectorMs = Date.now() - selectorStartedAt;
   const structMemEntryExpansion =
@@ -512,6 +519,7 @@ export async function resolveContext(input: {
     structMemEntryContextExpansions: structMemEntryExpansion.expansions,
     structMemConsolidations: selectedContext.structMemConsolidations,
     openThreads: selectedContext.openThreads,
+    memoryCorrections,
     latestTurnDelta,
     queryRewrite,
     retrievalPlan,

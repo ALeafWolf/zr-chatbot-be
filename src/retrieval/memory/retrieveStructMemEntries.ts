@@ -73,6 +73,7 @@ async function retrieveStructMemEntriesInner(input: {
     FROM structmem_entries
     WHERE session_id = ${sessionId}
       AND character_id = ${characterId}
+      AND status = 'active'
       AND turn_index < ${exclusiveRecentWindowFirstTurn}
       AND embedding IS NOT NULL
     ORDER BY embedding <=> ${embeddingStr}::vector

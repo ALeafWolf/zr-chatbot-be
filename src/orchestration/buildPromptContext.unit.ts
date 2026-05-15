@@ -121,6 +121,36 @@ describe("buildPromptContext latest turn delta", () => {
   });
 });
 
+describe("buildPromptContext memory corrections", () => {
+  it("renders MEMORY CORRECTIONS before latest turn delta", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      memoryCorrections: [
+        {
+          oldClaim: "the meeting is tomorrow",
+          correctedClaim: "the meeting is Friday",
+          sourceTurnIndex: 6,
+        },
+      ],
+      latestTurnDelta: {
+        kind: "latest_turn_delta",
+        sourceTurnStart: 7,
+        sourceTurnEnd: 8,
+        expiresAfterTurn: 10,
+        facts: ["latest fact"],
+        pendingActions: [],
+        relationshipSignals: [],
+      },
+    }).systemPrompt;
+
+    assert.equal(prompt.includes("[MEMORY CORRECTIONS]"), true);
+    assert.ok(
+      prompt.indexOf("[MEMORY CORRECTIONS]") <
+        prompt.indexOf("[LATEST TURN DELTA]"),
+    );
+  });
+});
+
 describe("buildPromptContext StructMem expansions", () => {
   it("passes StructMem entry context expansions into the event memory block", () => {
     const prompt = buildPromptContext({

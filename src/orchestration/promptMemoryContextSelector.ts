@@ -4,6 +4,7 @@ import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThread
 import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSessionMemoryChunks";
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
+import type { MemoryCorrectionContext } from "./memoryCorrections";
 import type { RetrievalPlan } from "./retrievalPlan";
 
 export type PromptMemorySource =
@@ -27,6 +28,7 @@ export interface PromptMemorySelectionDiagnostics {
   injectedCounts: Record<PromptMemorySource, number>;
   droppedDuplicateCount: number;
   droppedLowScoreCount: number;
+  droppedCorrectionCount: number;
   topSources: PromptMemorySource[];
   averageInjectedScore: number | null;
 }
@@ -108,6 +110,29 @@ function overlaps(a: Candidate<unknown>, b: Candidate<unknown>): boolean {
   return at.length > 24 && (at === bt || at.includes(bt) || bt.includes(at));
 }
 
+function normalized(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function conflictsWithCorrection(
+  candidate: Candidate<unknown>,
+  corrections: MemoryCorrectionContext[],
+): boolean {
+  if (
+    candidate.source !== "interactive_memory" &&
+    candidate.source !== "structmem_entry" &&
+    candidate.source !== "structmem_consolidation"
+  ) {
+    return false;
+  }
+  const text = normalized(candidate.text);
+  if (text.length < 8) return false;
+  return corrections.some((correction) => {
+    const oldClaim = normalized(correction.oldClaim);
+    return oldClaim.length >= 8 && text.includes(oldClaim);
+  });
+}
+
 function rankCandidates(candidates: Candidate<unknown>[]): Candidate<unknown>[] {
   return [...candidates].sort(
     (a, b) =>
@@ -125,6 +150,7 @@ export function selectPromptMemoryContext(input: {
   openThreads: RetrievedOpenThread[];
   recentTurns: ConversationTurn[];
   retrievalPlan: RetrievalPlan;
+  memoryCorrections?: MemoryCorrectionContext[];
 }): PromptMemoryContextSelection {
   const retrievedCounts = counts();
   const injectedCounts = counts();
@@ -204,11 +230,17 @@ export function selectPromptMemoryContext(input: {
   const selectedBySource = counts();
   let droppedDuplicateCount = 0;
   let droppedLowScoreCount = 0;
+  let droppedCorrectionCount = 0;
+  const memoryCorrections = input.memoryCorrections ?? [];
 
   for (const candidate of rankCandidates(candidates)) {
     if (selectedBySource[candidate.source] >= candidate.cap) continue;
     if ((candidate.score ?? 0) < MIN_SCORE[candidate.source]) {
       droppedLowScoreCount += 1;
+      continue;
+    }
+    if (conflictsWithCorrection(candidate, memoryCorrections)) {
+      droppedCorrectionCount += 1;
       continue;
     }
     if (
@@ -258,6 +290,7 @@ export function selectPromptMemoryContext(input: {
       injectedCounts,
       droppedDuplicateCount,
       droppedLowScoreCount,
+      droppedCorrectionCount,
       topSources,
       averageInjectedScore:
         scored.length > 0

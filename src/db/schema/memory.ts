@@ -34,6 +34,8 @@ export const interactiveMemoryEvents = pgTable(
     lastAccessedAt: timestamp("last_accessed_at", { withTimezone: true }),
     reuseCount: integer("reuse_count").notNull().default(0),
     canonicalToChat: boolean("canonical_to_chat").notNull().default(false),
+    status: text("status").notNull().default("active"),
+    supersededById: text("superseded_by_id"),
     tags: jsonb("tags"),
     embedding: vectorCol("embedding", { dimensions: 1536 }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -43,6 +45,7 @@ export const interactiveMemoryEvents = pgTable(
   (t) => [
     index("ime_namespace_idx").on(t.memoryNamespace),
     index("ime_character_player_idx").on(t.characterId, t.playerId),
+    index("ime_status_idx").on(t.status),
   ],
 );
 

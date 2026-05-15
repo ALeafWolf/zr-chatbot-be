@@ -94,6 +94,7 @@ export async function deduplicateMemory(input: {
     FROM interactive_memory_events
     WHERE memory_namespace = ${namespace}
       AND character_id = ${characterId}
+      AND status = 'active'
       AND embedding IS NOT NULL
       AND embedding <=> ${embeddingStr}::vector < ${AMBIGUOUS_COSINE_DISTANCE_MAX}
     ORDER BY embedding <=> ${embeddingStr}::vector

@@ -33,6 +33,7 @@ const diagnostics: PromptMemorySelectionDiagnostics = {
   },
   droppedDuplicateCount: 2,
   droppedLowScoreCount: 1,
+  droppedCorrectionCount: 1,
   topSources: ["open_thread", "structmem_entry"],
   averageInjectedScore: 0.71,
 };
@@ -69,6 +70,7 @@ describe("buildRetrievalDiagnosticsPayload", () => {
     assert.equal(payload.rewriteConfidence, 0.82);
     assert.equal(payload.openThreadCount, 1);
     assert.equal(payload.droppedDuplicateCount, 2);
+    assert.equal(payload.droppedCorrectionCount, 1);
     assert.deepEqual(payload.timingsMs, {
       queryRewriteMs: 11,
       embeddingsMs: 22,

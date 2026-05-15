@@ -92,6 +92,8 @@ export const structmemEntries = pgTable(
     embedding: vectorCol("embedding", { dimensions: 1536 }),
     importanceScore: real("importance_score"),
     confidenceScore: real("confidence_score"),
+    status: text("status").notNull().default("active"),
+    supersededByEntryId: text("superseded_by_entry_id"),
     firstConsolidatedAt: timestamp("first_consolidated_at", {
       withTimezone: true,
     }),
@@ -111,6 +113,7 @@ export const structmemEntries = pgTable(
       t.characterId,
       t.turnIndex,
     ),
+    index("structmem_entries_status_idx").on(t.status),
   ],
 );
 

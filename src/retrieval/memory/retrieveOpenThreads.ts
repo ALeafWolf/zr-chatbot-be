@@ -93,6 +93,7 @@ async function retrieveStructMemOpenThreads(input: {
     WHERE session_id = ${input.sessionId}
       AND character_id = ${input.characterId}
       AND entry_type = 'open_thread'
+      AND status = 'active'
       AND turn_index < ${input.exclusiveRecentWindowFirstTurn}
     ORDER BY
       COALESCE(importance_score, 0) DESC,
