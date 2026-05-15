@@ -183,3 +183,15 @@ export async function persistCompletedTurn(
     };
   });
 }
+
+export async function updateAssistantMessageThoughts(input: {
+  assistantMessageId: string;
+  thoughts: Thought[];
+}): Promise<void> {
+  await db
+    .update(chatMessages)
+    .set({
+      thoughts: input.thoughts.length > 0 ? input.thoughts : null,
+    })
+    .where(eq(chatMessages.id, input.assistantMessageId));
+}

@@ -14,7 +14,15 @@ import { CANON_RETRIEVAL } from "../character/canonRules";
 import { traceStage } from "../observability/langsmithTracing";
 import type { Thought } from "./thoughtTypes";
 import { generateThoughtSummary } from "../llm/generation/generateThoughtSummary";
-import { persistCompletedTurn } from "./turnPersistence";
+import {
+  persistCompletedTurn,
+  updateAssistantMessageThoughts,
+} from "./turnPersistence";
+import {
+  createRecallThoughtTask,
+  takeReadyRecallThought,
+  waitForRecallThought,
+} from "./recallThoughtTask";
 
 export interface TurnInput {
   sessionId: string;
@@ -134,29 +142,60 @@ export async function* runCharacterTurnStream(
             excerpt: c.textContent.slice(0, 160),
           }));
 
-    if (context.memories.length > 0 || canonExcerptsForThought.length > 0) {
-      const recallLine = await generateThoughtSummary(
-        {
-          characterName: characterDefaults.name,
-          stage: "recall",
-          context: {
-            memories: context.memories.slice(0, 5).map((m) => ({
-              type: m.memoryType,
-              summary: m.summary,
-            })),
-            canon: canonExcerptsForThought,
-          },
-          voiceHints,
-        },
-        thoughtSummaryCache,
-      );
-      const recallThought: Thought = {
-        kind: "recall",
-        text: recallLine,
-        ts: Date.now(),
-      };
+    const recallThoughtTask =
+      context.memories.length > 0 || canonExcerptsForThought.length > 0
+        ? createRecallThoughtTask(async () => {
+            const recallLine = await generateThoughtSummary(
+              {
+                characterName: characterDefaults.name,
+                stage: "recall",
+                context: {
+                  memories: context.memories.slice(0, 5).map((m) => ({
+                    type: m.memoryType,
+                    summary: m.summary,
+                  })),
+                  canon: canonExcerptsForThought,
+                },
+                voiceHints,
+              },
+              thoughtSummaryCache,
+            );
+            return {
+              kind: "recall",
+              text: recallLine,
+              ts: Date.now(),
+            };
+          })
+        : undefined;
+
+    const readyRecallThought = takeReadyRecallThought(recallThoughtTask);
+    if (readyRecallThought) {
+      thoughtsAcc.push(readyRecallThought);
+      yield { event: "thought", data: readyRecallThought };
+    }
+
+    function persistLateRecallThought(assistantMessageId: string): void {
+      if (!recallThoughtTask || recallThoughtTask.emitted) return;
+      void recallThoughtTask.promise
+        .then(async () => {
+          const lateThought = takeReadyRecallThought(recallThoughtTask);
+          if (!lateThought) return;
+          thoughtsAcc.push(lateThought);
+          await updateAssistantMessageThoughts({
+            assistantMessageId,
+            thoughts: thoughtsAcc,
+          });
+        })
+        .catch((err) => {
+          console.warn("[recallThought] late persistence failed:", err);
+        });
+    }
+
+    function queueReadyRecallThought(): Thought | null {
+      const recallThought = takeReadyRecallThought(recallThoughtTask);
+      if (!recallThought) return null;
       thoughtsAcc.push(recallThought);
-      yield { event: "thought", data: recallThought };
+      return recallThought;
     }
 
     let resultPayload:
@@ -181,6 +220,11 @@ export async function* runCharacterTurnStream(
     })) {
       if (signal?.aborted) {
         return;
+      }
+
+      const recallThought = queueReadyRecallThought();
+      if (recallThought) {
+        yield { event: "thought", data: recallThought };
       }
 
       switch (ev.type) {
@@ -219,6 +263,11 @@ export async function* runCharacterTurnStream(
     }
 
     const result = resultPayload;
+    const finalRecallThought = await waitForRecallThought(recallThoughtTask);
+    if (finalRecallThought.thought) {
+      thoughtsAcc.push(finalRecallThought.thought);
+      yield { event: "thought", data: finalRecallThought.thought };
+    }
 
     const persisted = await persistCompletedTurn({
       session,
@@ -229,6 +278,10 @@ export async function* runCharacterTurnStream(
       memories: context.memories,
       thoughts: thoughtsAcc,
     });
+
+    if (finalRecallThought.timedOut) {
+      persistLateRecallThought(persisted.assistantMessageId);
+    }
 
     postTurnRunner.wake();
 

@@ -11,7 +11,10 @@ import {
 } from "../memory/session/writeSessionMemoryChunk";
 import type { SessionChunkTypePersisted } from "../memory/session/writeSessionMemoryChunk";
 import type { MemoryNamespace } from "../memory/shared/memoryNamespace";
-import { traceStage } from "../observability/langsmithTracing";
+import {
+  traceStage,
+  traceStageWithIO,
+} from "../observability/langsmithTracing";
 import { env } from "../config/env";
 import { collectPhase1StructMemPersistRows } from "../memory/structmem/structmemMapping";
 import { writeStructMemTurn } from "../memory/structmem/writeStructMemTurn";
@@ -28,14 +31,68 @@ import {
   type PostTurnStepName,
   type PostTurnStepStatus,
 } from "./postTurnJobPayload";
-import { shouldSuppressExtractorSessionChunks } from "./postTurnPolicies";
+import {
+  buildPostTurnWritePlan,
+  type PostTurnWritePlanEnv,
+} from "./postTurnPolicies";
 import { maybeEnqueueStructMemConsolidation } from "../memory/structmem/structmemConsolidationRepo";
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
+
+type PostTurnWritePlanTraceInput = {
+  session: Parameters<typeof buildPostTurnWritePlan>[0];
+  env: Parameters<typeof buildPostTurnWritePlan>[1];
+  signals: Parameters<typeof buildPostTurnWritePlan>[2];
+};
+
+function unwrapPostTurnWritePlanTraceInput(
+  inputs: Record<string, unknown>,
+): PostTurnWritePlanTraceInput {
+  if ("input" in inputs && inputs.input) {
+    return inputs.input as PostTurnWritePlanTraceInput;
+  }
+  return inputs as unknown as PostTurnWritePlanTraceInput;
+}
 
 const tracedExtract = traceStage(
   "llm.extract_post_turn_signals",
   extractPostTurnSignals,
 );
+
+const tracedBuildPostTurnWritePlan = traceStageWithIO(
+  "post_turn.write_plan",
+  async (input: PostTurnWritePlanTraceInput) =>
+    buildPostTurnWritePlan(input.session, input.env, input.signals),
+  {
+    tags: ["post_turn", "policy"],
+    processInputs: (inputs) => {
+      const input = unwrapPostTurnWritePlanTraceInput(inputs);
+      return {
+        sessionMode: input.session.mode,
+        writebackPolicy: input.session.writebackPolicy,
+        structMemEnabled: input.env.STRUCTMEM_ENABLED,
+        structMemConsolidationEnabled:
+          input.env.STRUCTMEM_CONSOLIDATION_ENABLED,
+        nativeStructMemExtractor: input.env.STRUCTMEM_NATIVE_EXTRACTOR,
+        suppressExtractorSessionChunks:
+          input.env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
+        memoryFactCount: input.signals.memoryFacts.length,
+        nativeStructMemEntryCount: input.signals.structMemEntries.length,
+        shouldWriteMemory: input.signals.shouldWriteMemory,
+      };
+    },
+    processOutputs: (outputs) => outputs,
+  },
+);
+
+function postTurnWritePlanEnv(): PostTurnWritePlanEnv {
+  return {
+    STRUCTMEM_ENABLED: env.STRUCTMEM_ENABLED,
+    STRUCTMEM_CONSOLIDATION_ENABLED: env.STRUCTMEM_CONSOLIDATION_ENABLED,
+    STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS:
+      env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
+    STRUCTMEM_NATIVE_EXTRACTOR: env.STRUCTMEM_NATIVE_EXTRACTOR,
+  };
+}
 
 export function newPostTurnJobId(): string {
   return uuidv4();
@@ -211,8 +268,18 @@ class PostTurnRunner extends BackgroundRunner {
         throw new Error("post-turn payload missing extracted signals");
       }
 
+      const writePlan = await tracedBuildPostTurnWritePlan({
+        session,
+        env: postTurnWritePlanEnv(),
+        signals: {
+          memoryFacts: signals.memoryFacts,
+          structMemEntries: signals.structMemEntries,
+          shouldWriteMemory: payload.shouldWriteMemory,
+        },
+      });
+
       if (!isStepComplete(stepStatus, "structmem")) {
-        if (env.STRUCTMEM_ENABLED && session.mode !== "sandbox") {
+        if (writePlan.structMem.write) {
           const useNative = env.STRUCTMEM_NATIVE_EXTRACTOR;
           const rows = useNative
             ? signals.structMemEntries
@@ -238,11 +305,7 @@ class PostTurnRunner extends BackgroundRunner {
         );
       }
 
-      if (
-        env.STRUCTMEM_ENABLED &&
-        env.STRUCTMEM_CONSOLIDATION_ENABLED &&
-        session.mode !== "sandbox"
-      ) {
+      if (writePlan.structMemConsolidation.write) {
         const enqueueResult = await maybeEnqueueStructMemConsolidation({
           session,
         });
@@ -252,17 +315,10 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       if (!isStepComplete(stepStatus, "session_chunks")) {
-        if (session.mode !== "sandbox") {
-          const suppressChunks = shouldSuppressExtractorSessionChunks({
-            structMemEnabled: env.STRUCTMEM_ENABLED,
-            suppressExtractorSessionChunks:
-              env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
-            nativeStructMemExtractor: env.STRUCTMEM_NATIVE_EXTRACTOR,
-          });
+        if (writePlan.sessionChunks.write) {
           for (let i = 0; i < signals.memoryFacts.length; i++) {
             const candidate = signals.memoryFacts[i]!;
             if (candidate.memoryScope !== "current_session") continue;
-            if (suppressChunks) continue;
             const chunkType = (candidate.sessionChunkType ??
               "scene_moment") as SessionChunkTypePersisted;
             const metadata = {
@@ -304,7 +360,7 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       if (!isStepComplete(stepStatus, "durable_memory")) {
-        if (payload.shouldWriteMemory) {
+        if (writePlan.durableMemory.write) {
           for (const candidate of signals.memoryFacts) {
             if (candidate.memoryScope !== "cross_session") continue;
             await writeInteractiveMemory({
