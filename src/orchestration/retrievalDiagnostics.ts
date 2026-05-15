@@ -1,5 +1,6 @@
 import type { PromptMemorySelectionDiagnostics } from "./promptMemoryContextSelector";
 import type { RetrievalPlan } from "./retrievalPlan";
+import type { StructMemEntryExpansionDiagnostics } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 
 export interface RetrievalDiagnosticsPayloadInput {
   retrievalPlan: RetrievalPlan;
@@ -10,6 +11,7 @@ export interface RetrievalDiagnosticsPayloadInput {
   olderRecallExclusiveFirstTurn: number;
   latestTurnDeltaActive: boolean;
   timingsMs?: RetrievalTimingDiagnostics;
+  structMemEntryExpansion?: StructMemEntryExpansionDiagnostics;
   selectionDiagnostics: PromptMemorySelectionDiagnostics;
 }
 
@@ -53,5 +55,6 @@ export function buildRetrievalDiagnosticsPayload(
     topSources: input.selectionDiagnostics.topSources,
     averageInjectedScore: input.selectionDiagnostics.averageInjectedScore,
     timingsMs: input.timingsMs ?? null,
+    structMemEntryExpansion: input.structMemEntryExpansion ?? null,
   };
 }

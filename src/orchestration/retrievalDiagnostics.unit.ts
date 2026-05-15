@@ -56,6 +56,11 @@ describe("buildRetrievalDiagnosticsPayload", () => {
         selectorMs: 66,
         totalResolveContextMs: 77,
       },
+      structMemEntryExpansion: {
+        eligibleCount: 4,
+        expandedCount: 3,
+        droppedByBudgetCount: 1,
+      },
       selectionDiagnostics: diagnostics,
     });
 
@@ -72,6 +77,11 @@ describe("buildRetrievalDiagnosticsPayload", () => {
       openThreadsMs: 55,
       selectorMs: 66,
       totalResolveContextMs: 77,
+    });
+    assert.deepEqual(payload.structMemEntryExpansion, {
+      eligibleCount: 4,
+      expandedCount: 3,
+      droppedByBudgetCount: 1,
     });
     assert.deepEqual(payload.topSources, ["open_thread", "structmem_entry"]);
     assert.deepEqual(

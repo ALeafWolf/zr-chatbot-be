@@ -8,11 +8,13 @@ import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSe
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
+import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
 const STRUCTURED_MEMORY_SYNTHESIS_MAX_CHARS_PER_ITEM = 1400;
 const OPEN_THREAD_MAX_CHARS_PER_ITEM = 900;
+const STRUCTMEM_EXPANSION_MAX_CHARS_PER_ENTRY = 1200;
 
 export function formatOpenThreads(threads: RetrievedOpenThread[]): string {
   const lines = threads.map((thread, index) => {
@@ -27,13 +29,33 @@ export function formatOpenThreads(threads: RetrievedOpenThread[]): string {
 
 export function formatStructMemEntriesForPrompt(
   entries: RetrievedStructMemEntry[],
+  expansions: StructMemEntryContextExpansion[] = [],
 ): string {
+  const expansionsByEntryId = new Map(
+    expansions.map((expansion) => [expansion.entryId, expansion]),
+  );
   const lines = entries.map((e) => {
     let body = e.text.trim();
     if (body.length > STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY) {
       body = `${body.slice(0, STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY)}…`;
     }
-    return `- [${e.entryType}, turn ${e.turnIndex}] ${body}`;
+    const expansion = expansionsByEntryId.get(e.id);
+    if (!expansion) {
+      return `- [${e.entryType}, turn ${e.turnIndex}] ${body}`;
+    }
+    let expansionBody = expansion.messages
+      .map(
+        (message) =>
+          `  turn ${message.turnIndex} ${message.role}: ${message.content.trim()}`,
+      )
+      .join("\n");
+    if (expansionBody.length > STRUCTMEM_EXPANSION_MAX_CHARS_PER_ENTRY) {
+      expansionBody = `${expansionBody.slice(
+        0,
+        STRUCTMEM_EXPANSION_MAX_CHARS_PER_ENTRY,
+      )}...`;
+    }
+    return `- [${e.entryType}, turn ${e.turnIndex}] ${body}\n  Context:\n${expansionBody}`;
   });
   return `以下内容为本会话中提取的结构化事件记忆，作为辅助上下文。标签中 factual 多指已发生事实或明确表态，relational 多指信任、距离或情绪互动层面的变化；若与 RECENT CHAT 或 [RELEVANT SESSION RECALL] 中的对白原文块冲突，以更直接的来源为准。\n\n${lines.join("\n")}`;
 }

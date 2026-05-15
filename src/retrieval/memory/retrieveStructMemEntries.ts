@@ -6,6 +6,7 @@ import { traceStage } from "../../observability/langsmithTracing";
 
 export interface RetrievedStructMemEntry {
   id: string;
+  eventId: string;
   turnIndex: number;
   entryType: string;
   text: string;
@@ -17,6 +18,7 @@ export interface RetrievedStructMemEntry {
 
 interface Row {
   id: string;
+  event_id: string;
   turn_index: number;
   entry_type: string;
   text: string;
@@ -61,6 +63,7 @@ async function retrieveStructMemEntriesInner(input: {
   const rows = await db.execute(sql`
     SELECT
       id,
+      event_id,
       turn_index,
       entry_type,
       text,
@@ -87,6 +90,7 @@ async function retrieveStructMemEntriesInner(input: {
       SESSION_CHUNK_RANKING_WEIGHTS.recency * recencyBoost;
     return {
       id: r.id as string,
+      eventId: r.event_id as string,
       turnIndex: ti,
       entryType: r.entry_type as string,
       text: r.text as string,
@@ -101,6 +105,7 @@ async function retrieveStructMemEntriesInner(input: {
 
   return scored.slice(0, limit).map((x) => ({
     id: x.id,
+    eventId: x.eventId,
     turnIndex: x.turnIndex,
     entryType: x.entryType,
     text: x.text,

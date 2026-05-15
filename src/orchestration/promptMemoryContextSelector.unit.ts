@@ -59,6 +59,7 @@ function chunk(id: string, turnStart: number, turnEnd: number, score: number) {
 function entry(id: string, turnIndex: number, score: number) {
   return {
     id,
+    eventId: `event-${id}`,
     turnIndex,
     entryType: "factual",
     text: `entry ${id}`,

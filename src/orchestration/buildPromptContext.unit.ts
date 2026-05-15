@@ -120,3 +120,37 @@ describe("buildPromptContext latest turn delta", () => {
     assert.equal(prompt.includes("the user asked to resume the scene"), true);
   });
 });
+
+describe("buildPromptContext StructMem expansions", () => {
+  it("passes StructMem entry context expansions into the event memory block", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      structMemEntries: [
+        {
+          id: "entry-1",
+          eventId: "event-1",
+          turnIndex: 2,
+          entryType: "decision",
+          text: "They agreed to revisit the question.",
+          importanceScore: 0.9,
+          confidenceScore: 0.9,
+          cosineSimilarity: 0.9,
+          finalScore: 0.9,
+        },
+      ],
+      structMemEntryContextExpansions: [
+        {
+          entryId: "entry-1",
+          eventId: "event-1",
+          messages: [
+            { turnIndex: 1, role: "user", content: "Later?" },
+            { turnIndex: 2, role: "assistant", content: "Later." },
+          ],
+        },
+      ],
+    }).systemPrompt;
+
+    assert.equal(prompt.includes("Context:"), true);
+    assert.equal(prompt.includes("turn 1 user: Later?"), true);
+  });
+});

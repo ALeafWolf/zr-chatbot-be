@@ -15,6 +15,7 @@ import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSe
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
+import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -52,6 +53,7 @@ export function buildPromptContext(input: {
   latestTurnDelta?: LatestTurnDelta | null;
   sessionRecall?: RetrievedSessionMemoryChunk[];
   structMemEntries?: RetrievedStructMemEntry[];
+  structMemEntryContextExpansions?: StructMemEntryContextExpansion[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
@@ -70,6 +72,7 @@ export function buildPromptContext(input: {
     latestTurnDelta = null,
     sessionRecall = [],
     structMemEntries = [],
+    structMemEntryContextExpansions = [],
     structMemConsolidations = [],
     userMessage,
     queryRewrite,
@@ -202,7 +205,10 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       ? [
           buildBlock(
             "STRUCTURED EVENT MEMORY",
-            promptFormatters.formatStructMemEntriesForPrompt(structMemEntries),
+            promptFormatters.formatStructMemEntriesForPrompt(
+              structMemEntries,
+              structMemEntryContextExpansions,
+            ),
           ),
         ]
       : []),

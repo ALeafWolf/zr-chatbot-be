@@ -39,6 +39,10 @@ import {
   retrieveOpenThreadsTraced,
   type RetrievedOpenThread,
 } from "../retrieval/memory/retrieveOpenThreads";
+import {
+  retrieveStructMemEntryContextExpansionsTraced,
+  type StructMemEntryContextExpansion,
+} from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import { env } from "../config/env";
 import {
   annotationHeuristicFallback,
@@ -82,6 +86,7 @@ export interface ResolvedContext {
   sessionRecall: RetrievedSessionMemoryChunk[];
   /** StructMem Phase 1: extracted entries before the raw recent window. */
   structMemEntries: RetrievedStructMemEntry[];
+  structMemEntryContextExpansions: StructMemEntryContextExpansion[];
   /** StructMem Phase 3: synthesized current-session memory before the raw recent window. */
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
@@ -455,6 +460,20 @@ export async function resolveContext(input: {
     retrievalPlan,
   });
   selectorMs = Date.now() - selectorStartedAt;
+  const structMemEntryExpansion =
+    selectedContext.structMemEntries.length > 0
+      ? await retrieveStructMemEntryContextExpansionsTraced({
+          sessionId: session.sessionId,
+          entries: selectedContext.structMemEntries,
+        })
+      : {
+          expansions: [] as StructMemEntryContextExpansion[],
+          diagnostics: {
+            eligibleCount: 0,
+            expandedCount: 0,
+            droppedByBudgetCount: 0,
+          },
+        };
 
   await tracedRetrievalDiagnostics(
     buildRetrievalDiagnosticsPayload({
@@ -465,6 +484,7 @@ export async function resolveContext(input: {
       boundaryOverlapTurns: OLDER_RECALL_RECENT_OVERLAP_TURNS,
       olderRecallExclusiveFirstTurn: olderRecallExclusiveFirst,
       latestTurnDeltaActive: latestTurnDelta !== null,
+      structMemEntryExpansion: structMemEntryExpansion.diagnostics,
       timingsMs: {
         queryRewriteMs,
         embeddingsMs,
@@ -489,6 +509,7 @@ export async function resolveContext(input: {
     sessionSummary,
     sessionRecall: selectedContext.sessionRecall,
     structMemEntries: selectedContext.structMemEntries,
+    structMemEntryContextExpansions: structMemEntryExpansion.expansions,
     structMemConsolidations: selectedContext.structMemConsolidations,
     openThreads: selectedContext.openThreads,
     latestTurnDelta,

@@ -114,6 +114,8 @@ export async function* runCharacterTurnStream(
       latestTurnDelta: context.latestTurnDelta,
       sessionRecall: context.sessionRecall,
       structMemEntries: context.structMemEntries,
+      structMemEntryContextExpansions:
+        context.structMemEntryContextExpansions,
       structMemConsolidations: context.structMemConsolidations,
       userMessage,
       queryRewrite: context.queryRewrite,
