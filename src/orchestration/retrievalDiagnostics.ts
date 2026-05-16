@@ -53,6 +53,7 @@ export function buildRetrievalDiagnosticsPayload(
     droppedDuplicateCount: input.selectionDiagnostics.droppedDuplicateCount,
     droppedLowScoreCount: input.selectionDiagnostics.droppedLowScoreCount,
     droppedCorrectionCount: input.selectionDiagnostics.droppedCorrectionCount,
+    droppedBudgetCount: input.selectionDiagnostics.droppedBudgetCount,
     topSources: input.selectionDiagnostics.topSources,
     averageInjectedScore: input.selectionDiagnostics.averageInjectedScore,
     timingsMs: input.timingsMs ?? null,

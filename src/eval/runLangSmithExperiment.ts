@@ -25,8 +25,10 @@ import { flushLangSmithClient } from "./evalProcessDrain";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";
 import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
+import { runAgentEval } from "./langsmith/runAgentEval";
+import type { AgentEvalOutput } from "./evalSnapshots";
 
-export interface EvalTargetOutput {
+export type EvalTargetOutput = AgentEvalOutput | {
   reply: string;
   validation?: ValidationResult;
   mode: "validator_only" | "skipped" | "error" | "retrieval";
@@ -43,11 +45,23 @@ export interface EvalTargetOutput {
   had_lex_hit?: boolean;
   attribution_target_in_canon?: boolean;
   attribution_judge?: AttributionJudgeResult;
-}
+};
 
 export async function evalTarget(
   inputs: Record<string, unknown>,
 ): Promise<EvalTargetOutput> {
+  if (inputs.eval_mode === "agent_turn") {
+    try {
+      return await runAgentEval(inputs);
+    } catch (e) {
+      return {
+        reply: "",
+        mode: "error",
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
+
   const session = inputs.session as Scenario["session"] | undefined;
   if (
     !session ||

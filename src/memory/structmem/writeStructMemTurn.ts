@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import type { ChatSession } from "../../db/schema/chat";
 import { traceStage } from "../../observability/langsmithTracing";
 import type { StructMemPersistRow } from "./structmemMapping";
+import { recordMemoryWriteSnapshot } from "../../eval/evalSnapshots";
 
 export interface StructMemTurnWriteInput {
   session: ChatSession;
@@ -137,6 +138,9 @@ export async function writeStructMemTurn(
   input: StructMemTurnWriteInput,
 ): Promise<StructMemTurnWriteResult | null> {
   if (input.rows.length === 0) {
+    recordMemoryWriteSnapshot({
+      structMem: { status: "skipped_empty", entryIds: [] },
+    });
     return null;
   }
   const existingEventId = await findStructMemEventIdForMessage(
@@ -147,6 +151,13 @@ export async function writeStructMemTurn(
       .select({ id: structmemEntries.id })
       .from(structmemEntries)
       .where(eq(structmemEntries.eventId, existingEventId));
+    recordMemoryWriteSnapshot({
+      structMem: {
+        status: "skipped_existing",
+        eventId: existingEventId,
+        entryIds: existingEntries.map((r) => r.id),
+      },
+    });
     return {
       eventId: existingEventId,
       entryIds: existingEntries.map((r) => r.id),
@@ -169,6 +180,9 @@ export async function writeStructMemTurn(
     rows: input.rows,
     extractorBatchConfidence: input.extractorBatchConfidence,
     mergeNativeStructMemSource: input.mergeNativeStructMemSource,
+  });
+  recordMemoryWriteSnapshot({
+    structMem: { status: "written", eventId, entryIds },
   });
   return { eventId, entryIds, status: "written" };
 }

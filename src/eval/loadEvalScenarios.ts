@@ -27,6 +27,32 @@ export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown
     ...(scenario.primed_memories !== undefined && {
       primed_memories: scenario.primed_memories,
     }),
+    ...(scenario.sessionSeed !== undefined && { sessionSeed: scenario.sessionSeed }),
+    ...(scenario.recentMessages !== undefined && {
+      recentMessages: scenario.recentMessages,
+    }),
+    ...(scenario.sessionSummary !== undefined && {
+      sessionSummary: scenario.sessionSummary,
+    }),
+    ...(scenario.sessionState !== undefined && { sessionState: scenario.sessionState }),
+    ...(scenario.durableMemories !== undefined && {
+      durableMemories: scenario.durableMemories,
+    }),
+    ...(scenario.sessionChunks !== undefined && {
+      sessionChunks: scenario.sessionChunks,
+    }),
+    ...(scenario.structMemEntries !== undefined && {
+      structMemEntries: scenario.structMemEntries,
+    }),
+    ...(scenario.structMemConsolidations !== undefined && {
+      structMemConsolidations: scenario.structMemConsolidations,
+    }),
+    ...(scenario.canonReferenceIds !== undefined && {
+      canonReferenceIds: scenario.canonReferenceIds,
+    }),
+    ...(scenario.configOverrides !== undefined && {
+      configOverrides: scenario.configOverrides,
+    }),
     ...(scenario.input_draft !== undefined && { input_draft: scenario.input_draft }),
     ...(scenario.validator_retrieved_canon !== undefined && {
       validator_retrieved_canon: scenario.validator_retrieved_canon,

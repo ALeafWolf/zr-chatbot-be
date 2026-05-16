@@ -41,6 +41,10 @@ import {
 } from "./postTurnPolicies";
 import { maybeEnqueueStructMemConsolidation } from "../memory/structmem/structmemConsolidationRepo";
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
+import {
+  incrementSessionChunkWrite,
+  recordMemoryWriteSnapshot,
+} from "../eval/evalSnapshots";
 
 type PostTurnWritePlanTraceInput = {
   session: Parameters<typeof buildPostTurnWritePlan>[0];
@@ -126,6 +130,41 @@ class PostTurnRunner extends BackgroundRunner {
       if (!job) return;
       await this.runClaimedJob(job);
     }
+  }
+
+  async runJobByIdForEval(jobId: string): Promise<void> {
+    const existingRows = await db
+      .select()
+      .from(postTurnJobs)
+      .where(eq(postTurnJobs.id, jobId))
+      .limit(1);
+    const existing = existingRows[0];
+    if (!existing) {
+      recordMemoryWriteSnapshot({
+        status: "failed",
+        error: `post_turn_job_not_found:${jobId}`,
+      });
+      return;
+    }
+    if (existing.status === "completed") {
+      recordMemoryWriteSnapshot({ status: "completed" });
+      return;
+    }
+
+    const rows = await db
+      .update(postTurnJobs)
+      .set({
+        status: "running",
+        attempts: sql`${postTurnJobs.attempts} + 1`,
+        lockedAt: new Date(),
+        lockedBy: this.workerId,
+        updatedAt: new Date(),
+        lastError: null,
+      })
+      .where(eq(postTurnJobs.id, jobId))
+      .returning();
+    const job = rows[0];
+    await this.runClaimedJob(job);
   }
 
   private async claimNextJob(): Promise<PostTurnJobRow | null> {
@@ -233,6 +272,10 @@ class PostTurnRunner extends BackgroundRunner {
 
   private async runClaimedJob(job: PostTurnJobRow): Promise<void> {
     try {
+      recordMemoryWriteSnapshot({
+        postTurnJobId: job.id,
+        status: "not_run",
+      });
       let payload = parsePostTurnJobPayload(job.payload);
       let stepStatus = normalizeStepStatus(job.stepStatus);
       const session = chatSessionFromSnapshot(payload.session);
@@ -309,6 +352,13 @@ class PostTurnRunner extends BackgroundRunner {
           sessionState: JSON.stringify(payload.derivedState),
         });
         payload = { ...payload, signals };
+        recordMemoryWriteSnapshot({
+          extraction: {
+            memoryFactCount: signals.memoryFacts.length,
+            structMemEntryCount: signals.structMemEntries.length,
+            shouldWriteMemory: payload.shouldWriteMemory,
+          },
+        });
         stepStatus = await this.markCompleted(
           job.id,
           "extract_signals",
@@ -329,6 +379,14 @@ class PostTurnRunner extends BackgroundRunner {
           memoryFacts: signals.memoryFacts,
           structMemEntries: signals.structMemEntries,
           shouldWriteMemory: payload.shouldWriteMemory,
+        },
+      });
+      recordMemoryWriteSnapshot({
+        writePlan: {
+          durableMemory: writePlan.durableMemory.write,
+          sessionChunks: writePlan.sessionChunks.write,
+          structMem: writePlan.structMem.write,
+          structMemConsolidation: writePlan.structMemConsolidation.write,
         },
       });
 
@@ -391,7 +449,10 @@ class PostTurnRunner extends BackgroundRunner {
                 candidateIndex: i,
               },
             });
-            if (exists) continue;
+            if (exists) {
+              incrementSessionChunkWrite("skipped");
+              continue;
+            }
             await persistSessionMemoryChunk({
               sessionId: payload.sessionId,
               characterId: session.characterId,
@@ -437,9 +498,21 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       if (!isStepComplete(stepStatus, "summary_compact")) {
-        await maybeCompactSessionSummary({
+        const summaryResult = await maybeCompactSessionSummary({
           session,
           latestTurnIndex: payload.assistantTurnIndex,
+        });
+        recordMemoryWriteSnapshot({
+          summaryCompaction: {
+            status: summaryResult.status,
+            ...("reason" in summaryResult ? { reason: summaryResult.reason } : {}),
+            ...("lastSummarizedTurnIndex" in summaryResult
+              ? {
+                  lastSummarizedTurnIndex:
+                    summaryResult.lastSummarizedTurnIndex,
+                }
+              : {}),
+          },
         });
         stepStatus = await this.markCompleted(
           job.id,
@@ -450,6 +523,7 @@ class PostTurnRunner extends BackgroundRunner {
       }
 
       await this.completeJob(job.id);
+      recordMemoryWriteSnapshot({ status: "completed" });
               return {
                 status: "completed" as const,
                 completedSteps: Object.entries(stepStatus)
@@ -462,6 +536,10 @@ class PostTurnRunner extends BackgroundRunner {
       );
     } catch (err) {
       await this.failJob(job, err);
+      recordMemoryWriteSnapshot({
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

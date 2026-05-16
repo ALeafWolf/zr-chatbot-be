@@ -9,6 +9,7 @@ import {
 import { deduplicateMemory } from "./deduplicateMemory";
 import { MEMORY_IMPORTANCE_THRESHOLD } from "../../character/canonRules";
 import { traceStageWithIO } from "../../observability/langsmithTracing";
+import { incrementDurableMemoryStatus } from "../../eval/evalSnapshots";
 
 export type MemoryScope = "cross_session" | "current_session";
 
@@ -66,6 +67,7 @@ async function writeInteractiveMemoryImpl(
   assertNamespaceMatchesFamily(memoryNamespace, continuityFamily);
 
   if (candidate.importanceScore < MEMORY_IMPORTANCE_THRESHOLD) {
+    incrementDurableMemoryStatus("below_threshold");
     return "below_threshold";
   }
 
@@ -77,6 +79,7 @@ async function writeInteractiveMemoryImpl(
   });
 
   if (deduped) {
+    incrementDurableMemoryStatus("deduplicated");
     return "deduplicated";
   }
 
@@ -100,6 +103,7 @@ async function writeInteractiveMemoryImpl(
   };
 
   await db.insert(interactiveMemoryEvents).values(row);
+  incrementDurableMemoryStatus("written");
   return "written";
 }
 

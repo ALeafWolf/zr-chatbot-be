@@ -21,6 +21,7 @@ import {
   type TraceSubsystem,
   type TraceTurn,
 } from "./traceTags";
+import { recordLlmUsageSnapshot } from "../eval/evalSnapshots";
 
 // Configure LangSmith project (the SDK reads LANGSMITH_* env vars automatically).
 export { traceable };
@@ -222,8 +223,21 @@ function usageFromOutputShape(outputs: unknown): TraceUsageInput | undefined {
 function withLlmOutputMetadata(
   processed: Record<string, unknown>,
   llmMetadata: TraceLlmMetadata | undefined,
+  spanName?: string,
 ): Record<string, unknown> {
   if (!llmMetadata?.usage_metadata) return processed;
+  recordLlmUsageSnapshot({
+    spanName: spanName ?? "unknown_llm_span",
+    modelProvider: llmMetadata.modelProvider,
+    modelName: llmMetadata.modelName,
+    modelRole: llmMetadata.modelRole,
+    inputTokens: llmMetadata.inputTokens ?? llmMetadata.usage_metadata.input_tokens,
+    outputTokens:
+      llmMetadata.outputTokens ?? llmMetadata.usage_metadata.output_tokens,
+    totalTokens: llmMetadata.totalTokens ?? llmMetadata.usage_metadata.total_tokens,
+    estimatedCostUsd: llmMetadata.estimatedCostUsd ?? null,
+    pricingKnown: llmMetadata.pricingKnown,
+  });
   return {
     ...processed,
     inputTokens: llmMetadata.inputTokens,
@@ -240,6 +254,7 @@ function withLlmOutputMetadata(
 
 function buildProcessOutputs(
   opts: TraceWrapperOptions,
+  name = "unknown_llm_span",
 ): TraceProcessOutputs | undefined {
   if (!opts.processOutputs && !opts.llm) return undefined;
   return async (outputs: Readonly<Record<string, unknown>>) => {
@@ -250,6 +265,7 @@ function buildProcessOutputs(
     return withLlmOutputMetadata(
       processed as Record<string, unknown>,
       llmMetadata,
+      name,
     );
   };
 }
@@ -268,7 +284,7 @@ function traceConfig(
     processInputs: opts.processInputs as
       | ((inputs: Readonly<unknown>) => Record<string, unknown>)
       | undefined,
-    processOutputs: buildProcessOutputs(opts) as
+    processOutputs: buildProcessOutputs(opts, name) as
       | ((outputs: Readonly<unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>)
       | undefined,
   };

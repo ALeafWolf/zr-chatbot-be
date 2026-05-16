@@ -24,6 +24,7 @@ import {
   buildDurationPayload,
   getAttachedTracePayload,
 } from "../observability/tracePayloads";
+import { recordMemoryWriteSnapshot } from "../eval/evalSnapshots";
 
 export interface PersistCompletedTurnInput {
   session: ChatSession;
@@ -188,6 +189,10 @@ async function persistCompletedTurnImpl(
       assistantTurnIndex,
       jobId,
     };
+  });
+
+  recordMemoryWriteSnapshot({
+    postTurnJobId: result.jobId,
   });
 
   return attachTracePayload(

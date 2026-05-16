@@ -8,6 +8,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { embedText } from "../../llm/embeddings/embedText";
 import { traceStage } from "../../observability/langsmithTracing";
 import type { ChatSession } from "../../db/schema/chat";
+import { incrementSessionChunkWrite } from "../../eval/evalSnapshots";
 
 export type SessionChunkTypePersisted =
   | "raw_turn_pair"
@@ -48,6 +49,7 @@ export async function persistSessionMemoryChunk(input: {
     })
     .returning();
   if (!row) throw new Error("persistSessionMemoryChunk: insert returned no row");
+  incrementSessionChunkWrite("written");
   return { id, chunk: row };
 }
 
@@ -135,6 +137,7 @@ async function writeRawTurnPairChunkImpl(input: {
     chunkType: "raw_turn_pair",
   });
   if (alreadyWritten) {
+    incrementSessionChunkWrite("skipped");
     return {
       status: "skipped",
       reason: "raw_turn_pair_chunk_already_exists",

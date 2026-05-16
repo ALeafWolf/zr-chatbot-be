@@ -19,8 +19,8 @@ export interface Scenario {
   id: string;
   description: string;
   group?: string;
-  /** When `retrieval`, LangSmith target runs coarse-to-fine only (no generation). */
-  eval_mode?: "default" | "retrieval";
+  /** `retrieval` runs canon retrieval only; `agent_turn` runs an isolated full backend turn. */
+  eval_mode?: "default" | "retrieval" | "agent_turn";
   session: {
     mode: string;
     continuity_scope: string;
@@ -29,6 +29,16 @@ export interface Scenario {
   };
   messages?: Array<{ role: string; content: string }>;
   primed_memories?: unknown[];
+  sessionSeed?: unknown;
+  recentMessages?: unknown[];
+  sessionSummary?: string;
+  sessionState?: unknown;
+  durableMemories?: unknown[];
+  sessionChunks?: unknown[];
+  structMemEntries?: unknown[];
+  structMemConsolidations?: unknown[];
+  canonReferenceIds?: string[];
+  configOverrides?: Record<string, unknown>;
   input_draft?: string;
   /** Fixture canon excerpt for validator-only Tier 4 attribution evals. */
   validator_retrieved_canon?: string;

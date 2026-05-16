@@ -27,6 +27,10 @@ import {
   filterDrafterFacingIssues,
   replayValidatedDraftDeltas,
 } from "./validationFlowHelpers";
+import {
+  recordValidationAttempt,
+  recordValidationSnapshot,
+} from "../eval/evalSnapshots";
 
 /** System/transport issues from the validator are not actionable for the drafter. */
 export interface GenerateAndValidateResult {
@@ -286,6 +290,12 @@ export async function* generateAndValidateStream(input: {
           outputTokens: 0,
         },
       };
+      recordValidationSnapshot({
+        finalNeedsRewrite: false,
+        wasRewritten: false,
+        wasDeflected: true,
+        deflectionReason: "tool_loop_exceeded",
+      });
       return;
     }
     throw e;
@@ -294,6 +304,13 @@ export async function* generateAndValidateStream(input: {
   const validation1 = await tracedValidate({
     ...validatorInput,
     draft: draft.content,
+  });
+  recordValidationAttempt({
+    attempt: 1,
+    needsRewrite: validation1.needs_rewrite,
+    inCharacter: validation1.in_character,
+    canonConsistent: validation1.canon_consistent,
+    issues: validation1.issues,
   });
 
   if (!validation1.needs_rewrite) {
@@ -309,6 +326,11 @@ export async function* generateAndValidateStream(input: {
         outputTokens: draft.outputTokens,
       },
     };
+    recordValidationSnapshot({
+      finalNeedsRewrite: validation1.needs_rewrite,
+      wasRewritten: false,
+      wasDeflected: false,
+    });
     return;
   }
 
@@ -333,6 +355,11 @@ export async function* generateAndValidateStream(input: {
         outputTokens: draft.outputTokens,
       },
     };
+    recordValidationSnapshot({
+      finalNeedsRewrite: false,
+      wasRewritten: false,
+      wasDeflected: false,
+    });
     return;
   }
 
@@ -473,6 +500,12 @@ export async function* generateAndValidateStream(input: {
           outputTokens: draft.outputTokens,
         },
       };
+      recordValidationSnapshot({
+        finalNeedsRewrite: true,
+        wasRewritten: true,
+        wasDeflected: true,
+        deflectionReason: "rewrite_tool_loop_exceeded",
+      });
       return;
     }
     throw e;
@@ -485,6 +518,13 @@ export async function* generateAndValidateStream(input: {
   const validation2 = await tracedValidate({
     ...validatorInput,
     draft: rewrite.content,
+  });
+  recordValidationAttempt({
+    attempt: 2,
+    needsRewrite: validation2.needs_rewrite,
+    inCharacter: validation2.in_character,
+    canonConsistent: validation2.canon_consistent,
+    issues: validation2.issues,
   });
 
   if (!validation2.needs_rewrite) {
@@ -499,6 +539,11 @@ export async function* generateAndValidateStream(input: {
         outputTokens: draft.outputTokens + rewrite.outputTokens,
       },
     };
+    recordValidationSnapshot({
+      finalNeedsRewrite: validation2.needs_rewrite,
+      wasRewritten: true,
+      wasDeflected: false,
+    });
     return;
   }
 
@@ -522,6 +567,11 @@ export async function* generateAndValidateStream(input: {
         outputTokens: draft.outputTokens + rewrite.outputTokens,
       },
     };
+    recordValidationSnapshot({
+      finalNeedsRewrite: false,
+      wasRewritten: true,
+      wasDeflected: false,
+    });
     return;
   }
 
@@ -548,6 +598,12 @@ export async function* generateAndValidateStream(input: {
       outputTokens: draft.outputTokens + rewrite.outputTokens,
     },
   };
+  recordValidationSnapshot({
+    finalNeedsRewrite: validation2.needs_rewrite,
+    wasRewritten: true,
+    wasDeflected: true,
+    deflectionReason: "validator_second_pass_failed",
+  });
 }
 
 /** Non-streaming wrapper that drains {@link generateAndValidateStream}. */

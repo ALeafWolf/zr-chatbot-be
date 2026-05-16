@@ -34,6 +34,7 @@ const diagnostics: PromptMemorySelectionDiagnostics = {
   droppedDuplicateCount: 2,
   droppedLowScoreCount: 1,
   droppedCorrectionCount: 1,
+  droppedBudgetCount: 1,
   topSources: ["open_thread", "structmem_entry"],
   averageInjectedScore: 0.71,
 };

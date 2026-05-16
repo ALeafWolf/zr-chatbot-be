@@ -29,6 +29,7 @@ export interface PromptMemorySelectionDiagnostics {
   droppedDuplicateCount: number;
   droppedLowScoreCount: number;
   droppedCorrectionCount: number;
+  droppedBudgetCount: number;
   topSources: PromptMemorySource[];
   averageInjectedScore: number | null;
 }
@@ -231,10 +232,14 @@ export function selectPromptMemoryContext(input: {
   let droppedDuplicateCount = 0;
   let droppedLowScoreCount = 0;
   let droppedCorrectionCount = 0;
+  let droppedBudgetCount = 0;
   const memoryCorrections = input.memoryCorrections ?? [];
 
   for (const candidate of rankCandidates(candidates)) {
-    if (selectedBySource[candidate.source] >= candidate.cap) continue;
+    if (selectedBySource[candidate.source] >= candidate.cap) {
+      droppedBudgetCount += 1;
+      continue;
+    }
     if ((candidate.score ?? 0) < MIN_SCORE[candidate.source]) {
       droppedLowScoreCount += 1;
       continue;
@@ -291,6 +296,7 @@ export function selectPromptMemoryContext(input: {
       droppedDuplicateCount,
       droppedLowScoreCount,
       droppedCorrectionCount,
+      droppedBudgetCount,
       topSources,
       averageInjectedScore:
         scored.length > 0

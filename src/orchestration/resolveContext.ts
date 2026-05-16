@@ -75,6 +75,11 @@ import {
   retrieveActiveCorrections,
   type MemoryCorrectionContext,
 } from "./memoryCorrections";
+import {
+  createEmptyEvalSourceIds,
+  recordRetrievalSnapshot,
+  type EvalMemorySource,
+} from "../eval/evalSnapshots";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -502,6 +507,57 @@ export async function resolveContext(input: {
       selectionDiagnostics: selectedContext.diagnostics,
     }),
   );
+
+  const retrieved = createEmptyEvalSourceIds();
+  retrieved.interactive_memory = memories.map((m) => m.id);
+  retrieved.session_chunk = sessionRecall.map((c) => c.id);
+  retrieved.structmem_entry = structMemEntries.map((e) => e.id);
+  retrieved.structmem_consolidation = structMemConsolidations.map((c) => c.id);
+  retrieved.open_thread = openThreads.map((t) => t.id);
+  retrieved.canon =
+    canonScenes.length > 0
+      ? canonScenes.map((s) => s.sceneId)
+      : canonChunks.map((c) => c.sceneId ?? c.id);
+
+  const injected = createEmptyEvalSourceIds();
+  injected.interactive_memory = selectedContext.memories.map((m) => m.id);
+  injected.session_chunk = selectedContext.sessionRecall.map((c) => c.id);
+  injected.structmem_entry = selectedContext.structMemEntries.map((e) => e.id);
+  injected.structmem_consolidation =
+    selectedContext.structMemConsolidations.map((c) => c.id);
+  injected.open_thread = selectedContext.openThreads.map((t) => t.id);
+  injected.canon = [...retrieved.canon];
+
+  recordRetrievalSnapshot({
+    query: {
+      rawUserMessage: userMessage,
+      intent: queryRewrite.intent,
+      confidence: queryRewrite.confidence ?? null,
+      hydeUsed: Boolean(hypotheticalQueryEmbedding),
+      rawFusionUsed: useFusedMemoryQuery,
+    },
+    retrieved,
+    injected,
+    dropped: {
+      duplicate: selectedContext.diagnostics.droppedDuplicateCount,
+      lowScore: selectedContext.diagnostics.droppedLowScoreCount,
+      correctionConflict: selectedContext.diagnostics.droppedCorrectionCount,
+      sourceBudget: selectedContext.diagnostics.droppedBudgetCount,
+      other: 0,
+    },
+    topSources: selectedContext.diagnostics.topSources.map((source) => ({
+      source: source as EvalMemorySource,
+    })),
+    timingsMs: {
+      queryRewriteMs,
+      embeddingsMs,
+      mainRetrievalMs,
+      olderRecallMs,
+      openThreadsMs,
+      selectorMs,
+      totalResolveContextMs: Date.now() - startedAt,
+    },
+  });
 
   return {
     memories: selectedContext.memories,
