@@ -25,14 +25,19 @@ import {
   getAttachedTracePayload,
 } from "../observability/tracePayloads";
 import { recordMemoryWriteSnapshot } from "../eval/evalSnapshots";
+import {
+  ROLEPLAY_TURN_ROUTE,
+  type TurnRoute,
+} from "./turnRoutes";
 
 export interface PersistCompletedTurnInput {
   session: ChatSession;
   userMessage: string;
   assistantReply: string;
   validatorResult: unknown;
-  derivedState: DerivedState;
-  memories: RetrievedMemory[];
+  route: TurnRoute;
+  derivedState?: DerivedState;
+  memories?: RetrievedMemory[];
   thoughts: Thought[];
 }
 
@@ -40,7 +45,7 @@ export interface PersistCompletedTurnResult {
   userMessageId: string;
   assistantMessageId: string;
   assistantTurnIndex: number;
-  jobId: string;
+  jobId: string | null;
 }
 
 async function persistCompletedTurnImpl(
@@ -48,6 +53,7 @@ async function persistCompletedTurnImpl(
 ): Promise<PersistCompletedTurnResult> {
   const { session } = input;
   const sessionId = session.sessionId;
+  const shouldRunPostTurn = input.route === ROLEPLAY_TURN_ROUTE;
   const transactionStartedAt = Date.now();
 
   const result = await db.transaction(async (tx) => {
@@ -99,6 +105,7 @@ async function persistCompletedTurnImpl(
         sessionId,
         turnIndex: userTurnIndex,
         role: "user",
+        route: input.route,
         content: input.userMessage,
         validatorResult: null,
         thoughts: null,
@@ -108,6 +115,7 @@ async function persistCompletedTurnImpl(
         sessionId,
         turnIndex: assistantTurnIndex,
         role: "assistant",
+        route: input.route,
         content: input.assistantReply,
         validatorResult: input.validatorResult as unknown as Record<
           string,
@@ -117,71 +125,90 @@ async function persistCompletedTurnImpl(
       },
     ]);
 
-    await tx
-      .insert(sessionState)
-      .values({
-        sessionId,
-        derivedState: input.derivedState,
-        temporaryAssumptions: deriveTurnDelta({
-          userMessage: input.userMessage,
-          assistantReply: input.assistantReply,
-          userTurnIndex,
-          assistantTurnIndex,
-        }),
-        lastTurnIndex: assistantTurnIndex,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: sessionState.sessionId,
-        set: {
+    if (shouldRunPostTurn && input.derivedState) {
+      const temporaryAssumptions = deriveTurnDelta({
+        userMessage: input.userMessage,
+        assistantReply: input.assistantReply,
+        userTurnIndex,
+        assistantTurnIndex,
+      });
+
+      await tx
+        .insert(sessionState)
+        .values({
+          sessionId,
           derivedState: input.derivedState,
-          temporaryAssumptions: deriveTurnDelta({
-            userMessage: input.userMessage,
-            assistantReply: input.assistantReply,
-            userTurnIndex,
-            assistantTurnIndex,
-          }),
+          temporaryAssumptions,
           lastTurnIndex: assistantTurnIndex,
           updatedAt: now,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: sessionState.sessionId,
+          set: {
+            derivedState: input.derivedState,
+            temporaryAssumptions,
+            lastTurnIndex: assistantTurnIndex,
+            updatedAt: now,
+          },
+        });
+    } else {
+      await tx
+        .insert(sessionState)
+        .values({
+          sessionId,
+          lastTurnIndex: assistantTurnIndex,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: sessionState.sessionId,
+          set: {
+            lastTurnIndex: assistantTurnIndex,
+            updatedAt: now,
+          },
+        });
+    }
 
     await tx
       .update(chatSessions)
       .set({ updatedAt: now })
       .where(eq(chatSessions.sessionId, sessionId));
 
-    const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
-    const jobId = newPostTurnJobId();
-    const payload: PostTurnJobPayloadV1 = {
-      version: 1,
-      sessionId,
-      userMessage: input.userMessage,
-      assistantReply: input.assistantReply,
-      session: sessionSnapshotFromChatSession(session),
-      derivedState: input.derivedState,
-      shouldWriteMemory,
-      userTurnIndex,
-      assistantTurnIndex,
-      userMessageId: userMsgId,
-      assistantMessageId: assistantMsgId,
-      recentMemorySummaries: input.memories.slice(0, 3).map((m) => m.summary),
-    };
+    let jobId: string | null = null;
+    if (shouldRunPostTurn && input.derivedState) {
+      const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
+      jobId = newPostTurnJobId();
+      const payload: PostTurnJobPayloadV1 = {
+        version: 1,
+        sessionId,
+        userMessage: input.userMessage,
+        assistantReply: input.assistantReply,
+        session: sessionSnapshotFromChatSession(session),
+        derivedState: input.derivedState,
+        shouldWriteMemory,
+        userTurnIndex,
+        assistantTurnIndex,
+        userMessageId: userMsgId,
+        assistantMessageId: assistantMsgId,
+        recentMemorySummaries: (input.memories ?? [])
+          .slice(0, 3)
+          .map((m) => m.summary),
+      };
 
-    await tx.insert(postTurnJobs).values({
-      id: jobId,
-      sessionId,
-      userMessageId: userMsgId,
-      assistantMessageId: assistantMsgId,
-      status: "pending",
-      attempts: 0,
-      maxAttempts: env.POST_TURN_JOB_MAX_ATTEMPTS,
-      runAfter: now,
-      stepStatus: { ...INITIAL_POST_TURN_STEP_STATUS },
-      payload: payload as unknown as Record<string, unknown>,
-      createdAt: now,
-      updatedAt: now,
-    });
+      await tx.insert(postTurnJobs).values({
+        id: jobId,
+        sessionId,
+        userMessageId: userMsgId,
+        assistantMessageId: assistantMsgId,
+        status: "pending",
+        attempts: 0,
+        maxAttempts: env.POST_TURN_JOB_MAX_ATTEMPTS,
+        runAfter: now,
+        stepStatus: { ...INITIAL_POST_TURN_STEP_STATUS },
+        payload: payload as unknown as Record<string, unknown>,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     return {
       userMessageId: userMsgId,
@@ -191,15 +218,18 @@ async function persistCompletedTurnImpl(
     };
   });
 
-  recordMemoryWriteSnapshot({
-    postTurnJobId: result.jobId,
-  });
+  if (result.jobId) {
+    recordMemoryWriteSnapshot({
+      postTurnJobId: result.jobId,
+    });
+  }
 
   return attachTracePayload(
     result,
     buildCompletedTurnPersistenceTracePayload({
       result,
       session,
+      route: input.route,
       transactionDurationMs: buildDurationPayload(transactionStartedAt).durationMs,
     }),
   );
@@ -208,12 +238,16 @@ async function persistCompletedTurnImpl(
 export function buildCompletedTurnPersistenceTracePayload(input: {
   result: PersistCompletedTurnResult;
   session: Pick<ChatSession, "sessionId" | "writebackPolicy">;
+  route: TurnRoute;
   transactionDurationMs: number;
 }): Record<string, unknown> {
   return {
     ...input.result,
     sessionId: input.session.sessionId,
-    writebackEnabled: input.session.writebackPolicy !== "no_writeback",
+    route: input.route,
+    writebackEnabled:
+      input.route === ROLEPLAY_TURN_ROUTE &&
+      input.session.writebackPolicy !== "no_writeback",
     transactionDurationMs: input.transactionDurationMs,
   };
 }
@@ -229,10 +263,13 @@ export const persistCompletedTurn = traceStageWithIO(
       return {
         sessionId: input.session.sessionId,
         characterId: input.session.characterId,
-        writebackEnabled: input.session.writebackPolicy !== "no_writeback",
+        route: input.route,
+        writebackEnabled:
+          input.route === ROLEPLAY_TURN_ROUTE &&
+          input.session.writebackPolicy !== "no_writeback",
         userMessageChars: input.userMessage.length,
         assistantReplyChars: input.assistantReply.length,
-        memoryCount: input.memories.length,
+        memoryCount: input.memories?.length ?? 0,
         thoughtCount: input.thoughts.length,
       };
     },

@@ -5,7 +5,10 @@ import {
   retrieveCanonNarrativeLegacy,
   retrieveCanonCoarseToFine,
 } from "../retrieval/canon/retrieveCanonNarrative";
-import { getRecentConversationWindow } from "../retrieval/conversation/getRecentConversationWindow";
+import {
+  getLatestConversationRouteTurnIndex,
+  getRecentConversationWindow,
+} from "../retrieval/conversation/getRecentConversationWindow";
 import {
   computeDerivedState,
   getSessionState,
@@ -61,6 +64,7 @@ import {
   buildRetrievalPlan,
   type RetrievalPlan,
 } from "./retrievalPlan";
+import { ROLEPLAY_TURN_ROUTE } from "./turnRoutes";
 import { selectPromptMemoryContext } from "./promptMemoryContextSelector";
 import {
   readFreshTurnDelta,
@@ -280,7 +284,15 @@ export async function resolveContext(input: {
   embeddingsMs = Date.now() - embeddingsStartedAt;
 
   const mainRetrievalStartedAt = Date.now();
-  const [memories, canonChunksTier1, canonScenesTier3, recentTurns, sessionSummary, sessionStateRow] =
+  const [
+    memories,
+    canonChunksTier1,
+    canonScenesTier3,
+    recentTurns,
+    sessionSummary,
+    sessionStateRow,
+    latestRoleplayTurnIndex,
+  ] =
     await Promise.all([
       useFusedMemoryQuery && rawMemoryQueryEmbedding
         ? Promise.all([
@@ -334,9 +346,13 @@ export async function resolveContext(input: {
                 : undefined,
           })
         : Promise.resolve([] as RetrievedCanonScene[]),
-      tracedRetrieveTurns(session.sessionId),
+      tracedRetrieveTurns(session.sessionId, undefined, ROLEPLAY_TURN_ROUTE),
       tracedSessionSummary(session.sessionId),
       tracedSessionStateRow(session.sessionId),
+      getLatestConversationRouteTurnIndex(
+        session.sessionId,
+        ROLEPLAY_TURN_ROUTE,
+      ),
     ]);
   mainRetrievalMs = Date.now() - mainRetrievalStartedAt;
 
@@ -347,7 +363,7 @@ export async function resolveContext(input: {
     canonChunks = canonScenesToChunks(canonScenes);
   }
 
-  let latestFrontierTurn = sessionStateRow?.lastTurnIndex ?? -1;
+  let latestFrontierTurn = latestRoleplayTurnIndex ?? -1;
   if (latestFrontierTurn < 0 && recentTurns.length > 0) {
     latestFrontierTurn =
       recentTurns[recentTurns.length - 1]?.turnIndex ?? -1;

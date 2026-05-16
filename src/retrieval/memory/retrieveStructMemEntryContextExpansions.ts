@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { traceStage } from "../../observability/langsmithTracing";
+import { ROLEPLAY_TURN_ROUTE } from "../../orchestration/turnRoutes";
 import type { RetrievedStructMemEntry } from "./retrieveStructMemEntries";
 
 export interface StructMemEntryContextExpansion {
@@ -91,6 +92,7 @@ async function retrieveStructMemEntryContextExpansions(input: {
       sql`, `,
     )}]::text[])
       AND cm.session_id = ${input.sessionId}
+      AND cm.route = ${ROLEPLAY_TURN_ROUTE}
     ORDER BY cm.turn_index ASC
   `);
 

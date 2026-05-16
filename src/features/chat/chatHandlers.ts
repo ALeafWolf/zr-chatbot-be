@@ -66,6 +66,7 @@ export async function sendMessageHandler(
       turn_index: result.turnIndex,
       was_rewritten: result.wasRewritten,
       was_deflected: result.wasDeflected,
+      route: result.route,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

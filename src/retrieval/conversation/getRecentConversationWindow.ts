@@ -1,7 +1,11 @@
 import { db } from "../../db/client";
 import { chatMessages } from "../../db/schema/chat";
-import { eq, desc } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { RETRIEVAL_LIMITS } from "../../character/canonRules";
+import {
+  ROLEPLAY_TURN_ROUTE,
+  type TurnRoute,
+} from "../../orchestration/turnRoutes";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -16,6 +20,7 @@ export interface ConversationTurn {
 export async function getRecentConversationWindow(
   sessionId: string,
   pairCount: number = RETRIEVAL_LIMITS.recentTurnPairs,
+  route: TurnRoute = ROLEPLAY_TURN_ROUTE,
 ): Promise<ConversationTurn[]> {
   const rowLimit = pairCount * 2;
 
@@ -26,7 +31,7 @@ export async function getRecentConversationWindow(
       turnIndex: chatMessages.turnIndex,
     })
     .from(chatMessages)
-    .where(eq(chatMessages.sessionId, sessionId))
+    .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.route, route)))
     .orderBy(desc(chatMessages.turnIndex))
     .limit(rowLimit);
 
@@ -37,4 +42,18 @@ export async function getRecentConversationWindow(
       content: r.content,
       turnIndex: r.turnIndex,
     }));
+}
+
+export async function getLatestConversationRouteTurnIndex(
+  sessionId: string,
+  route: TurnRoute = ROLEPLAY_TURN_ROUTE,
+): Promise<number | null> {
+  const rows = await db
+    .select({ turnIndex: chatMessages.turnIndex })
+    .from(chatMessages)
+    .where(and(eq(chatMessages.sessionId, sessionId), eq(chatMessages.route, route)))
+    .orderBy(desc(chatMessages.turnIndex))
+    .limit(1);
+
+  return rows[0]?.turnIndex ?? null;
 }

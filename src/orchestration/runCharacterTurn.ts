@@ -5,6 +5,7 @@ import {
   loadCharacterDefaults,
   loadPersonaOverlay,
 } from "../character/characterDefaults";
+import { classifyTurnRoute } from "./classifyTurnRoute";
 import { resolveContext } from "./resolveContext";
 import { buildPromptContextTraced } from "./buildPromptContext";
 import { generateAndValidateStream } from "./generateAndValidate";
@@ -30,6 +31,13 @@ import {
   persistCompletedTurn,
   updateAssistantMessageThoughts,
 } from "./turnPersistence";
+import {
+  APP_COMMAND_ROUTE,
+  ROLEPLAY_TURN_ROUTE,
+  UNSUPPORTED_ROUTE,
+  persistedRouteForRoleplayResult,
+  type TurnRoute,
+} from "./turnRoutes";
 import {
   createRecallThoughtTask,
   takeReadyRecallThought,
@@ -135,6 +143,7 @@ export interface TurnOutput {
   wasRewritten: boolean;
   wasDeflected: boolean;
   turnIndex: number;
+  route: TurnRoute;
 }
 
 export type CharacterTurnSseEvent =
@@ -153,6 +162,7 @@ export type CharacterTurnSseEvent =
         turn_index: number;
         was_rewritten: boolean;
         was_deflected: boolean;
+        route: TurnRoute;
         thoughts: Thought[];
       };
     }
@@ -167,35 +177,82 @@ function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaul
   );
 }
 
+async function loadSessionImpl(sessionId: string): Promise<ChatSession> {
+  const sessionRows = await db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.sessionId, sessionId))
+    .limit(1);
+
+  if (!sessionRows[0]) {
+    throw new Error(`Session not found: ${sessionId}`);
+  }
+
+  const session: ChatSession = sessionRows[0];
+  if (session.deletedAt) {
+    throw new Error(`Session ${sessionId} has been deleted`);
+  }
+
+  return session;
+}
+
+const loadSession = traceStage("orchestration.load_session", loadSessionImpl, {
+  subsystem: "orchestration",
+  turn: "foreground",
+  processInputs: (inputs) => ({ sessionId: String(inputs[0] ?? "") }),
+  processOutputs: (outputs) => {
+    const session = outputs as unknown as ChatSession;
+    return {
+      sessionId: session.sessionId,
+      characterId: session.characterId,
+      mode: session.mode,
+    };
+  },
+});
+
+const tracedRouteSwitch = traceStage(
+  "orchestration.route_switch",
+  async (input: {
+    classifiedRoute: TurnRoute;
+    persistedRoute?: TurnRoute;
+    confidence?: number;
+    fallbackReason?: string;
+  }) => input,
+  { subsystem: "orchestration", turn: "foreground" },
+);
+
+const tracedRoleplayTurn = traceStage(
+  "orchestration.roleplay_turn",
+  async (input: { sessionId: string; userMessageChars: number }) => input,
+  { subsystem: "orchestration", turn: "foreground" },
+);
+
+const tracedAppCommandTurn = traceStage(
+  "orchestration.app_command",
+  async (input: { sessionId: string; userMessageChars: number }) => input,
+  { subsystem: "orchestration", turn: "foreground" },
+);
+
+const tracedUnsupportedTurn = traceStage(
+  "orchestration.unsupported_turn",
+  async (input: { sessionId: string; userMessageChars: number }) => input,
+  { subsystem: "orchestration", turn: "foreground" },
+);
+
 /**
  * Phase 1 turn flow with incremental SSE events (`thought`, `tool_*`, `delta`, then `done`).
  * Abort via `signal` skips persistence if the turn did not finish cleanly.
  */
-export async function* runCharacterTurnStream(
-  input: TurnInput & { signal?: AbortSignal },
+async function* runRoleplayTurnStream(
+  input: TurnInput & { session: ChatSession; signal?: AbortSignal },
 ): AsyncGenerator<CharacterTurnSseEvent> {
-  const { sessionId, userMessage, signal } = input;
+  const { session, userMessage, signal } = input;
 
   try {
-    const sessionRows = await db
-      .select()
-      .from(chatSessions)
-      .where(eq(chatSessions.sessionId, sessionId))
-      .limit(1);
-
-    if (!sessionRows[0]) {
-      yield { event: "error", data: { message: `Session not found: ${sessionId}` } };
-      return;
-    }
-    const session: ChatSession = sessionRows[0];
-
-    if (session.deletedAt) {
-      yield {
-        event: "error",
-        data: { message: `Session ${sessionId} has been deleted` },
-      };
-      return;
-    }
+    await tracedRoleplayTurn({
+      sessionId: session.sessionId,
+      userMessageChars: userMessage.length,
+    });
 
     const characterDefaults = loadCharacterDefaults(session.characterId);
     const overlayId = session.personaOverlayId ?? `${session.continuityScope}`;
@@ -373,11 +430,20 @@ export async function* runCharacterTurnStream(
       yield { event: "thought", data: finalRecallThought.thought };
     }
 
+    const persistedRoute = persistedRouteForRoleplayResult({
+      wasDeflected: result.wasDeflected,
+    });
+    await tracedRouteSwitch({
+      classifiedRoute: ROLEPLAY_TURN_ROUTE,
+      persistedRoute,
+    });
+
     const persisted = await persistCompletedTurn({
       session,
       userMessage,
       assistantReply: result.content,
       validatorResult: result.validatorResult,
+      route: persistedRoute,
       derivedState: context.derivedState,
       memories: context.memories,
       thoughts: thoughtsAcc,
@@ -387,7 +453,9 @@ export async function* runCharacterTurnStream(
       persistLateRecallThought(persisted.assistantMessageId);
     }
 
-    postTurnRunner.wake();
+    if (persisted.jobId) {
+      postTurnRunner.wake();
+    }
 
     for (let i = 0; i < result.content.length; i += FINAL_REPLY_REPLAY_SLICE) {
       yield {
@@ -406,9 +474,143 @@ export async function* runCharacterTurnStream(
         turn_index: persisted.assistantTurnIndex,
         was_rewritten: result.wasRewritten,
         was_deflected: result.wasDeflected,
+        route: persistedRoute,
         thoughts: thoughtsAcc,
       },
     };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    yield { event: "error", data: { message } };
+  }
+}
+
+async function* replayPersistedContent(
+  content: string,
+): AsyncGenerator<CharacterTurnSseEvent> {
+  for (let i = 0; i < content.length; i += FINAL_REPLY_REPLAY_SLICE) {
+    yield {
+      event: "delta",
+      data: { text: content.slice(i, i + FINAL_REPLY_REPLAY_SLICE) },
+    };
+  }
+}
+
+async function* runAppCommandTurnStream(
+  input: TurnInput & { session: ChatSession; signal?: AbortSignal },
+): AsyncGenerator<CharacterTurnSseEvent> {
+  const { session, userMessage, signal } = input;
+  if (signal?.aborted) return;
+
+  await tracedAppCommandTurn({
+    sessionId: session.sessionId,
+    userMessageChars: userMessage.length,
+  });
+
+  const content =
+    "App command recognized. Command execution is not implemented yet.";
+  const persisted = await persistCompletedTurn({
+    session,
+    userMessage,
+    assistantReply: content,
+    validatorResult: {
+      route: APP_COMMAND_ROUTE,
+      status: "not_implemented",
+    },
+    route: APP_COMMAND_ROUTE,
+    thoughts: [],
+  });
+
+  if (signal?.aborted) return;
+
+  yield* replayPersistedContent(content);
+  yield {
+    event: "done",
+    data: {
+      message_id: persisted.assistantMessageId,
+      content,
+      turn_index: persisted.assistantTurnIndex,
+      was_rewritten: false,
+      was_deflected: false,
+      route: APP_COMMAND_ROUTE,
+      thoughts: [],
+    },
+  };
+}
+
+async function* runUnsupportedTurnStream(
+  input: TurnInput & { session: ChatSession; signal?: AbortSignal },
+): AsyncGenerator<CharacterTurnSseEvent> {
+  const { session, userMessage, signal } = input;
+  if (signal?.aborted) return;
+
+  await tracedUnsupportedTurn({
+    sessionId: session.sessionId,
+    userMessageChars: userMessage.length,
+  });
+
+  const characterDefaults = loadCharacterDefaults(session.characterId);
+  const content = characterDefaults.safe_deflection;
+  const persisted = await persistCompletedTurn({
+    session,
+    userMessage,
+    assistantReply: content,
+    validatorResult: {
+      route: UNSUPPORTED_ROUTE,
+      status: "safe_deflection",
+    },
+    route: UNSUPPORTED_ROUTE,
+    thoughts: [],
+  });
+
+  if (signal?.aborted) return;
+
+  yield* replayPersistedContent(content);
+  yield {
+    event: "done",
+    data: {
+      message_id: persisted.assistantMessageId,
+      content,
+      turn_index: persisted.assistantTurnIndex,
+      was_rewritten: false,
+      was_deflected: true,
+      route: UNSUPPORTED_ROUTE,
+      thoughts: [],
+    },
+  };
+}
+
+/**
+ * Phase 1 turn flow with incremental SSE events (`thought`, `tool_*`, `delta`, then `done`).
+ * Abort via `signal` skips persistence if the turn did not finish cleanly.
+ */
+export async function* runCharacterTurnStream(
+  input: TurnInput & { signal?: AbortSignal },
+): AsyncGenerator<CharacterTurnSseEvent> {
+  const { sessionId, userMessage, signal } = input;
+
+  try {
+    const session = await loadSession(sessionId);
+    const routeIntent = await classifyTurnRoute({ session, userMessage, signal });
+    await tracedRouteSwitch({
+      classifiedRoute: routeIntent.type,
+      confidence: routeIntent.confidence,
+      fallbackReason: routeIntent.fallbackReason,
+    });
+
+    switch (routeIntent.type) {
+      case ROLEPLAY_TURN_ROUTE:
+        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        return;
+      case APP_COMMAND_ROUTE:
+        yield* runAppCommandTurnStream({ session, sessionId, userMessage, signal });
+        return;
+      case UNSUPPORTED_ROUTE:
+        yield* runUnsupportedTurnStream({ session, sessionId, userMessage, signal });
+        return;
+      default:
+        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        return;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     yield { event: "error", data: { message } };
@@ -469,6 +671,7 @@ async function _runCharacterTurn(input: TurnInput): Promise<TurnOutput> {
         wasRewritten: ev.data.was_rewritten,
         wasDeflected: ev.data.was_deflected,
         turnIndex: ev.data.turn_index,
+        route: ev.data.route,
       };
     }
     if (ev.event === "error") {

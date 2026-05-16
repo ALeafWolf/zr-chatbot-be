@@ -8,6 +8,7 @@ import {
   boolean,
   doublePrecision,
 } from "drizzle-orm/pg-core";
+import type { TurnRoute } from "../../orchestration/turnRoutes";
 
 // ---------------------------------------------------------------------------
 // chat_sessions
@@ -57,6 +58,7 @@ export const chatMessages = pgTable(
       .references(() => chatSessions.sessionId, { onDelete: "cascade" }),
     turnIndex: integer("turn_index").notNull(),
     role: text("role").notNull(), // user | assistant
+    route: text("route").$type<TurnRoute>().notNull().default("roleplay_turn"),
     content: text("content").notNull(),
     /** Character-voiced thought chain (streamed + persisted on assistant rows). */
     thoughts: jsonb("thoughts").$type<unknown>(),
@@ -67,6 +69,11 @@ export const chatMessages = pgTable(
   },
   (t) => [
     index("chat_messages_session_turn_idx").on(t.sessionId, t.turnIndex),
+    index("chat_messages_session_route_turn_idx").on(
+      t.sessionId,
+      t.route,
+      t.turnIndex,
+    ),
   ],
 );
 

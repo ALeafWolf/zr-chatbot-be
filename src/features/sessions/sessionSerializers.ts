@@ -49,6 +49,7 @@ export function serializeSessionDetail(
     messages: messages.map((m) => ({
       id: m.id,
       role: m.role,
+      route: m.route,
       content: m.content,
       turn_index: m.turnIndex,
       created_at: m.createdAt,
