@@ -12,6 +12,14 @@ export type RetrievalIntent =
 
 export type CanonRetrievalMode = "full" | "compact" | "skip";
 
+export type TurnType =
+  | "immediate_action"
+  | "recent_reference"
+  | "older_recall"
+  | "canon_question"
+  | "web_question"
+  | "general_roleplay";
+
 export interface RetrievalPlan {
   intent: RetrievalIntent;
   broadFailOpen: boolean;
@@ -215,4 +223,29 @@ export function buildRetrievalPlan(input: RetrievalPlanInput): RetrievalPlan {
     default:
       return base;
   }
+}
+
+export function classifyTurnType(
+  retrievalPlan: RetrievalPlan,
+  userMessage: string,
+  queryRewrite: QueryRewriteResult,
+): TurnType {
+  const text = [userMessage, queryRewrite.entities.join(" ")]
+    .join(" ")
+    .toLowerCase();
+
+  if (retrievalPlan.intent === "canon_fact") return "canon_question";
+  if (retrievalPlan.intent === "personal_recall") return "older_recall";
+
+  if (retrievalPlan.intent === "scene_continuation") {
+    const hasContinuationMarker = /继续|接着|然后|之后|下一步|接下来|现在/.test(text);
+    return hasContinuationMarker ? "recent_reference" : "immediate_action";
+  }
+
+  if (retrievalPlan.intent === "general") {
+    const hasWebPattern = /搜索|查一下|天气|新闻|最新|查找/.test(text);
+    if (hasWebPattern) return "web_question";
+  }
+
+  return "general_roleplay";
 }

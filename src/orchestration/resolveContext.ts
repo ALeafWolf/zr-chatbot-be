@@ -62,6 +62,7 @@ import {
 } from "./olderRecall";
 import {
   buildRetrievalPlan,
+  classifyTurnType,
   type RetrievalPlan,
 } from "./retrievalPlan";
 import { ROLEPLAY_TURN_ROUTE } from "./turnRoutes";
@@ -106,6 +107,7 @@ export interface ResolvedContext {
   latestTurnDelta: LatestTurnDelta | null;
   queryRewrite: QueryRewriteResult;
   retrievalPlan: RetrievalPlan;
+  turnType: import("./retrievalPlan").TurnType;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -593,5 +595,6 @@ export async function resolveContext(input: {
     latestTurnDelta,
     queryRewrite,
     retrievalPlan,
+    turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
   };
 }

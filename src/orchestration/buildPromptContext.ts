@@ -33,6 +33,7 @@ import { traceStageWithIO } from "../observability/langsmithTracing";
 import {
   attachTracePayload,
   buildPromptTracePayload,
+  estimateInjectedTokensBySource,
   getAttachedTracePayload,
 } from "../observability/tracePayloads";
 
@@ -300,6 +301,7 @@ async function buildPromptContextTracedImpl(
         structMemConsolidations: input.structMemConsolidations?.length ?? 0,
       },
       }),
+      injectedTokensBySource: estimateInjectedTokensBySource(promptContext.systemPrompt),
     },
   );
 }
