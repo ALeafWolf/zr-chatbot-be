@@ -256,19 +256,9 @@ export async function resolveContext(input: {
       confidenceThreshold: env.REWRITE_CONFIDENCE_THRESHOLD,
     },
   });
-  const retrievalPlan = buildRetrievalPlan({
-    queryRewrite,
-    userMessage,
-    annotationFallback: queryTextAnnotationFallback,
-    confidenceThreshold: env.REWRITE_CONFIDENCE_THRESHOLD,
-    structMemEntryDefaultTopK: env.STRUCTMEM_ENTRY_RETRIEVAL_TOP_K,
-    structMemConsolidationDefaultTopK: 4,
-  });
-  const useFusedMemoryQuery =
-    queryTexts.shouldFuseRawMemory &&
-    queryTexts.rawText.trim() !== queryTexts.memoryText.trim();
 
   // Phase 1: Motif signal detection (deterministic, zero LLM calls)
+  // Runs before buildRetrievalPlan so the plan can consume motifSignal.
   let motifSignal: MotifSignal | undefined;
   let motifProbe: StructMemMotifProbeSummary | undefined;
   let motifQueries: string[] | undefined;
@@ -278,6 +268,20 @@ export async function resolveContext(input: {
       motifQueries = buildMotifQueries(motifSignal);
     }
   }
+
+  const retrievalPlan = buildRetrievalPlan({
+    queryRewrite,
+    userMessage,
+    annotationFallback: queryTextAnnotationFallback,
+    confidenceThreshold: env.REWRITE_CONFIDENCE_THRESHOLD,
+    structMemEntryDefaultTopK: env.STRUCTMEM_ENTRY_RETRIEVAL_TOP_K,
+    structMemConsolidationDefaultTopK: 4,
+    motifSignal,
+    motifProbe,
+  });
+  const useFusedMemoryQuery =
+    queryTexts.shouldFuseRawMemory &&
+    queryTexts.rawText.trim() !== queryTexts.memoryText.trim();
 
   let queryEmbedding: number[];
   let canonQueryEmbedding: number[];

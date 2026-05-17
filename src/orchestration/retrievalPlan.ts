@@ -1,5 +1,6 @@
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { RETRIEVAL_LIMITS } from "../character/canonRules";
+import type { MotifSignal, StructMemMotifProbeSummary } from "./motifTypes";
 
 export type RetrievalIntent =
   | "scene_continuation"
@@ -20,6 +21,29 @@ export type TurnType =
   | "web_question"
   | "general_roleplay";
 
+export type RetrievalInjectionMode = "full" | "compact" | "skip";
+
+export interface EnhancedContextNeed {
+  needsRecentTurns: boolean;
+  needsOlderSessionRecall: boolean;
+  needsDurableMemory: boolean;
+  needsStructMem: boolean;
+  needsStructMemConsolidation: boolean;
+  needsCanon: boolean;
+  needsWeb: boolean;
+  structMemReason?:
+    | "none"
+    | "explicit_recall"
+    | "implicit_repeated_motif"
+    | "open_thread"
+    | "relationship_state"
+    | "promise_or_decision"
+    | "emotional_shift";
+  injectionMode: RetrievalInjectionMode;
+  expectedToolUse: string[];
+  reason: string;
+}
+
 export interface RetrievalPlan {
   intent: RetrievalIntent;
   broadFailOpen: boolean;
@@ -30,6 +54,7 @@ export interface RetrievalPlan {
   structMemEntryTopK: number;
   structMemConsolidationTopK: number;
   openThreadTopK: number;
+  contextNeed: EnhancedContextNeed;
 }
 
 export interface RetrievalPlanInput {
@@ -39,6 +64,8 @@ export interface RetrievalPlanInput {
   confidenceThreshold: number;
   structMemEntryDefaultTopK: number;
   structMemConsolidationDefaultTopK: number;
+  motifSignal?: MotifSignal;
+  motifProbe?: StructMemMotifProbeSummary;
 }
 
 function normalizedText(input: RetrievalPlanInput): string {
@@ -159,6 +186,166 @@ function inferIntent(input: RetrievalPlanInput): RetrievalIntent {
   return "general";
 }
 
+function resolveContextNeed(
+  intent: RetrievalIntent,
+  broadFailOpen: boolean,
+  motifSignal?: MotifSignal,
+): EnhancedContextNeed {
+  if (broadFailOpen) {
+    return {
+      needsRecentTurns: true,
+      needsOlderSessionRecall: true,
+      needsDurableMemory: true,
+      needsStructMem: true,
+      needsStructMemConsolidation: true,
+      needsCanon: true,
+      needsWeb: false,
+      injectionMode: "full",
+      expectedToolUse: [],
+      reason: "broad fail-open — low confidence or parse failure",
+    };
+  }
+
+  const base: EnhancedContextNeed = {
+    needsRecentTurns: true,
+    needsOlderSessionRecall: false,
+    needsDurableMemory: false,
+    needsStructMem: false,
+    needsStructMemConsolidation: false,
+    needsCanon: false,
+    needsWeb: false,
+    injectionMode: "compact",
+    expectedToolUse: [],
+    reason: "",
+  };
+
+  switch (intent) {
+    case "canon_fact":
+      return {
+        ...base,
+        needsCanon: true,
+        needsDurableMemory: true,
+        injectionMode: "full",
+        expectedToolUse: ["canon_lookup"],
+        reason: "canon fact query — needs canon + durable memory",
+      };
+    case "personal_recall":
+      return {
+        ...base,
+        needsOlderSessionRecall: true,
+        needsStructMem: true,
+        needsDurableMemory: true,
+        injectionMode: "full",
+        expectedToolUse: [
+          "lookup_older_session_memory",
+          "lookup_structmem",
+          "lookup_interactive_memory",
+        ],
+        reason: "personal recall — needs older session + structmem + durable memory",
+      };
+    case "plan_or_promise":
+      return {
+        ...base,
+        needsStructMem: true,
+        needsDurableMemory: true,
+        expectedToolUse: ["lookup_structmem"],
+        reason: "plan/promise — needs structmem for open threads + durable memory",
+      };
+    case "relationship_progression":
+      return {
+        ...base,
+        needsStructMem: true,
+        needsDurableMemory: true,
+        injectionMode: "compact",
+        expectedToolUse: ["lookup_structmem"],
+        reason: "relationship progression — structmem for relevant history",
+      };
+    case "emotional_response":
+      return {
+        ...base,
+        needsDurableMemory: true,
+        expectedToolUse: [],
+        reason: "emotional response — durable memory for emotional context",
+      };
+    case "scene_continuation":
+    case "general":
+    default: {
+      const hasStrongMotif =
+        motifSignal &&
+        !motifSignal.hasNegation &&
+        motifSignal.bodyOrObjectTerms.length > 0 &&
+        motifSignal.actionTerms.length > 0 &&
+        motifSignal.confidence >= 0.7;
+      return {
+        ...base,
+        needsDurableMemory: true,
+        ...(hasStrongMotif
+          ? {
+              needsStructMem: true,
+              structMemReason: "implicit_repeated_motif" as const,
+              expectedToolUse: ["lookup_structmem"],
+              reason: "scene continuation with distinctive motif signal — probe structmem",
+            }
+          : {
+              expectedToolUse: [],
+              reason: "scene continuation / general — minimal context, durable memory only",
+            }),
+      };
+    }
+  }
+}
+
+function maxInjectionMode(
+  a: RetrievalInjectionMode,
+  b: RetrievalInjectionMode,
+): RetrievalInjectionMode {
+  if (a === "full" || b === "full") return "full";
+  if (a === "compact" || b === "compact") return "compact";
+  return "skip";
+}
+
+function addUnique(arr: string[], value: string): string[] {
+  return arr.includes(value) ? arr : [...arr, value];
+}
+
+export function applyContextNeedConflictRules(
+  need: EnhancedContextNeed,
+  queryRewrite: QueryRewriteResult,
+  motifProbe?: StructMemMotifProbeSummary,
+): EnhancedContextNeed {
+  let result = { ...need, expectedToolUse: [...need.expectedToolUse] };
+
+  if (queryRewrite.intent === "attribution") {
+    result.needsCanon = true;
+    result.expectedToolUse = addUnique(result.expectedToolUse, "canon_lookup");
+    result.injectionMode = maxInjectionMode(result.injectionMode, "compact");
+    result.reason += " | attribution intent forces canon";
+  }
+
+  if (queryRewrite.intent === "recall") {
+    result.needsOlderSessionRecall = true;
+    result.needsStructMem = true;
+    result.expectedToolUse = addUnique(
+      result.expectedToolUse,
+      "lookup_older_session_memory",
+    );
+    result.expectedToolUse = addUnique(
+      result.expectedToolUse,
+      "lookup_structmem",
+    );
+    result.reason += " | recall intent forces older recall + structmem";
+  }
+
+  if (motifProbe?.hasStrongMatch) {
+    result.needsStructMem = true;
+    result.structMemReason = "implicit_repeated_motif";
+    result.injectionMode = maxInjectionMode(result.injectionMode, "compact");
+    result.reason += " | motif probe strong match forces structmem";
+  }
+
+  return result;
+}
+
 export function buildRetrievalPlan(input: RetrievalPlanInput): RetrievalPlan {
   const lowConfidence =
     input.queryRewrite.confidence !== undefined &&
@@ -167,6 +354,12 @@ export function buildRetrievalPlan(input: RetrievalPlanInput): RetrievalPlan {
     !input.queryRewrite.parseOk || input.annotationFallback || lowConfidence;
 
   const intent = broadFailOpen ? "general" : inferIntent(input);
+  const contextNeed = applyContextNeedConflictRules(
+    resolveContextNeed(intent, broadFailOpen, input.motifSignal),
+    input.queryRewrite,
+    input.motifProbe,
+  );
+
   const base: RetrievalPlan = {
     intent,
     broadFailOpen,
@@ -177,6 +370,7 @@ export function buildRetrievalPlan(input: RetrievalPlanInput): RetrievalPlan {
     structMemEntryTopK: input.structMemEntryDefaultTopK,
     structMemConsolidationTopK: input.structMemConsolidationDefaultTopK,
     openThreadTopK: 5,
+    contextNeed,
   };
 
   if (broadFailOpen) return base;
