@@ -1,5 +1,6 @@
 import { db } from "../db/client";
 import { chatSessions } from "../db/schema/chat";
+import { env } from "../config/env";
 import { eq } from "drizzle-orm";
 import {
   loadCharacterDefaults,
@@ -284,6 +285,10 @@ async function* runRoleplayTurnStream(
         context.structMemEntryContextExpansions,
       structMemConsolidations: context.structMemConsolidations,
       motifProbe: context.motifProbe,
+      contextRetrievalMode: env.CONTEXT_RETRIEVAL_MODE as
+        | "eager"
+        | "hybrid_lazy",
+      contextNeed: context.retrievalPlan.contextNeed,
       userMessage,
       queryRewrite: context.queryRewrite,
     });

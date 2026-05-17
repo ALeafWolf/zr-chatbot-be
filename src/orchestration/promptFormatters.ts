@@ -10,6 +10,7 @@ import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrie
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "./motifTypes";
+import type { EnhancedContextNeed } from "./retrievalPlan";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
@@ -339,4 +340,18 @@ export function formatStructMemMotifBlock(
   return full.length > STRUCTMEM_MOTIF_MAX_CHARS
     ? `${full.slice(0, STRUCTMEM_MOTIF_MAX_CHARS - 1)}…`
     : full;
+}
+
+export function formatAvailableContextSourcesBlock(
+  contextNeed?: EnhancedContextNeed,
+): string {
+  if (!contextNeed) return "";
+  const sources: string[] = [];
+  if (contextNeed.needsCanon) sources.push("canon_lookup — verify canon and story facts");
+  if (contextNeed.needsStructMem) sources.push("lookup_structmem — find past structured event memories");
+  if (contextNeed.needsStructMemConsolidation) sources.push("lookup_structmem_consolidation — find memory synthesis");
+  if (contextNeed.needsOlderSessionRecall) sources.push("lookup_older_session_memory — find earlier conversation chunks");
+  if (contextNeed.needsDurableMemory) sources.push("lookup_interactive_memory — find durable memory events");
+  if (sources.length === 0) return "";
+  return `The following lookup tools are available. Only call them when the current conversation is insufficient for a specific detail:\n${sources.join("\n")}`;
 }

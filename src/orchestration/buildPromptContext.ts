@@ -17,6 +17,7 @@ import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrie
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "./motifTypes";
+import type { EnhancedContextNeed } from "./retrievalPlan";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -71,6 +72,8 @@ export function buildPromptContext(input: {
   structMemEntryContextExpansions?: StructMemEntryContextExpansion[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
   motifProbe?: StructMemMotifProbeSummary;
+  contextRetrievalMode?: "eager" | "hybrid_lazy";
+  contextNeed?: EnhancedContextNeed;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -92,9 +95,12 @@ export function buildPromptContext(input: {
     structMemEntryContextExpansions = [],
     structMemConsolidations = [],
     motifProbe,
+    contextRetrievalMode,
+    contextNeed,
     userMessage,
     queryRewrite,
   } = input;
+  const isHybridLazy = contextRetrievalMode === "hybrid_lazy";
 
   const structuredBlock = queryRewrite?.combined_for_embedding?.trim() ?? "";
   const useAnnotationFallback = queryRewrite
@@ -172,6 +178,15 @@ ${personaOverlay.overlay_identity}`,
 默认关系基线：${characterDefaults.interaction_defaults.default_relationship_baseline}`,
     ),
 
+    ...(isHybridLazy
+      ? [
+          buildBlock(
+            "AVAILABLE CONTEXT SOURCES",
+            promptFormatters.formatAvailableContextSourcesBlock(contextNeed),
+          ),
+        ]
+      : []),
+
     buildBlock(
       "SESSION STATE",
       `模式：${session.mode}
@@ -219,16 +234,19 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
         ]
       : []),
 
-    ...(sessionRecall.length > 0
+    ...(!isHybridLazy || contextNeed?.needsOlderSessionRecall !== false) &&
+    sessionRecall.length > 0
       ? [
           buildBlock(
             "RELEVANT SESSION RECALL",
             promptFormatters.formatSessionRecall(sessionRecall),
           ),
         ]
-      : []),
+      : [],
 
-    ...(env.STRUCTMEM_ENABLED && structMemEntries.length > 0
+    ...(!isHybridLazy || contextNeed?.needsStructMem !== false) &&
+    env.STRUCTMEM_ENABLED &&
+    structMemEntries.length > 0
       ? [
           buildBlock(
             "STRUCTURED EVENT MEMORY",
@@ -238,9 +256,10 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             ),
           ),
         ]
-      : []),
+      : [],
 
-    ...(env.STRUCTMEM_ENABLED &&
+    ...(!isHybridLazy || contextNeed?.needsStructMemConsolidation !== false) &&
+    env.STRUCTMEM_ENABLED &&
     (env.STRUCTMEM_CONSOLIDATION_ENABLED ||
       env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED) &&
     structMemConsolidations.length > 0
@@ -252,7 +271,7 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             ),
           ),
         ]
-      : []),
+      : [],
 
     ...(env.STRUCTMEM_MOTIF_PROBE_ENABLED &&
     motifProbe?.hasStrongMatch
@@ -264,9 +283,13 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
         ]
       : []),
 
-    buildBlock("INTERACTIVE MEMORY", promptFormatters.formatMemories(memories)),
+    ...(!isHybridLazy || contextNeed?.needsDurableMemory !== false
+      ? [buildBlock("INTERACTIVE MEMORY", promptFormatters.formatMemories(memories))]
+      : []),
 
-    buildBlock("CANON NARRATIVE", canonNarrativeBody),
+    ...(!isHybridLazy || contextNeed?.needsCanon !== false
+      ? [buildBlock("CANON NARRATIVE", canonNarrativeBody)]
+      : []),
 
     ...(showStructured
       ? [buildBlock("STRUCTURED USER QUERY", structuredBlock)]

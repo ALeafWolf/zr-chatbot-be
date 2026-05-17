@@ -245,6 +245,25 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
+  // Context Retrieval Mode
+  // "eager" = current behavior (all sources always retrieved).
+  // "hybrid_lazy" = defer heavy retrievals, gate prompt blocks on context need.
+  CONTEXT_RETRIEVAL_MODE: z
+    .string()
+    .default("eager")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "hybrid_lazy") return s;
+      return "eager";
+    }),
+  HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP: z
+    .string()
+    .default("true")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s !== "0" && s !== "false";
+    }),
+
   // StructMem: Motif Probe
   // Deterministic repeated-relationship-gesture detection and optional StructMem probe.
   STRUCTMEM_MOTIF_PROBE_ENABLED: z

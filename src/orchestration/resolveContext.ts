@@ -279,6 +279,21 @@ export async function resolveContext(input: {
     motifSignal,
     motifProbe,
   });
+
+  // Hybrid lazy: override retrieval plan when heavy sources aren't needed
+  const retrievalMode = env.CONTEXT_RETRIEVAL_MODE;
+  if (
+    retrievalMode === "hybrid_lazy" &&
+    !retrievalPlan.contextNeed.needsCanon
+  ) {
+    retrievalPlan.canonMode = "skip";
+  }
+  const shouldSkipOlderRecall =
+    retrievalMode === "hybrid_lazy" &&
+    !retrievalPlan.contextNeed.needsOlderSessionRecall &&
+    !retrievalPlan.contextNeed.needsStructMem &&
+    !retrievalPlan.contextNeed.needsStructMemConsolidation;
+
   const useFusedMemoryQuery =
     queryTexts.shouldFuseRawMemory &&
     queryTexts.rawText.trim() !== queryTexts.memoryText.trim();
@@ -295,7 +310,9 @@ export async function resolveContext(input: {
     canonText: queryTexts.canonText,
     rawText: queryTexts.rawText,
     useFusedMemoryQuery,
-    hydeEnabled: env.CANON_QUERY_HYDE,
+    hydeEnabled:
+      env.CANON_QUERY_HYDE &&
+      retrievalPlan.canonMode !== "skip",
     canonTier3: env.CANON_RETRIEVAL_PIPELINE === "tier3",
     hypothetical: queryRewrite.hypothetical,
     motifQueries,
@@ -413,7 +430,16 @@ export async function resolveContext(input: {
     });
 
   const olderRecallStartedAt = Date.now();
-  const [primaryOlderRecall, secondaryOlderRecall] = await Promise.all([
+  const [primaryOlderRecall, secondaryOlderRecall] = shouldSkipOlderRecall
+    ? ([
+        {
+          sessionRecall: [] as RetrievedSessionMemoryChunk[],
+          structMemEntries: [] as RetrievedStructMemEntry[],
+          structMemConsolidations: [] as RetrievedStructMemConsolidation[],
+        },
+        undefined,
+      ] as const)
+    : await Promise.all([
     retrieveOlderRecall(
       {
         queryEmbedding,
