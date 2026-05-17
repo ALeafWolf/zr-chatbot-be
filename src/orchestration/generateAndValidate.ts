@@ -208,6 +208,8 @@ export async function* generateAndValidateStream(input: {
     outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior,
     recentContext: recentContextStr,
     retrievedCanonNarrative: promptContext.retrievedCanonNarrative ?? "",
+    wasCanonInjected:
+      (promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
     signal,
   };
 
@@ -226,6 +228,7 @@ export async function* generateAndValidateStream(input: {
   );
 
   let draft!: { content: string; inputTokens: number; outputTokens: number };
+  let wasCanonLookupCalled = false;
 
   try {
     let completed = false;
@@ -253,6 +256,7 @@ export async function* generateAndValidateStream(input: {
         }
       }
       if (ev.type === "before_tool") {
+        if (ev.name === "canon_lookup") wasCanonLookupCalled = true;
         const summary = await generateThoughtSummary(
           {
             characterName: characterDefaults.name,
@@ -347,6 +351,7 @@ export async function* generateAndValidateStream(input: {
   const validation1 = await tracedValidate({
     ...validatorInput,
     draft: draft.content,
+    wasCanonLookupCalled,
   });
   recordValidationAttempt({
     attempt: 1,
@@ -417,11 +422,20 @@ export async function* generateAndValidateStream(input: {
   );
   yield* emitThought({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
 
+  const hasCanonEvidenceIssue = drafterIssues1.some(
+    (i) =>
+      i.startsWith("Attribution claim") ||
+      i.includes("canon_unsupported_claim") ||
+      i.includes("canon_lookup"),
+  );
   const attributionRewriteHint = drafterIssues1.some((i) =>
     i.startsWith("Attribution claim"),
   )
     ? "如确有把握请先调用 canon_lookup 检索原文佐证；否则改写时移除该归属判断。\n\n"
     : "";
+  const rewriteAllowedToolNames = hasCanonEvidenceIssue
+    ? ["canon_lookup", "web_search"]
+    : allowedToolNames;
 
   const rewriteSystemPrompt =
     promptContext.systemPrompt +
@@ -443,9 +457,9 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
-      allowedToolNames,
+      allowedToolNames: rewriteAllowedToolNames,
       forceFinalOnExhaustion: isHybridLazy,
-      maxToolSteps: isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : 2,
+      maxToolSteps: hasCanonEvidenceIssue ? 2 : isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : 2,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),

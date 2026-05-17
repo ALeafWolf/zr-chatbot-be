@@ -24,7 +24,8 @@ export interface ValidationResult {
 export type DeterministicGuardKind =
   | "meta_assistant_language"
   | "scope_leakage"
-  | "nsfw_bounds";
+  | "nsfw_bounds"
+  | "canon_unsupported_claim";
 
 export interface DeterministicGuardFailure {
   kind: DeterministicGuardKind;
@@ -43,8 +44,15 @@ export interface ValidatorInput {
   recentContext: string;
   /** Canon narrative block shown to the generator (Tier 3 coarse-to-fine). */
   retrievedCanonNarrative?: string;
+  /** Whether canon was injected in the prompt for this turn (true in eager mode). */
+  wasCanonInjected?: boolean;
+  /** Whether the generator called canon_lookup during this turn. */
+  wasCanonLookupCalled?: boolean;
   signal?: AbortSignal;
 }
+
+const CANON_ATTRIBUTION_CUES =
+  /(?:提议|安排|第一次|第二次|谁先|谁提出|在.*章|根据原作|剧情中|原作中|原著|小说里)/u;
 
 const ValidationResultSchema = z.object({
   in_character: z.boolean(),
@@ -117,8 +125,32 @@ function firstPatternMatch(text: string, patterns: readonly RegExp[]): string | 
   return null;
 }
 
+export function runCanonEvidenceCheck(input: {
+  draft: string;
+  wasCanonInjected?: boolean;
+  wasCanonLookupCalled?: boolean;
+}): DeterministicGuardFailure[] {
+  if (input.wasCanonInjected || input.wasCanonLookupCalled) return [];
+  if (!CANON_ATTRIBUTION_CUES.test(input.draft)) return [];
+  return [
+    {
+      kind: "canon_unsupported_claim",
+      matched: input.draft.slice(0, 100),
+      issue:
+        "Response asserts canon-attribution facts but no canon was injected in this turn and no canon_lookup was called. Use canon_lookup to verify before asserting.",
+    },
+  ];
+}
+
 export function runDeterministicValidatorGuards(
-  input: Pick<ValidatorInput, "draft" | "continuityScope" | "maxNsfwLevel">,
+  input: Pick<
+    ValidatorInput,
+    | "draft"
+    | "continuityScope"
+    | "maxNsfwLevel"
+    | "wasCanonInjected"
+    | "wasCanonLookupCalled"
+  >,
 ): DeterministicGuardFailure[] {
   const failures: DeterministicGuardFailure[] = [];
   const draft = input.draft;
@@ -159,19 +191,35 @@ export function runDeterministicValidatorGuards(
     }
   }
 
+  const canonEvidenceFailures = runCanonEvidenceCheck({
+    draft,
+    wasCanonInjected: input.wasCanonInjected,
+    wasCanonLookupCalled: input.wasCanonLookupCalled,
+  });
+  failures.push(...canonEvidenceFailures);
+
   return failures;
 }
 
 function validationFromDeterministicFailures(
   failures: DeterministicGuardFailure[],
 ): ValidationResult {
+  const canonClaimFailures = failures.filter(
+    (f) => f.kind === "canon_unsupported_claim",
+  );
+  const rewriteFailures = failures.filter(
+    (f) => f.kind !== "canon_unsupported_claim",
+  );
   return {
     in_character: !failures.some((f) => f.kind === "meta_assistant_language"),
-    canon_consistent: !failures.some((f) => f.kind === "scope_leakage"),
+    canon_consistent: !failures.some(
+      (f) => f.kind === "scope_leakage" || f.kind === "canon_unsupported_claim",
+    ),
     session_state_consistent: true,
     nsfw_within_bounds: !failures.some((f) => f.kind === "nsfw_bounds"),
     issues: failures.map((f) => f.issue),
-    needs_rewrite: true,
+    needs_rewrite:
+      rewriteFailures.length > 0 || canonClaimFailures.length > 0,
     deterministic_guard_failures: failures,
   };
 }
