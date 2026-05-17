@@ -9,6 +9,7 @@ import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStruct
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
+import type { StructMemMotifProbeSummary } from "./motifTypes";
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
 const STRUCTURED_EVENT_MEMORY_MAX_CHARS_PER_ENTRY = 1200;
@@ -297,4 +298,45 @@ export function formatCanonScenesCompact(
   }
 
   return parts.join("\n\n");
+}
+
+const STRUCTMEM_MOTIF_MAX_CHARS = 2000;
+
+export function formatStructMemMotifBlock(
+  probe: StructMemMotifProbeSummary,
+): string {
+  if (!probe.hasStrongMatch) return "";
+
+  const parts: string[] = [];
+  parts.push(
+    `The user's action contains a distinctive relationship gesture pattern: [${probe.triggeredTerms.join(", ")}]. ` +
+    `The following structured memories may reflect recurring relational motifs relevant to this interaction.`,
+  );
+
+  if (probe.matchingEntries.length > 0) {
+    parts.push("## Matching Structured Event Entries");
+    for (const entry of probe.matchingEntries.slice(0, 3)) {
+      const text = entry.text.length > 400
+        ? `${entry.text.slice(0, 399)}…`
+        : entry.text;
+      parts.push(
+        `- [${entry.entryType}, turn ${entry.turnIndex}] (matched: ${entry.matchedTerms.join(", ")}) ${text}`,
+      );
+    }
+  }
+
+  if (probe.matchingConsolidations.length > 0) {
+    parts.push("## Related Memory Synthesis");
+    for (const con of probe.matchingConsolidations.slice(0, 2)) {
+      const range = con.turnStart != null
+        ? `turns ${con.turnStart}-${con.turnEnd ?? "?"}`
+        : "unknown range";
+      parts.push(`- [${range}] ${con.summaryText.slice(0, 600)}`);
+    }
+  }
+
+  const full = parts.join("\n\n");
+  return full.length > STRUCTMEM_MOTIF_MAX_CHARS
+    ? `${full.slice(0, STRUCTMEM_MOTIF_MAX_CHARS - 1)}…`
+    : full;
 }

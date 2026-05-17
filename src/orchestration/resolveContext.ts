@@ -85,6 +85,12 @@ import {
   recordRetrievalSnapshot,
   type EvalMemorySource,
 } from "../eval/evalSnapshots";
+import {
+  detectMotifSignal,
+  shouldProbeStructMemMotif,
+  buildMotifQueries,
+} from "./detectMotifSignal";
+import type { MotifSignal, StructMemMotifProbeSummary } from "./motifTypes";
 
 export interface ResolvedContext {
   memories: RetrievedMemory[];
@@ -108,6 +114,8 @@ export interface ResolvedContext {
   queryRewrite: QueryRewriteResult;
   retrievalPlan: RetrievalPlan;
   turnType: import("./retrievalPlan").TurnType;
+  motifSignal?: MotifSignal;
+  motifProbe?: StructMemMotifProbeSummary;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -260,10 +268,22 @@ export async function resolveContext(input: {
     queryTexts.shouldFuseRawMemory &&
     queryTexts.rawText.trim() !== queryTexts.memoryText.trim();
 
+  // Phase 1: Motif signal detection (deterministic, zero LLM calls)
+  let motifSignal: MotifSignal | undefined;
+  let motifProbe: StructMemMotifProbeSummary | undefined;
+  let motifQueries: string[] | undefined;
+  if (env.STRUCTMEM_MOTIF_PROBE_ENABLED) {
+    motifSignal = detectMotifSignal({ queryRewrite, rawUserMessage: userMessage });
+    if (shouldProbeStructMemMotif(motifSignal)) {
+      motifQueries = buildMotifQueries(motifSignal);
+    }
+  }
+
   let queryEmbedding: number[];
   let canonQueryEmbedding: number[];
   let rawMemoryQueryEmbedding: number[] | undefined;
   let hypotheticalQueryEmbedding: number[] | undefined;
+  let motifQueryEmbeddings: number[][] | undefined;
 
   const embeddingsStartedAt = Date.now();
   const embeddingRequests = buildRetrievalEmbeddingRequests({
@@ -274,12 +294,14 @@ export async function resolveContext(input: {
     hydeEnabled: env.CANON_QUERY_HYDE,
     canonTier3: env.CANON_RETRIEVAL_PIPELINE === "tier3",
     hypothetical: queryRewrite.hypothetical,
+    motifQueries,
   });
   ({
     queryEmbedding,
     canonQueryEmbedding,
     rawMemoryQueryEmbedding,
     hypotheticalQueryEmbedding,
+    motifQueryEmbeddings,
   } = await runRetrievalEmbeddingBatch({
     requests: embeddingRequests,
   }));
@@ -454,6 +476,86 @@ export async function resolveContext(input: {
       )
     : primaryOlderRecall.structMemConsolidations;
 
+  // Phase 1: Motif probe retrieval (reuses existing retrievers, zero new LLM calls)
+  if (
+    motifSignal &&
+    shouldProbeStructMemMotif(motifSignal) &&
+    motifQueryEmbeddings?.length
+  ) {
+    const probeTopK = env.STRUCTMEM_MOTIF_PROBE_TOP_K;
+    const probeMinScore = env.STRUCTMEM_MOTIF_PROBE_MIN_SCORE;
+    const probeEmbedding = motifQueryEmbeddings[0]!;
+
+    const [probeEntries, probeConsolidations] = await Promise.all([
+      retrieveStructMemEntriesTraced({
+        queryEmbedding: probeEmbedding,
+        sessionId: session.sessionId,
+        characterId: session.characterId,
+        exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
+        latestFrontierTurnIndex: latestFrontierTurn,
+        limit: probeTopK * 2,
+      }),
+      retrieveStructMemConsolidations
+        ? retrieveStructMemConsolidationsTraced({
+            queryEmbedding: probeEmbedding,
+            sessionId: session.sessionId,
+            characterId: session.characterId,
+            memoryNamespace: session.memoryNamespace,
+            exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
+            latestFrontierTurnIndex: latestFrontierTurn,
+            limit: probeTopK,
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const allMotifTerms = [
+      ...motifSignal.bodyOrObjectTerms,
+      ...motifSignal.actionTerms,
+    ];
+
+    const matchingEntries = probeEntries
+      .filter((e) => {
+        const lower = e.text.toLowerCase();
+        return (
+          allMotifTerms.some((t) => lower.includes(t)) &&
+          e.cosineSimilarity >= probeMinScore
+        );
+      })
+      .slice(0, probeTopK)
+      .map((e) => ({
+        entryId: e.id,
+        entryType: e.entryType,
+        text: e.text,
+        turnIndex: e.turnIndex,
+        score: e.finalScore,
+        matchedTerms: allMotifTerms.filter((t) =>
+          e.text.toLowerCase().includes(t),
+        ),
+      }));
+
+    const matchingConsolidations = probeConsolidations
+      .filter((c) =>
+        allMotifTerms.some((t) => c.summaryText.toLowerCase().includes(t)),
+      )
+      .slice(0, probeTopK)
+      .map((c) => ({
+        id: c.id,
+        summaryText: c.summaryText,
+        turnStart: c.turnStart,
+        turnEnd: c.turnEnd,
+        score: c.finalScore,
+      }));
+
+    motifProbe = {
+      hasStrongMatch: matchingEntries.length > 0,
+      matchingEntries,
+      matchingConsolidations,
+      triggeredTerms: allMotifTerms.filter((t) =>
+        matchingEntries.some((e) => e.text.toLowerCase().includes(t)),
+      ),
+    };
+  }
+
   const openThreadsStartedAt = Date.now();
   const openThreads =
     latestFrontierTurn >= 0
@@ -596,5 +698,7 @@ export async function resolveContext(input: {
     queryRewrite,
     retrievalPlan,
     turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
+    motifSignal,
+    motifProbe,
   };
 }

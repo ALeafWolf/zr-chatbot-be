@@ -283,6 +283,7 @@ async function* runRoleplayTurnStream(
       structMemEntryContextExpansions:
         context.structMemEntryContextExpansions,
       structMemConsolidations: context.structMemConsolidations,
+      motifProbe: context.motifProbe,
       userMessage,
       queryRewrite: context.queryRewrite,
     });

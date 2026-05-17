@@ -3,7 +3,7 @@ import { embedText } from "../llm/embeddings/embedText";
 import { traceStageWithIO } from "../observability/langsmithTracing";
 import { estimateTextTokens } from "../observability/tracePayloads";
 
-export type RetrievalEmbeddingKey = "memory" | "canon" | "rawMemory" | "hyde";
+export type RetrievalEmbeddingKey = "memory" | "canon" | "rawMemory" | "hyde" | "motif";
 
 export interface RetrievalEmbeddingRequest {
   key: RetrievalEmbeddingKey;
@@ -18,6 +18,7 @@ export interface RetrievalEmbeddingBatchOptions {
   hydeEnabled: boolean;
   canonTier3: boolean;
   hypothetical?: string;
+  motifQueries?: string[];
 }
 
 export interface RetrievalEmbeddingBatchResult {
@@ -25,6 +26,7 @@ export interface RetrievalEmbeddingBatchResult {
   canonQueryEmbedding: number[];
   rawMemoryQueryEmbedding?: number[];
   hypotheticalQueryEmbedding?: number[];
+  motifQueryEmbeddings?: number[][];
 }
 
 export interface RetrievalEmbeddingBatchTraceResult
@@ -65,6 +67,13 @@ export function buildRetrievalEmbeddingRequests(
     requests.push({ key: "hyde", text: hypothetical });
   }
 
+  if (options.motifQueries && options.motifQueries.length > 0) {
+    for (const q of options.motifQueries) {
+      const trimmed = nonEmpty(q);
+      if (trimmed) requests.push({ key: "motif", text: trimmed });
+    }
+  }
+
   return requests;
 }
 
@@ -73,9 +82,15 @@ export function mapRetrievalEmbeddingResults(
   embeddings: number[][],
 ): RetrievalEmbeddingBatchResult {
   const byKey = new Map<RetrievalEmbeddingKey, number[]>();
+  const motifList: number[][] = [];
   requests.forEach((request, index) => {
     const embedding = embeddings[index];
-    if (embedding) byKey.set(request.key, embedding);
+    if (!embedding) return;
+    if (request.key === "motif") {
+      motifList.push(embedding);
+      return;
+    }
+    byKey.set(request.key, embedding);
   });
 
   const queryEmbedding = byKey.get("memory");
@@ -89,6 +104,7 @@ export function mapRetrievalEmbeddingResults(
     canonQueryEmbedding,
     rawMemoryQueryEmbedding: byKey.get("rawMemory"),
     hypotheticalQueryEmbedding: byKey.get("hyde"),
+    motifQueryEmbeddings: motifList.length > 0 ? motifList : undefined,
   };
 }
 

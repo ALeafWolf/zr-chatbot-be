@@ -16,6 +16,7 @@ import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStruct
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
+import type { StructMemMotifProbeSummary } from "./motifTypes";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -69,6 +70,7 @@ export function buildPromptContext(input: {
   structMemEntries?: RetrievedStructMemEntry[];
   structMemEntryContextExpansions?: StructMemEntryContextExpansion[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
+  motifProbe?: StructMemMotifProbeSummary;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -89,6 +91,7 @@ export function buildPromptContext(input: {
     structMemEntries = [],
     structMemEntryContextExpansions = [],
     structMemConsolidations = [],
+    motifProbe,
     userMessage,
     queryRewrite,
   } = input;
@@ -247,6 +250,16 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             promptFormatters.formatStructMemConsolidationsForPrompt(
               structMemConsolidations,
             ),
+          ),
+        ]
+      : []),
+
+    ...(env.STRUCTMEM_MOTIF_PROBE_ENABLED &&
+    motifProbe?.hasStrongMatch
+      ? [
+          buildBlock(
+            "RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF",
+            promptFormatters.formatStructMemMotifBlock(motifProbe),
           ),
         ]
       : []),

@@ -245,6 +245,40 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
+  // StructMem: Motif Probe
+  // Deterministic repeated-relationship-gesture detection and optional StructMem probe.
+  STRUCTMEM_MOTIF_PROBE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_MOTIF_PROBE_TOP_K: z
+    .string()
+    .default("3")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 3;
+      return Math.min(10, n);
+    }),
+  STRUCTMEM_MOTIF_PROBE_MIN_SCORE: z
+    .string()
+    .default("0.5")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 0.5;
+      return Math.min(1, Math.max(0, n));
+    }),
+  STRUCTMEM_MOTIF_INJECT_MODE: z
+    .string()
+    .default("synthesis_only")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "entries_and_synthesis") return s;
+      return "synthesis_only";
+    }),
+
   // Background Jobs
   // Post-turn worker polling, lock TTL, and retry behavior.
   POST_TURN_JOB_POLL_INTERVAL_MS: z
