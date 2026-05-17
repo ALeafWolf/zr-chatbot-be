@@ -175,6 +175,7 @@ export async function* generateAndValidateStream(input: {
   const toolCtx: ToolCtx = {
     sessionId: session.sessionId,
     characterId: session.characterId,
+    memoryNamespace: session.memoryNamespace,
     continuityScope: session.continuityScope,
     continuityFamily: session.continuityFamily as "main_world" | "au",
     signal: signal ?? new AbortController().signal,

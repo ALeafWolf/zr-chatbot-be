@@ -263,6 +263,21 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s !== "0" && s !== "false";
     }),
+  GENERATION_LOOKUP_TOOLS_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  GENERATION_LOOKUP_MAX_STEPS: z
+    .string()
+    .default("1")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 1;
+      return Math.min(4, n);
+    }),
 
   // StructMem: Motif Probe
   // Deterministic repeated-relationship-gesture detection and optional StructMem probe.
