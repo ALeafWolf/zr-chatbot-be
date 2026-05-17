@@ -1,6 +1,7 @@
 import {
   runResponseValidator,
   VALIDATOR_FAIL_OPEN,
+  type ValidatorInput,
   type ValidationResult,
 } from "../llm/validation/runResponseValidator";
 import type { PromptContext } from "./buildPromptContext";
@@ -9,7 +10,6 @@ import type { PersonaOverlayDefaults } from "../character/characterDefaults";
 import { loadCharacterDefaults } from "../character/characterDefaults";
 import {
   traceLLMStage,
-  traceStage,
   traceStreamingLLM,
 } from "../observability/langsmithTracing";
 import { env } from "../config/env";
@@ -48,6 +48,42 @@ export type GenerateAndValidateYield =
   | OrchestrationStreamEvent
   | { type: "_complete"; result: GenerateAndValidateResult };
 
+type GenerateWithToolsStreamInput = Parameters<typeof generateWithToolsStream>[0];
+
+function unwrapGenerateWithToolsStreamInput(
+  inputs: Readonly<unknown>,
+): GenerateWithToolsStreamInput {
+  const rec = inputs as Record<string, unknown>;
+  if (rec && typeof rec === "object" && "input" in rec && rec.input) {
+    return rec.input as GenerateWithToolsStreamInput;
+  }
+  return inputs as GenerateWithToolsStreamInput;
+}
+
+function traceInputsForGenerationToolLoop(
+  inputs: Readonly<unknown>,
+): Record<string, unknown> {
+  const input = unwrapGenerateWithToolsStreamInput(inputs);
+  return {
+    contextRetrievalMode: env.CONTEXT_RETRIEVAL_MODE,
+    hybridLazyEmergencyCanon: env.HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP,
+    generationLookupToolsEnabled: env.GENERATION_LOOKUP_TOOLS_ENABLED,
+    allowedToolNames: input.allowedToolNames ?? null,
+    expectedToolUse: input.expectedToolUse ?? null,
+    maxToolSteps: input.maxToolSteps ?? null,
+    forceFinalOnExhaustion: input.forceFinalOnExhaustion ?? false,
+    enableTools: input.enableTools !== false,
+  };
+}
+
+function unwrapValidatorTraceInput(inputs: Readonly<unknown>): ValidatorInput {
+  const rec = inputs as Record<string, unknown>;
+  if (rec && typeof rec === "object" && "input" in rec && rec.input) {
+    return rec.input as ValidatorInput;
+  }
+  return inputs as ValidatorInput;
+}
+
 /** Chunk size when replaying validated first-draft prose to SSE (~UTF-16 code units). */
 const tracedResponseGeneration = traceStreamingLLM(
   "llm.response_generation",
@@ -56,6 +92,7 @@ const tracedResponseGeneration = traceStreamingLLM(
     subsystem: "llm",
     turn: "foreground",
     llm: { binding: models.generation, modelRole: "generation" },
+    processInputs: traceInputsForGenerationToolLoop,
   },
 );
 const tracedValidate = traceLLMStage(
@@ -65,6 +102,24 @@ const tracedValidate = traceLLMStage(
     subsystem: "llm",
     turn: "foreground",
     llm: { binding: models.validator, modelRole: "validator" },
+    processInputs: (inputs) => {
+      const input = unwrapValidatorTraceInput(inputs);
+      return {
+        wasCanonInjected: input.wasCanonInjected ?? false,
+        wasCanonLookupCalled: input.wasCanonLookupCalled ?? false,
+        retrievedCanonNarrativeChars: (input.retrievedCanonNarrative ?? "").length,
+        draftChars: input.draft.length,
+      };
+    },
+    processOutputs: (outputs) => {
+      const o = outputs as unknown as ValidationResult;
+      return {
+        needs_rewrite: o.needs_rewrite,
+        canon_consistent: o.canon_consistent,
+        issueCount: o.issues.length,
+        issuesPreview: o.issues.slice(0, 5),
+      };
+    },
   },
 );
 const tracedResponseRewriteGeneration = traceStreamingLLM(
@@ -74,6 +129,7 @@ const tracedResponseRewriteGeneration = traceStreamingLLM(
     subsystem: "llm",
     turn: "foreground",
     llm: { binding: models.generation, modelRole: "generation" },
+    processInputs: traceInputsForGenerationToolLoop,
   },
 );
 
@@ -238,6 +294,7 @@ export async function* generateAndValidateStream(input: {
       signal,
       enableTools: true,
       allowedToolNames,
+      expectedToolUse: contextNeed?.expectedToolUse,
       forceFinalOnExhaustion: isHybridLazy,
       maxToolSteps: isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : undefined,
       ...(openAICompatibleRequestExtensions !== undefined
@@ -458,6 +515,9 @@ export async function* generateAndValidateStream(input: {
       signal,
       enableTools: true,
       allowedToolNames: rewriteAllowedToolNames,
+      expectedToolUse: hasCanonEvidenceIssue
+        ? ["canon_lookup"]
+        : contextNeed?.expectedToolUse,
       forceFinalOnExhaustion: isHybridLazy,
       maxToolSteps: hasCanonEvidenceIssue ? 2 : isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : 2,
       ...(openAICompatibleRequestExtensions !== undefined

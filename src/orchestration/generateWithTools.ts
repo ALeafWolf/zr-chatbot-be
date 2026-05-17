@@ -45,6 +45,8 @@ export async function* generateWithToolsStream(input: {
   maxToolSteps?: number;
   /** If set, only tools with these names are available to the model. */
   allowedToolNames?: string[];
+  /** Trace-only: expected tool names from the context-need plan (not enforced by the loop). */
+  expectedToolUse?: string[];
   /** If true, exhaust max steps with a final non-tool generation instead of throwing. */
   forceFinalOnExhaustion?: boolean;
 }): AsyncGenerator<GenerateWithToolsYield> {
@@ -226,6 +228,7 @@ export async function generateWithTools(input: {
   openAICompatibleRequestExtensions?: Record<string, unknown>;
   maxToolSteps?: number;
   allowedToolNames?: string[];
+  expectedToolUse?: string[];
   forceFinalOnExhaustion?: boolean;
 }): Promise<GenerateWithToolsResult> {
   let final: GenerateWithToolsResult | undefined;
