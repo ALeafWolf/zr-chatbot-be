@@ -12,6 +12,8 @@ import {
   traceStage,
   traceStreamingLLM,
 } from "../observability/langsmithTracing";
+import { env } from "../config/env";
+import type { EnhancedContextNeed } from "./retrievalPlan";
 import type { ToolChatMessage } from "../llm/providers";
 import {
   generateWithToolsStream,
@@ -113,6 +115,38 @@ function voiceHintsFrom(
   );
 }
 
+function buildAllowedToolNames(
+  contextNeed?: EnhancedContextNeed,
+): string[] | undefined {
+  if (!contextNeed) return undefined;
+
+  const names: string[] = [];
+  names.push("web_search");
+
+  if (env.HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP) {
+    names.push("canon_lookup");
+  } else if (contextNeed.needsCanon) {
+    names.push("canon_lookup");
+  }
+
+  if (contextNeed.needsStructMem) {
+    names.push("lookup_structmem");
+    names.push("lookup_structmem_consolidation");
+  }
+  if (contextNeed.needsOlderSessionRecall) {
+    names.push("lookup_older_session_memory");
+  }
+  if (contextNeed.needsDurableMemory) {
+    names.push("lookup_interactive_memory");
+  }
+
+  for (const toolName of contextNeed.expectedToolUse) {
+    if (!names.includes(toolName)) names.push(toolName);
+  }
+
+  return names;
+}
+
 /**
  * Draft, validate, rewrite once, validate again, then safe deflection ladder,
  * yielding orchestration events incrementally. Ends with a `_complete` sentinel.
@@ -125,6 +159,7 @@ export async function* generateAndValidateStream(input: {
   signal?: AbortSignal;
   thoughtSummaryCache?: Map<string, string>;
   thoughtsOut?: Thought[];
+  contextNeed?: EnhancedContextNeed;
 }): AsyncGenerator<GenerateAndValidateYield> {
   const {
     promptContext,
@@ -134,7 +169,11 @@ export async function* generateAndValidateStream(input: {
     signal,
     thoughtSummaryCache,
     thoughtsOut,
+    contextNeed,
   } = input;
+  const retrievalMode = env.CONTEXT_RETRIEVAL_MODE;
+  const isHybridLazy = retrievalMode === "hybrid_lazy";
+  const allowedToolNames = buildAllowedToolNames(contextNeed);
 
   const characterDefaults = loadCharacterDefaults(session.characterId);
   const voiceHints = voiceHintsFrom(characterDefaults);
@@ -195,6 +234,9 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
+      allowedToolNames,
+      forceFinalOnExhaustion: isHybridLazy,
+      maxToolSteps: isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : undefined,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
@@ -401,8 +443,9 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
-      /** One optional tool round + final reply (two assistant completions). */
-      maxToolSteps: 2,
+      allowedToolNames,
+      forceFinalOnExhaustion: isHybridLazy,
+      maxToolSteps: isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : 2,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),

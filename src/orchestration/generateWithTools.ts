@@ -43,10 +43,18 @@ export async function* generateWithToolsStream(input: {
   openAICompatibleRequestExtensions?: Record<string, unknown>;
   /** Max assistant completion rounds (each tool use consumes one round before the final reply). Default {@link MAX_TOOL_STEPS}. */
   maxToolSteps?: number;
+  /** If set, only tools with these names are available to the model. */
+  allowedToolNames?: string[];
+  /** If true, exhaust max steps with a final non-tool generation instead of throwing. */
+  forceFinalOnExhaustion?: boolean;
 }): AsyncGenerator<GenerateWithToolsYield> {
   const provider = getProvider(models.generation);
-  const tools =
+  const allSchemas =
     input.enableTools !== false ? getOpenAISchemas() : undefined;
+  const tools =
+    allSchemas && input.allowedToolNames
+      ? allSchemas.filter((t) => input.allowedToolNames!.includes(t.function.name))
+      : allSchemas;
   const toolChoice =
     tools?.length && input.enableTools !== false ? "auto" : "none";
 
@@ -108,6 +116,38 @@ export async function* generateWithToolsStream(input: {
 
     yield { type: "before_tool", id: tc.id, name: tc.name, args };
 
+    if (
+      input.allowedToolNames &&
+      !input.allowedToolNames.includes(tc.name)
+    ) {
+      yield {
+        type: "after_tool",
+        id: tc.id,
+        name: tc.name,
+        summary: `Tool "${tc.name}" is not available in this context.`,
+      };
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: assistantText || null,
+          tool_calls: [
+            {
+              id: tc.id,
+              type: "function",
+              function: { name: tc.name, arguments: tc.arguments },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: "tool_not_allowed", tool: tc.name }),
+        },
+      ];
+      continue;
+    }
+
     const dispatched = await dispatchTool(tc.name, args, input.ctx);
 
     yield {
@@ -138,6 +178,43 @@ export async function* generateWithToolsStream(input: {
     ];
   }
 
+  if (input.forceFinalOnExhaustion) {
+    const finalStream = provider.streamChat(messages, {
+      tools: undefined,
+      toolChoice: "none",
+      maxTokens: 4096,
+      temperature: 1.0,
+      signal: input.signal,
+      ...(input.openAICompatibleRequestExtensions !== undefined
+        ? {
+            openAICompatibleRequestExtensions:
+              input.openAICompatibleRequestExtensions,
+          }
+        : {}),
+    });
+
+    let finalText = "";
+    for await (const ev of finalStream) {
+      if (ev.type === "delta" && ev.text) {
+        finalText += ev.text;
+        yield { type: "delta", text: ev.text };
+      }
+      if (ev.type === "assistant_done") {
+        finalText = ev.content ?? finalText;
+        totalIn += ev.usage.inputTokens;
+        totalOut += ev.usage.outputTokens;
+      }
+    }
+
+    yield {
+      type: "done",
+      content: finalText,
+      inputTokens: totalIn,
+      outputTokens: totalOut,
+    };
+    return;
+  }
+
   throw new ToolLoopExceededError();
 }
 
@@ -148,6 +225,8 @@ export async function generateWithTools(input: {
   enableTools?: boolean;
   openAICompatibleRequestExtensions?: Record<string, unknown>;
   maxToolSteps?: number;
+  allowedToolNames?: string[];
+  forceFinalOnExhaustion?: boolean;
 }): Promise<GenerateWithToolsResult> {
   let final: GenerateWithToolsResult | undefined;
   for await (const ev of generateWithToolsStream(input)) {
