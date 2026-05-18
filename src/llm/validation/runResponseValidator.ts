@@ -46,8 +46,8 @@ export interface ValidatorInput {
   retrievedCanonNarrative?: string;
   /** Whether canon was injected in the prompt for this turn (true in eager mode). */
   wasCanonInjected?: boolean;
-  /** Whether the generator called canon_lookup during this turn. */
-  wasCanonLookupCalled?: boolean;
+  /** Reranker-selected memory sources with usage instructions. */
+  selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
   signal?: AbortSignal;
 }
 
@@ -128,16 +128,15 @@ function firstPatternMatch(text: string, patterns: readonly RegExp[]): string | 
 export function runCanonEvidenceCheck(input: {
   draft: string;
   wasCanonInjected?: boolean;
-  wasCanonLookupCalled?: boolean;
 }): DeterministicGuardFailure[] {
-  if (input.wasCanonInjected || input.wasCanonLookupCalled) return [];
+  if (input.wasCanonInjected) return [];
   if (!CANON_ATTRIBUTION_CUES.test(input.draft)) return [];
   return [
     {
       kind: "canon_unsupported_claim",
       matched: input.draft.slice(0, 100),
       issue:
-        "Response asserts canon-attribution facts but no canon was injected in this turn and no canon_lookup was called. Use canon_lookup to verify before asserting.",
+        "Response asserts canon-attribution facts but no canon was injected in this turn. Rely on injected canon narrative or remove the unsupported claim.",
     },
   ];
 }
@@ -149,7 +148,6 @@ export function runDeterministicValidatorGuards(
     | "continuityScope"
     | "maxNsfwLevel"
     | "wasCanonInjected"
-    | "wasCanonLookupCalled"
   >,
 ): DeterministicGuardFailure[] {
   const failures: DeterministicGuardFailure[] = [];
@@ -194,7 +192,6 @@ export function runDeterministicValidatorGuards(
   const canonEvidenceFailures = runCanonEvidenceCheck({
     draft,
     wasCanonInjected: input.wasCanonInjected,
-    wasCanonLookupCalled: input.wasCanonLookupCalled,
   });
   failures.push(...canonEvidenceFailures);
 

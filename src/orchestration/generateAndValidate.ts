@@ -106,7 +106,6 @@ const tracedValidate = traceLLMStage(
       const input = unwrapValidatorTraceInput(inputs);
       return {
         wasCanonInjected: input.wasCanonInjected ?? false,
-        wasCanonLookupCalled: input.wasCanonLookupCalled ?? false,
         retrievedCanonNarrativeChars: (input.retrievedCanonNarrative ?? "").length,
         draftChars: input.draft.length,
       };
@@ -232,6 +231,7 @@ export async function* generateAndValidateStream(input: {
     retrievedCanonNarrative: promptContext.retrievedCanonNarrative ?? "",
     wasCanonInjected:
       (promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
+    selectedMemorySources: promptContext.selectedMemorySources ?? [],
     signal,
   };
 

@@ -17,6 +17,7 @@ import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrie
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "./motifTypes";
+import type { MemoryRerankOutput } from "./memoryRerank";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -43,6 +44,8 @@ export interface PromptContext {
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
   /** Plain text of canon section for validator attribution checks. */
   retrievedCanonNarrative?: string;
+  /** Reranker-selected memory sources for validator plumbing. */
+  selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
 }
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -71,6 +74,7 @@ export function buildPromptContext(input: {
   structMemEntryContextExpansions?: StructMemEntryContextExpansion[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
   motifProbe?: StructMemMotifProbeSummary;
+  memoryRerank?: MemoryRerankOutput | null;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -92,6 +96,7 @@ export function buildPromptContext(input: {
     structMemEntryContextExpansions = [],
     structMemConsolidations = [],
     motifProbe,
+    memoryRerank,
     userMessage,
     queryRewrite,
   } = input;
@@ -107,10 +112,24 @@ export function buildPromptContext(input: {
     structuredBlock.length > 0 && queryRewrite?.parseOk === true;
   const showAnnotations = useAnnotationFallback;
 
+  // Filter canon to only include reranker-selected items when available
+  const selectedCanonIds = memoryRerank?.selected
+    ? new Set(
+        memoryRerank.selected
+          .filter((s) => (s.source as string) === "canon_scene" || (s.source as string) === "canon_chunk")
+          .map((s) => s.id),
+      )
+    : null;
+  const filteredCanonScenes = selectedCanonIds
+    ? canonScenes.filter((s) => selectedCanonIds.has(s.sceneId))
+    : canonScenes;
+  const filteredCanonChunks = selectedCanonIds
+    ? canonChunks.filter((c) => selectedCanonIds.has(c.sceneId ?? c.id))
+    : canonChunks;
   const canonNarrativeBody =
-    canonScenes.length > 0
-      ? promptFormatters.formatCanonScenes(canonScenes)
-      : promptFormatters.formatCanon(canonChunks);
+    filteredCanonScenes.length > 0
+      ? promptFormatters.formatCanonScenes(filteredCanonScenes)
+      : promptFormatters.formatCanon(filteredCanonChunks);
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
   const coreTraits = (characterDefaults.core_traits ?? []).join("\n- ");
@@ -210,6 +229,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       ? [buildBlock("LATEST TURN DELTA", formatTurnDelta(latestTurnDelta))]
       : []),
 
+    ...(memoryRerank?.selected?.length
+      ? [
+          buildBlock(
+            "SELECTED CONTEXT USAGE",
+            promptFormatters.formatSelectedContextUsage(memoryRerank.selected),
+          ),
+        ]
+      : []),
+
     ...(sessionSummary?.summaryText?.trim()
       ? [
           buildBlock(
@@ -292,6 +320,11 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     systemPrompt,
     conversationHistory,
     retrievedCanonNarrative: canonNarrativeBody,
+    selectedMemorySources: memoryRerank?.selected.map((s) => ({
+      source: s.source,
+      relevance: s.relevance,
+      usageInstruction: s.usageInstruction,
+    })),
   };
 }
 

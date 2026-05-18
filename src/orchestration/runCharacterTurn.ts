@@ -285,6 +285,7 @@ async function* runRoleplayTurnStream(
         context.structMemEntryContextExpansions,
       structMemConsolidations: context.structMemConsolidations,
       motifProbe: context.motifProbe,
+      memoryRerank: context.rerankOutput,
       userMessage,
       queryRewrite: context.queryRewrite,
     });
