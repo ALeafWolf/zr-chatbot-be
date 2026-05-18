@@ -28,6 +28,12 @@ const RiskSchema = z.enum([
   "low_confidence",
 ]);
 
+/** Accepts `risk: null` from the model and normalizes to undefined. */
+const OptionalRiskSchema = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  RiskSchema.optional(),
+);
+
 const RejectReasonSchema = z.enum([
   "irrelevant_to_current_turn",
   "too_broad",
@@ -55,7 +61,7 @@ const RerankOutputSchema = z.object({
       relevance: RelevanceSchema,
       usageInstruction: UsageInstructionSchema,
       reason: z.string(),
-      risk: RiskSchema.optional(),
+      risk: OptionalRiskSchema,
     }),
   ),
   rejected: z.array(

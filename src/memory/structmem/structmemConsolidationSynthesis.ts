@@ -113,6 +113,7 @@ async function synthesizeStructMemConsolidationImpl(input: {
   const prompt = buildStructMemConsolidationPrompt(input);
   const systemStrictJson =
     "You are a conservative memory consolidation worker. " +
+    "Keep output compact — short summary_text, minimal summary_json. " +
     "Respond with one JSON object only (no markdown fences, no preamble). " +
     "Keys: summary_text (string), summary_json (object), confidence_score (number 0-1 or null).";
 
@@ -124,7 +125,7 @@ async function synthesizeStructMemConsolidationImpl(input: {
         { role: "user", content: prompt },
       ],
       StructMemConsolidationOutputSchema,
-      { maxTokens: 900, temperature: 0.1 },
+      { maxTokens: 1600, temperature: 0.1 },
     );
 
   let result = await runChat();
@@ -135,7 +136,8 @@ async function synthesizeStructMemConsolidationImpl(input: {
       prompt,
       "",
       `Previous model output could not be parsed (${result.error}).`,
-      "Reply again with ONLY one JSON object. Use ASCII double quotes for all keys and string values.",
+      "Keep the output SHORTER and simpler than the previous attempt. One compact JSON object only.",
+      "Use ASCII double quotes for all keys and string values.",
       "Required keys: \"summary_text\", \"summary_json\", \"confidence_score\".",
       preview ? `Bad output began with: ${preview}` : "",
     ]
@@ -149,7 +151,7 @@ async function synthesizeStructMemConsolidationImpl(input: {
         { role: "user", content: repairPrompt },
       ],
       StructMemConsolidationOutputSchema,
-      { maxTokens: 900, temperature: 0 },
+      { maxTokens: 1600, temperature: 0 },
     );
   }
 

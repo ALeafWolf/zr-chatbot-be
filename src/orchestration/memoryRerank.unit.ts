@@ -156,4 +156,36 @@ describe("empty-selection guard", () => {
         intent === "implicit_memory_callback");
     assert.equal(needsGuard, false);
   });
+
+  it("accepts selected risk null and normalizes to undefined", () => {
+    // Model emits null for "no risk" — schema must accept and normalize.
+    const parsed = __testing.RerankOutputSchema.safeParse({
+      selected: [
+        { id: "mem_1", source: "structmem_entry", relevance: "useful", usageInstruction: "use_subtly", reason: "relevant", risk: null },
+        { id: "mem_2", source: "interactive_memory", relevance: "required", usageInstruction: "must_use", reason: "important", risk: "too_old" },
+      ],
+      rejected: [],
+      finalContextMode: "selected_memory",
+      needsEvidenceFallback: false,
+    });
+    assert.ok(parsed.success, `schema rejected null risk: ${JSON.stringify(parsed.error?.format())}`);
+    // null should normalize to undefined so it's absent on the parsed output
+    assert.equal(parsed.data!.selected.length, 2);
+    assert.equal(parsed.data!.selected[0].risk, undefined);
+    assert.equal(parsed.data!.selected[1].risk, "too_old");
+  });
+
+  it("prompt says to omit risk when not applicable", () => {
+    // The prompt should tell the model to omit risk rather than use null.
+    const { system } = buildMemoryRerankPrompt({
+      currentUserMessage: "test",
+      plannerIntent: "scene_continuation",
+      candidates: [],
+      maxSelected: 8,
+    });
+    assert.ok(
+      system.includes("omit when not applicable"),
+      "buildMemoryRerankPrompt should guide the model to omit risk when not applicable",
+    );
+  });
 });

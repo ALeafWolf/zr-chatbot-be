@@ -54,7 +54,7 @@ export function buildMemoryRerankPrompt(input: {
     '      "relevance": "required | useful | subtle_tone_only | background_only",',
     '      "usageInstruction": "must_use | use_subtly | do_not_mention_explicitly | tone_only",',
     '      "reason": "<why this item matters for this turn>",',
-    '      "risk": "may_derail_scene | possible_conflict | too_old | low_confidence"  // optional',
+    '      "risk": "may_derail_scene | possible_conflict | too_old | low_confidence"  // omit when not applicable',
     "    }",
     "  ],",
     '  "rejected": [',
