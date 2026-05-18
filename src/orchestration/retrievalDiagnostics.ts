@@ -13,6 +13,14 @@ export interface RetrievalDiagnosticsPayloadInput {
   timingsMs?: RetrievalTimingDiagnostics;
   structMemEntryExpansion?: StructMemEntryExpansionDiagnostics;
   selectionDiagnostics: PromptMemorySelectionDiagnostics;
+  rerank?: {
+    selectedCount?: number;
+    rejectedCount?: number;
+    finalContextMode?: string;
+    needsEvidenceFallback?: boolean;
+    fallbackUsed?: boolean;
+    fallbackReason?: string;
+  };
 }
 
 export interface RetrievalTimingDiagnostics {
@@ -58,5 +66,6 @@ export function buildRetrievalDiagnosticsPayload(
     averageInjectedScore: input.selectionDiagnostics.averageInjectedScore,
     timingsMs: input.timingsMs ?? null,
     structMemEntryExpansion: input.structMemEntryExpansion ?? null,
+    rerank: input.rerank ?? null,
   };
 }

@@ -299,3 +299,48 @@ export function buildPromptContextCandidates(
     },
   };
 }
+
+export interface ApplySelectionInput {
+  shortlist: ContextCandidate[];
+  selectedIds: string[];
+  memories: RetrievedMemory[];
+  sessionRecall: RetrievedSessionMemoryChunk[];
+  structMemEntries: RetrievedStructMemEntry[];
+  structMemConsolidations: RetrievedStructMemConsolidation[];
+  openThreads: RetrievedOpenThread[];
+}
+
+export interface SelectedTypedArrays {
+  memories: RetrievedMemory[];
+  sessionRecall: RetrievedSessionMemoryChunk[];
+  structMemEntries: RetrievedStructMemEntry[];
+  structMemConsolidations: RetrievedStructMemConsolidation[];
+  openThreads: RetrievedOpenThread[];
+  /** IDs of all selected memory items (excludes session_summary / latest_turn_delta). */
+  selectedMemoryIds: string[];
+}
+
+/** Convert reranker-selected candidate IDs back into typed source arrays for buildPromptContext. */
+export function applyCandidateSelection(
+  input: ApplySelectionInput,
+): SelectedTypedArrays {
+  const selectedSet = new Set(input.selectedIds);
+
+  const byId = new Map<string, ContextCandidate>();
+  for (const c of input.shortlist) {
+    byId.set(c.id, c);
+  }
+
+  return {
+    memories: input.memories.filter((m) => selectedSet.has(m.id)),
+    sessionRecall: input.sessionRecall.filter((c) => selectedSet.has(c.id)),
+    structMemEntries: input.structMemEntries.filter((e) => selectedSet.has(e.id)),
+    structMemConsolidations: input.structMemConsolidations.filter((c) =>
+      selectedSet.has(c.id),
+    ),
+    openThreads: input.openThreads.filter((t) => selectedSet.has(t.id)),
+    selectedMemoryIds: input.selectedIds.filter(
+      (id) => byId.get(id)?.source !== "session_summary" && byId.get(id)?.source !== "latest_turn_delta",
+    ),
+  };
+}

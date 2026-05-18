@@ -67,9 +67,18 @@ import {
   summarizeContextNeedForTrace,
 } from "./retrievalPlan";
 import { ROLEPLAY_TURN_ROUTE } from "./turnRoutes";
-import { selectPromptMemoryContext } from "./promptMemoryContextSelector";
+import { selectPromptMemoryContext as selectPromptMemoryContextStatic } from "./promptMemoryContextSelector";
+import { planContext, type ContextPlannerOutput } from "./contextPlanner";
+import {
+  buildPromptContextCandidates,
+  type ContextCandidate,
+  type ContextCandidateSource,
+  applyCandidateSelection,
+} from "./contextCandidates";
+import { rerankCandidates, type MemoryRerankOutput } from "./memoryRerank";
 import {
   readFreshTurnDelta,
+  formatTurnDelta,
   type LatestTurnDelta,
 } from "./turnDelta";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
@@ -117,6 +126,7 @@ export interface ResolvedContext {
   turnType: import("./retrievalPlan").TurnType;
   motifSignal?: MotifSignal;
   motifProbe?: StructMemMotifProbeSummary;
+  rerankOutput?: MemoryRerankOutput | null;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -141,14 +151,14 @@ const tracedRetrievalDiagnostics = traceStageWithIO(
 );
 const tracedPromptMemorySelector = traceStageWithIO(
   "retrieval.prompt_context_selector",
-  async (input: Parameters<typeof selectPromptMemoryContext>[0]) =>
-    selectPromptMemoryContext(input),
+  async (input: Parameters<typeof selectPromptMemoryContextStatic>[0]) =>
+    selectPromptMemoryContextStatic(input),
   {
     subsystem: "retrieval",
     turn: "foreground",
     processInputs: (inputs) => {
       const input = inputs as unknown as Parameters<
-        typeof selectPromptMemoryContext
+        typeof selectPromptMemoryContextStatic
       >[0];
       return {
         memoryCount: input.memories.length,
@@ -169,7 +179,7 @@ const tracedPromptMemorySelector = traceStageWithIO(
     },
     processOutputs: (outputs) => {
       const output = outputs as unknown as ReturnType<
-        typeof selectPromptMemoryContext
+        typeof selectPromptMemoryContextStatic
       >;
       return output.diagnostics as unknown as Record<string, unknown>;
     },
@@ -246,9 +256,10 @@ export async function resolveContext(input: {
     session.continuityFamily as "main_world" | "au",
   );
 
-  const queryRewriteStartedAt = Date.now();
-  const queryRewrite = await rewriteQuery(userMessage);
-  queryRewriteMs = Date.now() - queryRewriteStartedAt;
+  const plannerStartedAt = Date.now();
+  const contextPlannerOutput = await planContext(userMessage);
+  const queryRewrite = contextPlannerOutput.queryRewrite;
+  queryRewriteMs = Date.now() - plannerStartedAt;
   const queryTextAnnotationFallback =
     shouldUseAnnotationFallback(queryRewrite) ||
     annotationHeuristicFallback(userMessage, queryRewrite);
@@ -589,18 +600,99 @@ export async function resolveContext(input: {
   );
   const memoryCorrections = retrieveActiveCorrections(sessionSummary);
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
+  // Build candidate shortlist from all retrieved sources
   const selectorStartedAt = Date.now();
-  const selectedContext = await tracedPromptMemorySelector({
+  const motifProbeText = motifProbe
+    ? motifProbe.matchingEntries
+        .slice(0, 3)
+        .map((e) => e.text)
+        .join(" | ")
+    : undefined;
+  const latestTurnDeltaText = latestTurnDelta
+    ? formatTurnDelta(latestTurnDelta)
+    : undefined;
+  const shortlist = buildPromptContextCandidates({
     memories,
     sessionRecall,
     structMemEntries,
     structMemConsolidations,
     openThreads,
+    canonChunks,
     recentTurns,
-    retrievalPlan,
+    sessionSummaryText: sessionSummary?.summaryText ?? undefined,
+    latestTurnDeltaText,
     memoryCorrections,
+    motifProbeText,
+    openThreadTopK: retrievalPlan.openThreadTopK,
   });
+
+  // Run reranker; fall back to deterministic selector on failure
+  let selectedContext: ReturnType<typeof selectPromptMemoryContextStatic>;
+  let rerankOutput: MemoryRerankOutput | null = null;
+  let rerankFallbackUsed = false;
+  let rerankFallbackReason: string | null = null;
+
+  try {
+    const rerankResult = await rerankCandidates({
+      currentUserMessage: userMessage,
+      structuredUserQuery: contextPlannerOutput.structuredUserQuery,
+      plannerIntent: contextPlannerOutput.intent,
+      plannerHints: contextPlannerOutput.retrievalHints,
+      recentChatDigest: recentTurns
+        .slice(-4)
+        .map((t) => `${t.role}: ${t.content}`)
+        .join("\n"),
+      latestTurnDelta: latestTurnDeltaText,
+      relationshipState: session.continuityScope,
+      continuityScope: session.continuityScope,
+      candidates: shortlist.candidates,
+    });
+
+    if (!rerankResult.ok) {
+      throw new Error(rerankResult.fallbackReason);
+    }
+    rerankOutput = rerankResult.output;
+
+    const selected = applyCandidateSelection({
+      shortlist: shortlist.candidates,
+      selectedIds: rerankOutput.selected.map((s) => s.id),
+      memories,
+      sessionRecall,
+      structMemEntries,
+      structMemConsolidations,
+      openThreads,
+    });
+
+    // Build a PromptMemoryContextSelection-compatible result
+    selectedContext = {
+      memories: selected.memories,
+      sessionRecall: selected.sessionRecall,
+      structMemEntries: selected.structMemEntries,
+      structMemConsolidations: selected.structMemConsolidations,
+      openThreads: selected.openThreads,
+      diagnostics: shortlist.diagnostics as unknown as ReturnType<
+        typeof selectPromptMemoryContextStatic
+      >["diagnostics"],
+    };
+  } catch {
+    // Reranker call failed — fall back to deterministic eager selector
+    rerankFallbackUsed = true;
+    rerankFallbackReason = "reranker_call_failed";
+    rerankOutput = null;
+    selectedContext = selectPromptMemoryContextStatic({
+      memories,
+      sessionRecall,
+      structMemEntries,
+      structMemConsolidations,
+      openThreads,
+      recentTurns,
+      retrievalPlan,
+      memoryCorrections,
+    });
+  }
+
   selectorMs = Date.now() - selectorStartedAt;
+
   const structMemEntryExpansion =
     selectedContext.structMemEntries.length > 0
       ? await retrieveStructMemEntryContextExpansionsTraced({
@@ -636,6 +728,17 @@ export async function resolveContext(input: {
         totalResolveContextMs: Date.now() - startedAt,
       },
       selectionDiagnostics: selectedContext.diagnostics,
+      rerank: rerankOutput
+        ? {
+            selectedCount: rerankOutput.selected.length,
+            rejectedCount: rerankOutput.rejected.length,
+            finalContextMode: rerankOutput.finalContextMode,
+            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+          }
+        : {
+            fallbackUsed: true,
+            fallbackReason: rerankFallbackReason ?? "unknown",
+          },
     }),
   );
 
@@ -711,5 +814,6 @@ export async function resolveContext(input: {
     turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
     motifSignal,
     motifProbe,
+    rerankOutput,
   };
 }
