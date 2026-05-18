@@ -791,6 +791,34 @@ export async function resolveContext(input: {
       selectorMs,
       totalResolveContextMs: Date.now() - startedAt,
     },
+    ...(rerankOutput
+      ? {
+          rerank: {
+            enabled: true,
+            candidateIds: createEmptyEvalSourceIds(),
+            selected: rerankOutput.selected.map((s) => ({
+              source: s.source as EvalMemorySource | "canon" | "session_summary",
+              id: s.id,
+              relevance: s.relevance,
+              usageInstruction: s.usageInstruction,
+              reason: s.reason,
+            })),
+            rejectedCount: rerankOutput.rejected.length,
+            finalContextMode: rerankOutput.finalContextMode,
+            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+          },
+        }
+      : {
+          rerank: {
+            enabled: false,
+            candidateIds: createEmptyEvalSourceIds(),
+            selected: [],
+            rejectedCount: 0,
+            finalContextMode: "recent_only",
+            needsEvidenceFallback: false,
+            fallbackUsed: true,
+          },
+        }),
   });
 
   return {

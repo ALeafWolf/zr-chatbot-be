@@ -6,6 +6,14 @@ export interface AssertionContext {
   retrievedCanon?: string;
   queryRewrite?: QueryRewriteResult;
   scene_anchor_count?: number;
+  /** Rerank snapshot from RetrievalEvalSnapshot.rerank */
+  rerank?: {
+    selectedIds?: string[];
+    rejectedIds?: string[];
+    selectedSources?: string[];
+    finalContextMode?: string;
+    fallbackUsed?: boolean;
+  };
 }
 
 function matchesAnyPattern(reply: string, patterns: string[] | undefined): boolean {
@@ -130,6 +138,66 @@ export function checkAssertion(
     }
     case "no_memory_written": {
       return { pass: true, reason: "OK (manual verification required)" };
+    }
+    case "rerank_selected_ids": {
+      const expected = assertion.values ?? [];
+      const actual = ctx?.rerank?.selectedIds ?? [];
+      const expectedSet = new Set(expected);
+      const missingNotInActual = expected.filter((id) => !actual.includes(id));
+      const extraNotInExpected = actual.filter(
+        (id) => !expectedSet.has(id) && id !== undefined,
+      );
+      const pass = missingNotInActual.length === 0; // at minimum, all expected must be selected
+      return {
+        pass,
+        reason: pass
+          ? `All expected IDs selected${extraNotInExpected.length > 0 ? ` (+ ${extraNotInExpected.length} extra)` : ""}`
+          : `Missing expected IDs: ${missingNotInActual.join(", ")}`,
+      };
+    }
+    case "rerank_rejected_ids": {
+      const forbidden = assertion.values ?? [];
+      const actual = ctx?.rerank?.selectedIds ?? [];
+      const forbiddenSelected = forbidden.filter((id) => actual.includes(id));
+      const pass = forbiddenSelected.length === 0;
+      return {
+        pass,
+        reason: pass
+          ? "No forbidden IDs selected"
+          : `Forbidden IDs found in selection: ${forbiddenSelected.join(", ")}`,
+      };
+    }
+    case "rerank_context_mode": {
+      const expected = assertion.value ?? "selected_memory";
+      const actual = ctx?.rerank?.finalContextMode ?? "";
+      const pass = actual === expected;
+      return {
+        pass,
+        reason: pass ? `Context mode is ${expected}` : `Expected ${expected}, got ${actual}`,
+      };
+    }
+    case "rerank_no_fallback": {
+      const fallbackUsed = ctx?.rerank?.fallbackUsed ?? false;
+      const pass = !fallbackUsed;
+      return {
+        pass,
+        reason: pass ? "No fallback" : "Reranker fell back to deterministic",
+      };
+    }
+    case "max_irrelevant_selected": {
+      const max = assertion.min_scenes ?? 0;
+      const forbiddenSources = assertion.values ?? [];
+      const selectedSources = ctx?.rerank?.selectedSources ?? [];
+      const irrelevant = selectedSources.filter(
+        (s) => forbiddenSources.includes(s),
+      ).length;
+      const pass = irrelevant <= max;
+      return {
+        pass,
+        reason: pass
+          ? `Irrelevant selected: ${irrelevant} (max ${max})`
+          : `Too many irrelevant sources selected: ${irrelevant} (max ${max})`,
+      };
     }
     default:
       return { pass: false, reason: `Unknown assertion type: ${assertion.type}` };
