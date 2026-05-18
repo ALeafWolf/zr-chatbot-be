@@ -153,6 +153,20 @@ export function selectPromptMemoryContext(input: {
   retrievalPlan: RetrievalPlan;
   memoryCorrections?: MemoryCorrectionContext[];
 }): PromptMemoryContextSelection {
+  return selectPromptMemoryContextStatic(input);
+}
+
+/** Deterministic eager selection — preserved as the reranker fallback. */
+export function selectPromptMemoryContextStatic(input: {
+  memories: RetrievedMemory[];
+  sessionRecall: RetrievedSessionMemoryChunk[];
+  structMemEntries: RetrievedStructMemEntry[];
+  structMemConsolidations: RetrievedStructMemConsolidation[];
+  openThreads: RetrievedOpenThread[];
+  recentTurns: ConversationTurn[];
+  retrievalPlan: RetrievalPlan;
+  memoryCorrections?: MemoryCorrectionContext[];
+}): PromptMemoryContextSelection {
   const retrievedCounts = counts();
   const injectedCounts = counts();
   retrievedCounts.interactive_memory = input.memories.length;
