@@ -86,13 +86,6 @@ const envSchema = z.object({
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
   VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
-  CANON_LOOKUP_TOOL_ENABLED: z
-    .string()
-    .default("1")
-    .transform((v) => {
-      const s = v.trim().toLowerCase();
-      return s !== "0" && s !== "false" && s !== "off";
-    }),
   EVAL_ENABLE_LLM_JUDGE: z
     .string()
     .default("0")
@@ -245,38 +238,25 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
-  // Context Retrieval Mode
-  // "eager" = current behavior (all sources always retrieved).
-  // "hybrid_lazy" = defer heavy retrievals, gate prompt blocks on context need.
-  CONTEXT_RETRIEVAL_MODE: z
+  // Memory Rerank
+  // Model binding for the LLM that judges which retrieved context to inject.
+  // Use EXTRACTOR_MODEL to reuse the extractor binding (same sentinel as STRUCTMEM_CONSOLIDATION_MODEL).
+  MEMORY_RERANK_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  MEMORY_RERANK_MAX_CANDIDATES: z
     .string()
-    .default("eager")
-    .transform((v) => {
-      const s = v.trim().toLowerCase();
-      if (s === "hybrid_lazy") return s;
-      return "eager";
-    }),
-  HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP: z
-    .string()
-    .default("true")
-    .transform((v) => {
-      const s = v.trim().toLowerCase();
-      return s !== "0" && s !== "false";
-    }),
-  GENERATION_LOOKUP_TOOLS_ENABLED: z
-    .string()
-    .default("false")
-    .transform((v) => {
-      const s = v.trim().toLowerCase();
-      return s === "1" || s === "true";
-    }),
-  GENERATION_LOOKUP_MAX_STEPS: z
-    .string()
-    .default("1")
+    .default("24")
     .transform((v) => {
       const n = parseInt(v.trim(), 10);
-      if (Number.isNaN(n) || n < 1) return 1;
-      return Math.min(4, n);
+      if (Number.isNaN(n) || n < 1) return 24;
+      return Math.min(50, Math.max(8, n));
+    }),
+  MEMORY_RERANK_MAX_SELECTED: z
+    .string()
+    .default("8")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 8;
+      return Math.min(24, Math.max(1, n));
     }),
 
   // StructMem: Motif Probe

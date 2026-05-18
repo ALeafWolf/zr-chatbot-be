@@ -64,6 +64,7 @@ import {
   buildRetrievalPlan,
   classifyTurnType,
   type RetrievalPlan,
+  summarizeContextNeedForTrace,
 } from "./retrievalPlan";
 import { ROLEPLAY_TURN_ROUTE } from "./turnRoutes";
 import { selectPromptMemoryContext } from "./promptMemoryContextSelector";
@@ -160,6 +161,9 @@ const tracedPromptMemorySelector = traceStageWithIO(
           intent: input.retrievalPlan.intent,
           canonMode: input.retrievalPlan.canonMode,
           broadFailOpen: input.retrievalPlan.broadFailOpen,
+          contextNeed: summarizeContextNeedForTrace(
+            input.retrievalPlan.contextNeed,
+          ),
         },
       };
     },
@@ -279,20 +283,6 @@ export async function resolveContext(input: {
     motifSignal,
     motifProbe,
   });
-
-  // Hybrid lazy: override retrieval plan when heavy sources aren't needed
-  const retrievalMode = env.CONTEXT_RETRIEVAL_MODE;
-  if (
-    retrievalMode === "hybrid_lazy" &&
-    !retrievalPlan.contextNeed.needsCanon
-  ) {
-    retrievalPlan.canonMode = "skip";
-  }
-  const shouldSkipOlderRecall =
-    retrievalMode === "hybrid_lazy" &&
-    !retrievalPlan.contextNeed.needsOlderSessionRecall &&
-    !retrievalPlan.contextNeed.needsStructMem &&
-    !retrievalPlan.contextNeed.needsStructMemConsolidation;
 
   const useFusedMemoryQuery =
     queryTexts.shouldFuseRawMemory &&
@@ -430,16 +420,7 @@ export async function resolveContext(input: {
     });
 
   const olderRecallStartedAt = Date.now();
-  const [primaryOlderRecall, secondaryOlderRecall] = shouldSkipOlderRecall
-    ? ([
-        {
-          sessionRecall: [] as RetrievedSessionMemoryChunk[],
-          structMemEntries: [] as RetrievedStructMemEntry[],
-          structMemConsolidations: [] as RetrievedStructMemConsolidation[],
-        },
-        undefined,
-      ] as const)
-    : await Promise.all([
+  const [primaryOlderRecall, secondaryOlderRecall] = await Promise.all([
     retrieveOlderRecall(
       {
         queryEmbedding,

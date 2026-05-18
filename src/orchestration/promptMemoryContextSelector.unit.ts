@@ -22,6 +22,17 @@ const retrievalPlan: RetrievalPlan = {
   structMemEntryTopK: 2,
   structMemConsolidationTopK: 2,
   openThreadTopK: 2,
+  contextNeed: {
+    needsRecentTurns: true,
+    needsOlderSessionRecall: false,
+    needsDurableMemory: true,
+    needsStructMem: false,
+    needsStructMemConsolidation: false,
+    needsCanon: false,
+    needsWeb: false,
+    injectionMode: "full",
+    reason: "unit_test_fixture",
+  },
 };
 
 function select(input: {

@@ -40,7 +40,6 @@ export interface EnhancedContextNeed {
     | "promise_or_decision"
     | "emotional_shift";
   injectionMode: RetrievalInjectionMode;
-  expectedToolUse: string[];
   reason: string;
 }
 
@@ -201,7 +200,6 @@ function resolveContextNeed(
       needsCanon: true,
       needsWeb: false,
       injectionMode: "full",
-      expectedToolUse: [],
       reason: "broad fail-open — low confidence or parse failure",
     };
   }
@@ -215,7 +213,6 @@ function resolveContextNeed(
     needsCanon: false,
     needsWeb: false,
     injectionMode: "compact",
-    expectedToolUse: [],
     reason: "",
   };
 
@@ -226,7 +223,7 @@ function resolveContextNeed(
         needsCanon: true,
         needsDurableMemory: true,
         injectionMode: "full",
-        expectedToolUse: ["canon_lookup"],
+
         reason: "canon fact query — needs canon + durable memory",
       };
     case "personal_recall":
@@ -236,19 +233,15 @@ function resolveContextNeed(
         needsStructMem: true,
         needsDurableMemory: true,
         injectionMode: "full",
-        expectedToolUse: [
-          "lookup_older_session_memory",
-          "lookup_structmem",
-          "lookup_interactive_memory",
-        ],
-        reason: "personal recall — needs older session + structmem + durable memory",
+
+        reason: "personal recall — needs older session + structmem + durable memory + optional canon",
       };
     case "plan_or_promise":
       return {
         ...base,
         needsStructMem: true,
         needsDurableMemory: true,
-        expectedToolUse: ["lookup_structmem"],
+
         reason: "plan/promise — needs structmem for open threads + durable memory",
       };
     case "relationship_progression":
@@ -257,14 +250,14 @@ function resolveContextNeed(
         needsStructMem: true,
         needsDurableMemory: true,
         injectionMode: "compact",
-        expectedToolUse: ["lookup_structmem"],
+
         reason: "relationship progression — structmem for relevant history",
       };
     case "emotional_response":
       return {
         ...base,
         needsDurableMemory: true,
-        expectedToolUse: [],
+
         reason: "emotional response — durable memory for emotional context",
       };
     case "scene_continuation":
@@ -283,11 +276,11 @@ function resolveContextNeed(
           ? {
               needsStructMem: true,
               structMemReason: "implicit_repeated_motif" as const,
-              expectedToolUse: ["lookup_structmem"],
+      
               reason: "scene continuation with distinctive motif signal — probe structmem",
             }
           : {
-              expectedToolUse: [],
+      
               reason: "scene continuation / general — minimal context, durable memory only",
             }),
       };
@@ -304,8 +297,28 @@ function maxInjectionMode(
   return "skip";
 }
 
-function addUnique(arr: string[], value: string): string[] {
-  return arr.includes(value) ? arr : [...arr, value];
+/** Compact snapshot for LangSmith / observability (avoid huge payloads). */
+export function summarizeContextNeedForTrace(
+  need: EnhancedContextNeed | undefined,
+): Record<string, unknown> | undefined {
+  if (!need) return undefined;
+  const maxReason = 320;
+  const reason =
+    need.reason.length > maxReason
+      ? `${need.reason.slice(0, maxReason)}…`
+      : need.reason;
+  return {
+    needsRecentTurns: need.needsRecentTurns,
+    needsOlderSessionRecall: need.needsOlderSessionRecall,
+    needsDurableMemory: need.needsDurableMemory,
+    needsStructMem: need.needsStructMem,
+    needsStructMemConsolidation: need.needsStructMemConsolidation,
+    needsCanon: need.needsCanon,
+    needsWeb: need.needsWeb,
+    injectionMode: need.injectionMode,
+    structMemReason: need.structMemReason,
+    reasonPreview: reason,
+  };
 }
 
 export function applyContextNeedConflictRules(
@@ -313,11 +326,10 @@ export function applyContextNeedConflictRules(
   queryRewrite: QueryRewriteResult,
   motifProbe?: StructMemMotifProbeSummary,
 ): EnhancedContextNeed {
-  let result = { ...need, expectedToolUse: [...need.expectedToolUse] };
+  const result = { ...need };
 
   if (queryRewrite.intent === "attribution") {
     result.needsCanon = true;
-    result.expectedToolUse = addUnique(result.expectedToolUse, "canon_lookup");
     result.injectionMode = maxInjectionMode(result.injectionMode, "compact");
     result.reason += " | attribution intent forces canon";
   }
@@ -325,14 +337,6 @@ export function applyContextNeedConflictRules(
   if (queryRewrite.intent === "recall") {
     result.needsOlderSessionRecall = true;
     result.needsStructMem = true;
-    result.expectedToolUse = addUnique(
-      result.expectedToolUse,
-      "lookup_older_session_memory",
-    );
-    result.expectedToolUse = addUnique(
-      result.expectedToolUse,
-      "lookup_structmem",
-    );
     result.reason += " | recall intent forces older recall + structmem";
   }
 

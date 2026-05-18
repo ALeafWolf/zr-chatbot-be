@@ -31,6 +31,17 @@ export function resolveConsolidationModelBinding(
   return parseModelBinding(trimmed);
 }
 
+export function resolveMemoryRerankModelBinding(
+  value: string,
+  extractor: ModelBinding,
+): ModelBinding {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "EXTRACTOR_MODEL") {
+    return extractor;
+  }
+  return parseModelBinding(trimmed);
+}
+
 const extractor = parseModelBinding(env.EXTRACTOR_MODEL);
 
 export const models = {
@@ -45,6 +56,10 @@ export const models = {
   embedding: parseModelBinding(env.EMBEDDING_MODEL),
   consolidation: resolveConsolidationModelBinding(
     env.STRUCTMEM_CONSOLIDATION_MODEL,
+    extractor,
+  ),
+  rerank: resolveMemoryRerankModelBinding(
+    env.MEMORY_RERANK_MODEL,
     extractor,
   ),
 } as const;

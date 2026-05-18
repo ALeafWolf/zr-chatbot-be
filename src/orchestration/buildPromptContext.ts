@@ -17,10 +17,6 @@ import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrie
 import type { RetrievedOpenThread } from "../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "./motifTypes";
-import {
-  type EnhancedContextNeed,
-  summarizeContextNeedForTrace,
-} from "./retrievalPlan";
 import { env } from "../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "./userMessageAnnotations";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
@@ -75,8 +71,6 @@ export function buildPromptContext(input: {
   structMemEntryContextExpansions?: StructMemEntryContextExpansion[];
   structMemConsolidations?: RetrievedStructMemConsolidation[];
   motifProbe?: StructMemMotifProbeSummary;
-  contextRetrievalMode?: "eager" | "hybrid_lazy";
-  contextNeed?: EnhancedContextNeed;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -98,12 +92,9 @@ export function buildPromptContext(input: {
     structMemEntryContextExpansions = [],
     structMemConsolidations = [],
     motifProbe,
-    contextRetrievalMode,
-    contextNeed,
     userMessage,
     queryRewrite,
   } = input;
-  const isHybridLazy = contextRetrievalMode === "hybrid_lazy";
 
   const structuredBlock = queryRewrite?.combined_for_embedding?.trim() ?? "";
   const useAnnotationFallback = queryRewrite
@@ -156,7 +147,7 @@ ${hardRules}
 
 冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > MEMORY CORRECTIONS > LATEST TURN DELTA > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
-工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。canon_lookup 可在断言剧情归属或行为主体（谁提议、谁安排、谁先发起等）之前核对检索到的原文摘要与片段；仅在确有断言需要佐证时调用，避免频繁检索。lookup_structmem 可用于检索本场次的结构化事件记忆（决定、承诺、情绪转折、开放线索等），在需确认过往约定或关系变化时调用。lookup_structmem_consolidation 可用于检索跨事件合成的记忆模式，在需理解关系演变或重复模式时调用。lookup_older_session_memory 可用于检索本场次更早回合的对白片段，在用户提及超出近期窗口的旧事时调用。lookup_interactive_memory 可用于检索跨场次的持久记忆（偏好、长期事实、关系模式），在涉及长期信息时调用。`,
+工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
     ),
 
     buildBlock("BASE PERSONA", basePersonaBody),
@@ -180,15 +171,6 @@ ${personaOverlay.overlay_identity}`,
 默认情绪基线：${characterDefaults.interaction_defaults.default_emotional_baseline}
 默认关系基线：${characterDefaults.interaction_defaults.default_relationship_baseline}`,
     ),
-
-    ...(isHybridLazy
-      ? [
-          buildBlock(
-            "AVAILABLE CONTEXT SOURCES",
-            promptFormatters.formatAvailableContextSourcesBlock(contextNeed),
-          ),
-        ]
-      : []),
 
     buildBlock(
       "SESSION STATE",
@@ -237,19 +219,16 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
         ]
       : []),
 
-    ...(!isHybridLazy || contextNeed?.needsOlderSessionRecall !== false) &&
-    sessionRecall.length > 0
+    ...(sessionRecall.length > 0
       ? [
           buildBlock(
             "RELEVANT SESSION RECALL",
             promptFormatters.formatSessionRecall(sessionRecall),
           ),
         ]
-      : [],
+      : []),
 
-    ...(!isHybridLazy || contextNeed?.needsStructMem !== false) &&
-    env.STRUCTMEM_ENABLED &&
-    structMemEntries.length > 0
+    ...(env.STRUCTMEM_ENABLED && structMemEntries.length > 0
       ? [
           buildBlock(
             "STRUCTURED EVENT MEMORY",
@@ -259,13 +238,12 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             ),
           ),
         ]
-      : [],
+      : []),
 
-    ...(!isHybridLazy || contextNeed?.needsStructMemConsolidation !== false) &&
-    env.STRUCTMEM_ENABLED &&
+    ...((env.STRUCTMEM_ENABLED &&
     (env.STRUCTMEM_CONSOLIDATION_ENABLED ||
       env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED) &&
-    structMemConsolidations.length > 0
+    structMemConsolidations.length > 0)
       ? [
           buildBlock(
             "STRUCTURED MEMORY SYNTHESIS",
@@ -274,10 +252,10 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             ),
           ),
         ]
-      : [],
+      : []),
 
-    ...(env.STRUCTMEM_MOTIF_PROBE_ENABLED &&
-    motifProbe?.hasStrongMatch
+    ...((env.STRUCTMEM_MOTIF_PROBE_ENABLED &&
+    motifProbe?.hasStrongMatch)
       ? [
           buildBlock(
             "RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF",
@@ -286,11 +264,11 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
         ]
       : []),
 
-    ...(!isHybridLazy || contextNeed?.needsDurableMemory !== false
+    ...(memories.length > 0
       ? [buildBlock("INTERACTIVE MEMORY", promptFormatters.formatMemories(memories))]
       : []),
 
-    ...(!isHybridLazy || contextNeed?.needsCanon !== false
+    ...(canonNarrativeBody.trim()
       ? [buildBlock("CANON NARRATIVE", canonNarrativeBody)]
       : []),
 
@@ -354,8 +332,6 @@ export const buildPromptContextTraced = traceStageWithIO(
     processInputs: (inputs) => {
       const input = unwrapBuildPromptContextInput(inputs);
       return {
-        contextRetrievalMode: input.contextRetrievalMode ?? "eager",
-        contextNeed: summarizeContextNeedForTrace(input.contextNeed),
         selectedSourceCounts: {
           memories: input.memories.length,
           canonChunks: input.canonChunks.length,

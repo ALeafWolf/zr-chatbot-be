@@ -14,6 +14,17 @@ const retrievalPlan: RetrievalPlan = {
   structMemEntryTopK: 8,
   structMemConsolidationTopK: 4,
   openThreadTopK: 7,
+  contextNeed: {
+    needsRecentTurns: true,
+    needsOlderSessionRecall: true,
+    needsDurableMemory: true,
+    needsStructMem: true,
+    needsStructMemConsolidation: false,
+    needsCanon: false,
+    needsWeb: false,
+    injectionMode: "full",
+    reason: "unit_test_fixture",
+  },
 };
 
 const diagnostics: PromptMemorySelectionDiagnostics = {

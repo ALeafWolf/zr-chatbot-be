@@ -12,7 +12,6 @@ import {
   traceLLMStage,
   traceStreamingLLM,
 } from "../observability/langsmithTracing";
-import { env } from "../config/env";
 import type { EnhancedContextNeed } from "./retrievalPlan";
 import type { ToolChatMessage } from "../llm/providers";
 import {
@@ -64,15 +63,16 @@ function traceInputsForGenerationToolLoop(
   inputs: Readonly<unknown>,
 ): Record<string, unknown> {
   const input = unwrapGenerateWithToolsStreamInput(inputs);
+  const systemMsg = input.messages.find((m) => m.role === "system");
+  const userMsgs = input.messages.filter((m) => m.role === "user");
+  const lastUserMsg = userMsgs[userMsgs.length - 1];
   return {
-    contextRetrievalMode: env.CONTEXT_RETRIEVAL_MODE,
-    hybridLazyEmergencyCanon: env.HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP,
-    generationLookupToolsEnabled: env.GENERATION_LOOKUP_TOOLS_ENABLED,
     allowedToolNames: input.allowedToolNames ?? null,
-    expectedToolUse: input.expectedToolUse ?? null,
-    maxToolSteps: input.maxToolSteps ?? null,
-    forceFinalOnExhaustion: input.forceFinalOnExhaustion ?? false,
     enableTools: input.enableTools !== false,
+    systemPromptChars: systemMsg?.content?.length ?? 0,
+    conversationMessageCount: input.messages.length,
+    userMessageChars: lastUserMsg?.content?.length ?? 0,
+    userMessagePreview: (lastUserMsg?.content ?? "").slice(0, 200),
   };
 }
 
@@ -171,37 +171,7 @@ function voiceHintsFrom(
   );
 }
 
-function buildAllowedToolNames(
-  contextNeed?: EnhancedContextNeed,
-): string[] | undefined {
-  if (!contextNeed) return undefined;
-
-  const names: string[] = [];
-  names.push("web_search");
-
-  if (env.HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP) {
-    names.push("canon_lookup");
-  } else if (contextNeed.needsCanon) {
-    names.push("canon_lookup");
-  }
-
-  if (contextNeed.needsStructMem) {
-    names.push("lookup_structmem");
-    names.push("lookup_structmem_consolidation");
-  }
-  if (contextNeed.needsOlderSessionRecall) {
-    names.push("lookup_older_session_memory");
-  }
-  if (contextNeed.needsDurableMemory) {
-    names.push("lookup_interactive_memory");
-  }
-
-  for (const toolName of contextNeed.expectedToolUse) {
-    if (!names.includes(toolName)) names.push(toolName);
-  }
-
-  return names;
-}
+const ALLOWED_GENERATION_TOOLS: string[] = ["web_search"];
 
 /**
  * Draft, validate, rewrite once, validate again, then safe deflection ladder,
@@ -225,11 +195,7 @@ export async function* generateAndValidateStream(input: {
     signal,
     thoughtSummaryCache,
     thoughtsOut,
-    contextNeed,
   } = input;
-  const retrievalMode = env.CONTEXT_RETRIEVAL_MODE;
-  const isHybridLazy = retrievalMode === "hybrid_lazy";
-  const allowedToolNames = buildAllowedToolNames(contextNeed);
 
   const characterDefaults = loadCharacterDefaults(session.characterId);
   const voiceHints = voiceHintsFrom(characterDefaults);
@@ -284,7 +250,6 @@ export async function* generateAndValidateStream(input: {
   );
 
   let draft!: { content: string; inputTokens: number; outputTokens: number };
-  let wasCanonLookupCalled = false;
 
   try {
     let completed = false;
@@ -293,10 +258,7 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
-      allowedToolNames,
-      expectedToolUse: contextNeed?.expectedToolUse,
-      forceFinalOnExhaustion: isHybridLazy,
-      maxToolSteps: isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : undefined,
+      allowedToolNames: ALLOWED_GENERATION_TOOLS,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
@@ -313,7 +275,6 @@ export async function* generateAndValidateStream(input: {
         }
       }
       if (ev.type === "before_tool") {
-        if (ev.name === "canon_lookup") wasCanonLookupCalled = true;
         const summary = await generateThoughtSummary(
           {
             characterName: characterDefaults.name,
@@ -408,7 +369,6 @@ export async function* generateAndValidateStream(input: {
   const validation1 = await tracedValidate({
     ...validatorInput,
     draft: draft.content,
-    wasCanonLookupCalled,
   });
   recordValidationAttempt({
     attempt: 1,
@@ -482,22 +442,12 @@ export async function* generateAndValidateStream(input: {
   const hasCanonEvidenceIssue = drafterIssues1.some(
     (i) =>
       i.startsWith("Attribution claim") ||
-      i.includes("canon_unsupported_claim") ||
-      i.includes("canon_lookup"),
+      i.includes("canon_unsupported_claim"),
   );
-  const attributionRewriteHint = drafterIssues1.some((i) =>
-    i.startsWith("Attribution claim"),
-  )
-    ? "如确有把握请先调用 canon_lookup 检索原文佐证；否则改写时移除该归属判断。\n\n"
-    : "";
-  const rewriteAllowedToolNames = hasCanonEvidenceIssue
-    ? ["canon_lookup", "web_search"]
-    : allowedToolNames;
 
   const rewriteSystemPrompt =
     promptContext.systemPrompt +
     `\n\n[REWRITE INSTRUCTION]\n` +
-    attributionRewriteHint +
     `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
     drafterIssues1.map((issue) => `- ${issue}`).join("\n");
 
@@ -514,12 +464,7 @@ export async function* generateAndValidateStream(input: {
       ctx: toolCtx,
       signal,
       enableTools: true,
-      allowedToolNames: rewriteAllowedToolNames,
-      expectedToolUse: hasCanonEvidenceIssue
-        ? ["canon_lookup"]
-        : contextNeed?.expectedToolUse,
-      forceFinalOnExhaustion: isHybridLazy,
-      maxToolSteps: hasCanonEvidenceIssue ? 2 : isHybridLazy ? env.GENERATION_LOOKUP_MAX_STEPS : 2,
+      allowedToolNames: ALLOWED_GENERATION_TOOLS,
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
