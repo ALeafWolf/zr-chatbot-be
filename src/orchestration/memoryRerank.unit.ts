@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import type { ContextCandidate } from "./contextCandidates";
 import { buildMemoryRerankPrompt } from "./memoryRerankPrompt";
+import { __testing } from "./memoryRerank";
 
 function makeCandidate(
   overrides: Partial<ContextCandidate> = {},
@@ -109,22 +110,40 @@ describe("empty-selection guard", () => {
     assert.equal(best.id, "best_canon");
   });
 
-  it("accepts too_old as a valid rejection reason", () => {
-    // Verifies that RejectReasonSchema includes too_old.
-    // If the schema rejects it, the reranker falls back on every turn
-    // where the model correctly identifies an item as too old.
-    const reason = "too_old" as const;
-    const validReasons = [
-      "irrelevant_to_current_turn",
-      "too_broad",
-      "conflicts_with_recent_chat",
-      "canon_not_needed",
-      "memory_not_needed",
-      "duplicate",
-      "unsafe_to_use",
-      "too_old",
-    ];
-    assert.ok(validReasons.includes(reason));
+  it("accepts too_old rejected reason via production schema", () => {
+    // Exercises the real RerankOutputSchema — if too_old is later removed
+    // from RejectReasonSchema, this test fails.
+    const parsed = __testing.RerankOutputSchema.safeParse({
+      selected: [],
+      rejected: [
+        { id: "mem_1", source: "structmem_entry", reason: "too_old" },
+        { id: "mem_2", source: "interactive_memory", reason: "irrelevant_to_current_turn" },
+      ],
+      finalContextMode: "recent_only",
+      needsEvidenceFallback: false,
+    });
+    assert.ok(parsed.success, `schema rejected too_old: ${JSON.stringify(parsed.error?.format())}`);
+    assert.equal(parsed.data!.rejected.length, 2);
+    assert.equal(parsed.data!.rejected[0].reason, "too_old");
+  });
+
+  it("prompt documents too_old in rejected reason list", () => {
+    // If the prompt stops documenting too_old for rejected items, the model
+    // is less likely to emit it and the schema+prompt diverge.
+    // This checks the specific rejected reason enum line, not the full prompt,
+    // because "too_old" also appears in selected-item "risk".
+    const { system } = buildMemoryRerankPrompt({
+      currentUserMessage: "test",
+      plannerIntent: "scene_continuation",
+      candidates: [],
+      maxSelected: 8,
+    });
+    assert.ok(
+      system.includes(
+        '"reason": "irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use | too_old"',
+      ),
+      "buildMemoryRerankPrompt rejected reason enum should include too_old",
+    );
   });
 
   it("does not apply for scene_continuation", () => {

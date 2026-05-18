@@ -230,6 +230,11 @@ const tracedRerank = traceLLMStage(
   },
 );
 
+/** Exported for unit testing: the Zod schema that the LLM output must match. */
+export const __testing = {
+  RerankOutputSchema,
+};
+
 /** Apply LLM usage metadata to a traceable, then run the reranker. */
 export async function rerankCandidates(
   input: MemoryRerankInput,
