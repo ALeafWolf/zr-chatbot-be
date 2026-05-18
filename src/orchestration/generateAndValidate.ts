@@ -682,3 +682,7 @@ export async function generateAndValidate(
   }
   return result;
 }
+
+export const __testing = {
+  traceInputsForGenerationToolLoop,
+};
