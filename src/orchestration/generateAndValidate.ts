@@ -65,10 +65,12 @@ function traceInputsForGenerationToolLoop(
   const systemMsg = input.messages.find((m) => m.role === "system");
   const userMsgs = input.messages.filter((m) => m.role === "user");
   const lastUserMsg = userMsgs[userMsgs.length - 1];
+  const systemContent = systemMsg?.content ?? "";
   return {
     allowedToolNames: input.allowedToolNames ?? null,
     enableTools: input.enableTools !== false,
-    systemPromptChars: systemMsg?.content?.length ?? 0,
+    systemPromptChars: systemContent.length,
+    systemPromptPreview: systemContent.slice(0, 2000),
     conversationMessageCount: input.messages.length,
     userMessageChars: lastUserMsg?.content?.length ?? 0,
     userMessagePreview: (lastUserMsg?.content ?? "").slice(0, 200),
