@@ -21,20 +21,11 @@ const UsageInstructionSchema = z.enum([
   "tone_only",
 ]);
 
-const RiskSchema = z.enum([
+const RERANKER_CATEGORIES = [
   "may_derail_scene",
   "possible_conflict",
   "too_old",
   "low_confidence",
-]);
-
-/** Accepts `risk: null` from the model and normalizes to undefined. */
-const OptionalRiskSchema = z.preprocess(
-  (value) => (value === null ? undefined : value),
-  RiskSchema.optional(),
-);
-
-const RejectReasonSchema = z.enum([
   "irrelevant_to_current_turn",
   "too_broad",
   "conflicts_with_recent_chat",
@@ -42,8 +33,20 @@ const RejectReasonSchema = z.enum([
   "memory_not_needed",
   "duplicate",
   "unsafe_to_use",
-  "too_old",
-]);
+] as const;
+
+const RerankerCategorySchema = z.enum(RERANKER_CATEGORIES);
+
+/** Accepts model "no risk" variants and normalizes them to undefined. */
+const OptionalRiskSchema = z.preprocess(
+  (value) =>
+    value === null || (typeof value === "string" && value.trim() === "")
+      ? undefined
+      : value,
+  RerankerCategorySchema.optional(),
+);
+
+const RejectReasonSchema = RerankerCategorySchema;
 
 const FinalContextModeSchema = z.enum([
   "recent_only",
@@ -94,7 +97,7 @@ export type MemoryRerankSelected = {
   relevance: z.infer<typeof RelevanceSchema>;
   usageInstruction: z.infer<typeof UsageInstructionSchema>;
   reason: string;
-  risk?: z.infer<typeof RiskSchema>;
+  risk?: z.infer<typeof RerankerCategorySchema>;
 };
 
 export type MemoryRerankRejected = {
@@ -239,6 +242,9 @@ const tracedRerank = traceLLMStage(
 /** Exported for unit testing: the Zod schema that the LLM output must match. */
 export const __testing = {
   RerankOutputSchema,
+  RERANKER_CATEGORIES,
+  RerankerCategorySchema,
+  OptionalRiskSchema,
 };
 
 /** Apply LLM usage metadata to a traceable, then run the reranker. */

@@ -127,11 +127,8 @@ describe("empty-selection guard", () => {
     assert.equal(parsed.data!.rejected[0].reason, "too_old");
   });
 
-  it("prompt documents too_old in rejected reason list", () => {
-    // If the prompt stops documenting too_old for rejected items, the model
-    // is less likely to emit it and the schema+prompt diverge.
-    // This checks the specific rejected reason enum line, not the full prompt,
-    // because "too_old" also appears in selected-item "risk".
+  it("rejected reason enum line lists all shared categories", () => {
+    const enumLine = '"reason": "may_derail_scene | possible_conflict | too_old | low_confidence | irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use"';
     const { system } = buildMemoryRerankPrompt({
       currentUserMessage: "test",
       plannerIntent: "scene_continuation",
@@ -139,10 +136,8 @@ describe("empty-selection guard", () => {
       maxSelected: 8,
     });
     assert.ok(
-      system.includes(
-        '"reason": "irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use | too_old"',
-      ),
-      "buildMemoryRerankPrompt rejected reason enum should include too_old",
+      system.includes(enumLine),
+      "rejected reason enum line should list all shared categories",
     );
   });
 
@@ -175,8 +170,23 @@ describe("empty-selection guard", () => {
     assert.equal(parsed.data!.selected[1].risk, "too_old");
   });
 
+  it("accepts selected risk empty strings and normalizes to undefined", () => {
+    const parsed = __testing.RerankOutputSchema.safeParse({
+      selected: [
+        { id: "mem_1", source: "structmem_entry", relevance: "useful", usageInstruction: "use_subtly", reason: "relevant", risk: "" },
+        { id: "mem_2", source: "interactive_memory", relevance: "useful", usageInstruction: "use_subtly", reason: "relevant", risk: "   " },
+      ],
+      rejected: [],
+      finalContextMode: "selected_memory",
+      needsEvidenceFallback: false,
+    });
+    assert.ok(parsed.success, `schema rejected blank risk: ${JSON.stringify(parsed.error?.format())}`);
+    assert.equal(parsed.data!.selected[0].risk, undefined);
+    assert.equal(parsed.data!.selected[1].risk, undefined);
+  });
+
   it("prompt says to omit risk when not applicable", () => {
-    // The prompt should tell the model to omit risk rather than use null.
+    // The prompt should tell the model to omit risk rather than use blank no-op values.
     const { system } = buildMemoryRerankPrompt({
       currentUserMessage: "test",
       plannerIntent: "scene_continuation",
@@ -187,5 +197,125 @@ describe("empty-selection guard", () => {
       system.includes("omit when not applicable"),
       "buildMemoryRerankPrompt should guide the model to omit risk when not applicable",
     );
+    assert.ok(
+      system.includes("do not use null or empty string"),
+      "buildMemoryRerankPrompt should discourage null or empty risk values",
+    );
+  });
+});
+
+describe("shared reranker categories", () => {
+  const ALL_CATEGORIES = [
+    "may_derail_scene",
+    "possible_conflict",
+    "too_old",
+    "low_confidence",
+    "irrelevant_to_current_turn",
+    "too_broad",
+    "conflicts_with_recent_chat",
+    "canon_not_needed",
+    "memory_not_needed",
+    "duplicate",
+    "unsafe_to_use",
+  ] as const;
+  const ALIGNED_ENUM_LINE =
+    '"may_derail_scene | possible_conflict | too_old | low_confidence | irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use"';
+
+  it("RERANKER_CATEGORIES matches the full expected set", () => {
+    assert.deepEqual([...__testing.RERANKER_CATEGORIES], [...ALL_CATEGORIES]);
+  });
+
+  it("every category is accepted as selected risk", () => {
+    for (const cat of ALL_CATEGORIES) {
+      const parsed = __testing.RerankOutputSchema.safeParse({
+        selected: [
+          {
+            id: "m1", source: "structmem_entry", relevance: "useful",
+            usageInstruction: "use_subtly", reason: "relevant", risk: cat,
+          },
+        ],
+        rejected: [],
+        finalContextMode: "recent_only",
+        needsEvidenceFallback: false,
+      });
+      assert.ok(
+        parsed.success,
+        `category "${cat}" should be valid as selected risk: ${JSON.stringify(parsed.error?.format())}`,
+      );
+    }
+  });
+
+  it("every category is accepted as rejected reason", () => {
+    for (const cat of ALL_CATEGORIES) {
+      const parsed = __testing.RerankOutputSchema.safeParse({
+        selected: [],
+        rejected: [{ id: "m1", source: "structmem_entry", reason: cat }],
+        finalContextMode: "recent_only",
+        needsEvidenceFallback: false,
+      });
+      assert.ok(
+        parsed.success,
+        `category "${cat}" should be valid as rejected reason: ${JSON.stringify(parsed.error?.format())}`,
+      );
+    }
+  });
+
+  it("prompt risk enum line lists all shared categories", () => {
+    const { system } = buildMemoryRerankPrompt({
+      currentUserMessage: "test",
+      plannerIntent: "scene_continuation",
+      candidates: [],
+      maxSelected: 8,
+    });
+    assert.ok(
+      system.includes(`"risk": ${ALIGNED_ENUM_LINE}`),
+      "risk enum line should list all shared categories",
+    );
+  });
+
+  it("prompt rejected reason enum line lists all shared categories", () => {
+    const { system } = buildMemoryRerankPrompt({
+      currentUserMessage: "test",
+      plannerIntent: "scene_continuation",
+      candidates: [],
+      maxSelected: 8,
+    });
+    assert.ok(
+      system.includes(`"reason": ${ALIGNED_ENUM_LINE}`),
+      "rejected reason enum line should list all shared categories",
+    );
+  });
+
+  it("rejects unknown string in both risk and reason", () => {
+    const asRisk = __testing.RerankOutputSchema.safeParse({
+      selected: [
+        {
+          id: "m1", source: "structmem_entry", relevance: "useful",
+          usageInstruction: "use_subtly", reason: "relevant", risk: "unknown_category",
+        },
+      ],
+      rejected: [],
+      finalContextMode: "recent_only",
+      needsEvidenceFallback: false,
+    });
+    assert.equal(asRisk.success, false, "unknown risk string must be rejected");
+
+    const asReason = __testing.RerankOutputSchema.safeParse({
+      selected: [],
+      rejected: [{ id: "m1", source: "structmem_entry", reason: "unknown_category" }],
+      finalContextMode: "recent_only",
+      needsEvidenceFallback: false,
+    });
+    assert.equal(asReason.success, false, "unknown reason string must be rejected");
+  });
+
+  it("rejects empty rejected reason because reason is required", () => {
+    const parsed = __testing.RerankOutputSchema.safeParse({
+      selected: [],
+      rejected: [{ id: "m1", source: "structmem_entry", reason: "" }],
+      finalContextMode: "recent_only",
+      needsEvidenceFallback: false,
+    });
+    assert.equal(parsed.success, false, "empty rejected reason must be rejected");
   });
 });

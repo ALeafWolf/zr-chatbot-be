@@ -91,6 +91,7 @@ export function buildStructMemConsolidationPrompt(input: {
 }): string {
   const body = [
     "Synthesize current-session StructMem entries into one compact memory consolidation.",
+    "Keep output compact — short summary_text, minimal summary_json.",
     "Use only the provided entries. Do not invent people, actions, motives, dates, or outcomes.",
     "Prefer durable within-session patterns, unresolved threads, decisions, factual state, and relationship/emotional movement.",
     "If buffer entries conflict with semantic seeds, prefer buffer entries.",

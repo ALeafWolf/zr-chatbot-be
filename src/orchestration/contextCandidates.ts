@@ -318,6 +318,12 @@ export interface SelectedTypedArrays {
   openThreads: RetrievedOpenThread[];
   /** IDs of all selected memory items (excludes session_summary / latest_turn_delta). */
   selectedMemoryIds: string[];
+  /** Whether session_summary was selected by the reranker. */
+  sessionSummarySelected: boolean;
+  /** Whether latest_turn_delta was selected by the reranker. */
+  latestTurnDeltaSelected: boolean;
+  /** IDs of memory_correction candidates that were selected by the reranker. */
+  selectedCorrectionIds: string[];
 }
 
 /** Convert reranker-selected candidate IDs back into typed source arrays for buildPromptContext. */
@@ -331,6 +337,10 @@ export function applyCandidateSelection(
     byId.set(c.id, c);
   }
 
+  const selectedCorrectionIds = input.shortlist
+    .filter((c) => c.source === "memory_correction" && selectedSet.has(c.id))
+    .map((c) => c.id);
+
   return {
     memories: input.memories.filter((m) => selectedSet.has(m.id)),
     sessionRecall: input.sessionRecall.filter((c) => selectedSet.has(c.id)),
@@ -342,5 +352,8 @@ export function applyCandidateSelection(
     selectedMemoryIds: input.selectedIds.filter(
       (id) => byId.get(id)?.source !== "session_summary" && byId.get(id)?.source !== "latest_turn_delta",
     ),
+    sessionSummarySelected: selectedSet.has("session_summary"),
+    latestTurnDeltaSelected: selectedSet.has("latest_turn_delta"),
+    selectedCorrectionIds,
   };
 }

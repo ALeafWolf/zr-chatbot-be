@@ -631,6 +631,9 @@ export async function resolveContext(input: {
   let rerankOutput: MemoryRerankOutput | null = null;
   let rerankFallbackUsed = false;
   let rerankFallbackReason: string | null = null;
+  let filteredSessionSummary: SessionSummaryRecord = sessionSummary;
+  let filteredLatestTurnDelta: LatestTurnDelta | null = latestTurnDelta;
+  let filteredMemoryCorrections: MemoryCorrectionContext[] = memoryCorrections;
 
   try {
     const rerankResult = await rerankCandidates({
@@ -663,6 +666,17 @@ export async function resolveContext(input: {
       openThreads,
     });
 
+    // Apply reranker selection to singleton/control prompt sources
+    filteredSessionSummary = selected.sessionSummarySelected
+      ? sessionSummary
+      : null;
+    filteredLatestTurnDelta = selected.latestTurnDeltaSelected
+      ? latestTurnDelta
+      : null;
+    filteredMemoryCorrections = memoryCorrections.filter((c) =>
+      selected.selectedCorrectionIds.includes(`correction_${c.sourceTurnIndex}`),
+    );
+
     // Build a PromptMemoryContextSelection-compatible result
     selectedContext = {
       memories: selected.memories,
@@ -689,6 +703,7 @@ export async function resolveContext(input: {
       retrievalPlan,
       memoryCorrections,
     });
+    // Fallback keeps original unfiltered singleton sources (initial values)
   }
 
   selectorMs = Date.now() - selectorStartedAt;
@@ -829,14 +844,14 @@ export async function resolveContext(input: {
     derivedState,
     queryEmbedding,
     canonQueryEmbedding,
-    sessionSummary,
+    sessionSummary: filteredSessionSummary,
     sessionRecall: selectedContext.sessionRecall,
     structMemEntries: selectedContext.structMemEntries,
     structMemEntryContextExpansions: structMemEntryExpansion.expansions,
     structMemConsolidations: selectedContext.structMemConsolidations,
     openThreads: selectedContext.openThreads,
-    memoryCorrections,
-    latestTurnDelta,
+    memoryCorrections: filteredMemoryCorrections,
+    latestTurnDelta: filteredLatestTurnDelta,
     queryRewrite,
     retrievalPlan,
     turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),

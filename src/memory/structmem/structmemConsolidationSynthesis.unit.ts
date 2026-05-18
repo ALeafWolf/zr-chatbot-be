@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { parseJsonOutput } from "../../llm/json/parseJsonOutput";
 import {
   buildStructMemConsolidationPrompt,
   parseStructMemConsolidationOutput,
@@ -57,22 +58,20 @@ describe("structmemConsolidationSynthesis", () => {
       ],
       semanticSeedEntries: [],
     });
-    // The prompt should guide the model toward compact output
-    assert.match(prompt, /compact/);
+    // Check the new compactness guidance added by the hardening change,
+    // not just any pre-existing "compact" text.
+    assert.match(prompt, /Keep output compact/);
   });
 
-  it("rejects truncated incomplete JSON — regression anchor for hardening", () => {
-    // Actual truncation (mid-JSON raw output) is caught by chatJson before
-    // schema.parse. This test provides a regression anchor: the schema still
-    // rejects data that violates the output contract, so tightening the prompt
-    // and raising maxTokens has a measurable coverage target.
-    assert.throws(() =>
-      parseStructMemConsolidationOutput({
-        summary_text: " ",  // fails .min(1) after .trim()
-        summary_json: {},
-        confidence_score: 0.5,
-      }),
-    );
+  it("rejects truncated raw JSON through parseJsonOutput path", () => {
+    // Simulates the observed production failure: the model emits a JSON object
+    // that starts but ends mid-value because the output cap was hit.
+    // parseJsonOutput is the same extraction function used by chatJson(...)
+    // when parsing the consolidation model's raw output.
+    const truncated = '{"summary_text":"Several meaningful interactions occurred during this session. The user seemed particularly interested in';
+    const result = parseJsonOutput(truncated);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /No JSON object\/array found/);
   });
 
   it("accepts valid cross-session distillation output shape", () => {
