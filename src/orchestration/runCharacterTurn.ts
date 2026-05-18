@@ -378,7 +378,6 @@ async function* runRoleplayTurnStream(
       signal,
       thoughtSummaryCache,
       thoughtsOut: thoughtsAcc,
-      contextNeed: context.retrievalPlan.contextNeed,
     })) {
       if (signal?.aborted) {
         return;

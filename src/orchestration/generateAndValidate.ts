@@ -12,7 +12,6 @@ import {
   traceLLMStage,
   traceStreamingLLM,
 } from "../observability/langsmithTracing";
-import type { EnhancedContextNeed } from "./retrievalPlan";
 import type { ToolChatMessage } from "../llm/providers";
 import {
   generateWithToolsStream,
@@ -184,7 +183,6 @@ export async function* generateAndValidateStream(input: {
   signal?: AbortSignal;
   thoughtSummaryCache?: Map<string, string>;
   thoughtsOut?: Thought[];
-  contextNeed?: EnhancedContextNeed;
 }): AsyncGenerator<GenerateAndValidateYield> {
   const {
     promptContext,
