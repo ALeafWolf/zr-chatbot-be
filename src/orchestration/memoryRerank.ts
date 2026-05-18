@@ -36,6 +36,7 @@ const RejectReasonSchema = z.enum([
   "memory_not_needed",
   "duplicate",
   "unsafe_to_use",
+  "too_old",
 ]);
 
 const FinalContextModeSchema = z.enum([

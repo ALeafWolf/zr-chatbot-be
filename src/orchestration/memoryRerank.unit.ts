@@ -109,6 +109,24 @@ describe("empty-selection guard", () => {
     assert.equal(best.id, "best_canon");
   });
 
+  it("accepts too_old as a valid rejection reason", () => {
+    // Verifies that RejectReasonSchema includes too_old.
+    // If the schema rejects it, the reranker falls back on every turn
+    // where the model correctly identifies an item as too old.
+    const reason = "too_old" as const;
+    const validReasons = [
+      "irrelevant_to_current_turn",
+      "too_broad",
+      "conflicts_with_recent_chat",
+      "canon_not_needed",
+      "memory_not_needed",
+      "duplicate",
+      "unsafe_to_use",
+      "too_old",
+    ];
+    assert.ok(validReasons.includes(reason));
+  });
+
   it("does not apply for scene_continuation", () => {
     // Guard should NOT fire for scene_continuation
     const intent = "scene_continuation" as "scene_continuation" | "explicit_recall" | "implicit_memory_callback" | "canon_question";

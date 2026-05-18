@@ -61,7 +61,7 @@ export function buildMemoryRerankPrompt(input: {
     "    {",
     '      "id": "<candidate id>",',
     '      "source": "<candidate source>",',
-    '      "reason": "irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use"',
+    '      "reason": "irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use | too_old"',
     "    }",
     "  ],",
     '  "finalContextMode": "recent_only | selected_memory | selected_canon | memory_and_canon | no_extra_context",',
