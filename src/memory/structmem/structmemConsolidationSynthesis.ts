@@ -95,6 +95,8 @@ export function buildStructMemConsolidationPrompt(input: {
     "Prefer durable within-session patterns, unresolved threads, decisions, factual state, and relationship/emotional movement.",
     "If buffer entries conflict with semantic seeds, prefer buffer entries.",
     "Return JSON only with summary_text, summary_json, and confidence_score.",
+    "Example shape (replace with real content):",
+    '{"summary_text":"One compact paragraph.","summary_json":{},"confidence_score":0.75}',
     "",
     formatEntries("BUFFER ENTRIES", input.bufferEntries),
     "",
@@ -109,22 +111,55 @@ async function synthesizeStructMemConsolidationImpl(input: {
   maxInputTokens: number;
 }): Promise<StructMemConsolidationSynthesisResult> {
   const prompt = buildStructMemConsolidationPrompt(input);
-  const result = await chatJson(
-    models.consolidation,
-    [
-      {
-        role: "system",
-        content:
-          "You are a conservative memory consolidation worker. Output strictly valid JSON.",
-      },
-      { role: "user", content: prompt },
-    ],
-    StructMemConsolidationOutputSchema,
-    { maxTokens: 900, temperature: 0.1 },
-  );
+  const systemStrictJson =
+    "You are a conservative memory consolidation worker. " +
+    "Respond with one JSON object only (no markdown fences, no preamble). " +
+    "Keys: summary_text (string), summary_json (object), confidence_score (number 0-1 or null).";
+
+  const runChat = () =>
+    chatJson(
+      models.consolidation,
+      [
+        { role: "system", content: systemStrictJson },
+        { role: "user", content: prompt },
+      ],
+      StructMemConsolidationOutputSchema,
+      { maxTokens: 900, temperature: 0.1 },
+    );
+
+  let result = await runChat();
 
   if (!result.ok) {
-    throw new Error(`StructMem consolidation parse failed: ${result.error}`);
+    const preview = result.raw.trim().slice(0, 280);
+    const repairPrompt = [
+      prompt,
+      "",
+      `Previous model output could not be parsed (${result.error}).`,
+      "Reply again with ONLY one JSON object. Use ASCII double quotes for all keys and string values.",
+      "Required keys: \"summary_text\", \"summary_json\", \"confidence_score\".",
+      preview ? `Bad output began with: ${preview}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    result = await chatJson(
+      models.consolidation,
+      [
+        { role: "system", content: systemStrictJson },
+        { role: "user", content: repairPrompt },
+      ],
+      StructMemConsolidationOutputSchema,
+      { maxTokens: 900, temperature: 0 },
+    );
+  }
+
+  if (!result.ok) {
+    const tail = result.raw.trim().slice(-400);
+    throw new Error(
+      `StructMem consolidation parse failed: ${result.error}; rawHead=${JSON.stringify(
+        result.raw.trim().slice(0, 400),
+      )}; rawTail=${JSON.stringify(tail)}`,
+    );
   }
 
   const data = result.data;
@@ -185,6 +220,7 @@ function buildCrossSessionDistillationPrompt(input: {
     `Structured JSON: ${JSON.stringify(input.summaryJson ?? {})}`,
     "",
     "Return JSON only: { stable_items: [{ category, summary_text, confidence_score, importance_score, tags }] }.",
+    'Example: {"stable_items":[{"category":"promise_or_commitment","summary_text":"...","confidence_score":0.8,"importance_score":0.75,"tags":[]}]}',
   ].join("\n");
 }
 
@@ -193,25 +229,47 @@ async function distillCrossSessionStructMemImpl(input: {
   summaryJson: Record<string, unknown>;
   confidenceScore: number | null;
 }): Promise<StructMemCrossSessionDistillationOutput> {
-  const result = await chatJson(
-    models.consolidation,
-    [
-      {
-        role: "system",
-        content:
-          "You are a conservative memory distillation worker. Output strictly valid JSON.",
-      },
-      {
-        role: "user",
-        content: buildCrossSessionDistillationPrompt(input),
-      },
-    ],
-    StructMemCrossSessionDistillationOutputSchema,
-    { maxTokens: 700, temperature: 0.1 },
-  );
+  const userContent = buildCrossSessionDistillationPrompt(input);
+  const systemDistill =
+    "You are a conservative memory distillation worker. " +
+    "Respond with one JSON object only (no markdown). Key: stable_items (array).";
+
+  const runChat = () =>
+    chatJson(
+      models.consolidation,
+      [
+        { role: "system", content: systemDistill },
+        { role: "user", content: userContent },
+      ],
+      StructMemCrossSessionDistillationOutputSchema,
+      { maxTokens: 700, temperature: 0.1 },
+    );
+
+  let result = await runChat();
 
   if (!result.ok) {
-    throw new Error(`StructMem cross-session distillation failed: ${result.error}`);
+    const repairUser = [
+      userContent,
+      "",
+      `Previous output was not valid JSON (${result.error}). Reply with ONLY: {"stable_items":[...] } using double quotes.`,
+    ].join("\n");
+    result = await chatJson(
+      models.consolidation,
+      [
+        { role: "system", content: systemDistill },
+        { role: "user", content: repairUser },
+      ],
+      StructMemCrossSessionDistillationOutputSchema,
+      { maxTokens: 700, temperature: 0 },
+    );
+  }
+
+  if (!result.ok) {
+    throw new Error(
+      `StructMem cross-session distillation failed: ${result.error}; rawPreview=${JSON.stringify(
+        result.raw.trim().slice(0, 500),
+      )}`,
+    );
   }
 
   return attachTraceLlmMetadata(

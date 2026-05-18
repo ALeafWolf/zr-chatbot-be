@@ -45,10 +45,6 @@ export async function* generateWithToolsStream(input: {
   maxToolSteps?: number;
   /** If set, only tools with these names are available to the model. */
   allowedToolNames?: string[];
-  /** Trace-only: expected tool names from the context-need plan (not enforced by the loop). */
-  expectedToolUse?: string[];
-  /** If true, exhaust max steps with a final non-tool generation instead of throwing. */
-  forceFinalOnExhaustion?: boolean;
 }): AsyncGenerator<GenerateWithToolsYield> {
   const provider = getProvider(models.generation);
   const allSchemas =
@@ -67,6 +63,7 @@ export async function* generateWithToolsStream(input: {
 
   for (let step = 0; step < maxSteps; step++) {
     let assistantText = "";
+    let assistantReasoning = "";
     let toolCalls:
       | Array<{ id: string; name: string; arguments: string }>
       | undefined;
@@ -92,6 +89,7 @@ export async function* generateWithToolsStream(input: {
           yield { type: "delta", text: ev.text };
         }
         if (ev.reasoning) {
+          assistantReasoning += ev.reasoning;
           yield { type: "delta", reasoning: ev.reasoning };
         }
       }
@@ -140,6 +138,9 @@ export async function* generateWithToolsStream(input: {
               function: { name: tc.name, arguments: tc.arguments },
             },
           ],
+          ...(assistantReasoning
+            ? { reasoning_content: assistantReasoning }
+            : {}),
         },
         {
           role: "tool",
@@ -171,6 +172,9 @@ export async function* generateWithToolsStream(input: {
             function: { name: tc.name, arguments: tc.arguments },
           },
         ],
+        ...(assistantReasoning
+          ? { reasoning_content: assistantReasoning }
+          : {}),
       },
       {
         role: "tool",
@@ -178,43 +182,6 @@ export async function* generateWithToolsStream(input: {
         content: JSON.stringify(dispatched.result),
       },
     ];
-  }
-
-  if (input.forceFinalOnExhaustion) {
-    const finalStream = provider.streamChat(messages, {
-      tools: undefined,
-      toolChoice: "none",
-      maxTokens: 4096,
-      temperature: 1.0,
-      signal: input.signal,
-      ...(input.openAICompatibleRequestExtensions !== undefined
-        ? {
-            openAICompatibleRequestExtensions:
-              input.openAICompatibleRequestExtensions,
-          }
-        : {}),
-    });
-
-    let finalText = "";
-    for await (const ev of finalStream) {
-      if (ev.type === "delta" && ev.text) {
-        finalText += ev.text;
-        yield { type: "delta", text: ev.text };
-      }
-      if (ev.type === "assistant_done") {
-        finalText = ev.content ?? finalText;
-        totalIn += ev.usage.inputTokens;
-        totalOut += ev.usage.outputTokens;
-      }
-    }
-
-    yield {
-      type: "done",
-      content: finalText,
-      inputTokens: totalIn,
-      outputTokens: totalOut,
-    };
-    return;
   }
 
   throw new ToolLoopExceededError();
@@ -228,8 +195,6 @@ export async function generateWithTools(input: {
   openAICompatibleRequestExtensions?: Record<string, unknown>;
   maxToolSteps?: number;
   allowedToolNames?: string[];
-  expectedToolUse?: string[];
-  forceFinalOnExhaustion?: boolean;
 }): Promise<GenerateWithToolsResult> {
   let final: GenerateWithToolsResult | undefined;
   for await (const ev of generateWithToolsStream(input)) {

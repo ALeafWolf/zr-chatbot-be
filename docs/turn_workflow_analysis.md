@@ -21,19 +21,31 @@ The main API path is:
    `roleplay_turn`, `app_command`, or `unsupported`. Credential disclosure
    requests are intercepted and routed to `unsupported`.
 5. For `roleplay_turn`: loads character defaults and the persona overlay.
-6. `resolveContext(...)` rewrites the user query, builds memory/canon query
-   texts, creates batched embeddings (traced as `embedding.query_batch`),
+6. `resolveContext(...)` rewrites the user query, detects **motif signals**
+   (deterministic repeated-relationship-gesture detection), builds an enhanced
+   **retrieval plan** with `contextNeed` flags, creates batched embeddings
+   (traced as `embedding.query_batch`, now including optional motif queries),
    retrieves memory/canon/recent state, retrieves active memory corrections,
-   retrieves older session recall, selects prompt memory context, and emits
-   retrieval diagnostics.
+   retrieves older session recall (skipped in hybrid_lazy when not needed),
+   optionally runs a **motif probe** retrieval, selects prompt memory context,
+   and emits retrieval diagnostics.
 7. `buildPromptContext(...)` turns selected results into priority-ordered prompt
    blocks plus recent conversation history, traced as `prompt.build_context`
-   with block-level token estimates.
+   with block-level token estimates. In `hybrid_lazy` mode, heavy blocks
+   (CANON NARRATIVE, STRUCTURED EVENT MEMORY, STRUCTURED MEMORY SYNTHESIS,
+   INTERACTIVE MEMORY, RELEVANT SESSION RECALL) are gated on `contextNeed`
+   flags. A compact `AVAILABLE CONTEXT SOURCES` block is added to guide the
+   model's tool use. When a motif probe finds strong matches, a
+   `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block is injected.
 8. A recall thought may be generated in parallel with draft generation when
    retrieved memories or canon excerpts exist, traced as `llm.recall_thought`.
-9. `generateAndValidateStream(...)` drafts with tools enabled, validates the
-   draft, optionally rewrites once, validates again, and may fall back to the
-   character safe deflection.
+9. `generateAndValidateStream(...)` drafts with tools enabled (filtered by
+   `allowedToolNames` derived from context need), validates the draft
+   (including a narrow `canon_unsupported_claim` deterministic guard),
+   optionally rewrites once (with targeted `canon_lookup` forcing for canon-evidence
+   issues), validates again, and may fall back to the character safe deflection.
+   In `hybrid_lazy` mode, the tool loop uses `forceFinalOnExhaustion` instead of
+   throwing a hard error, and `maxToolSteps` is capped by `GENERATION_LOOKUP_MAX_STEPS`.
 10. `persistCompletedTurn(...)` runs a DB transaction that inserts the user and
     assistant messages, updates `session_state`, updates `chat_sessions`, and
     inserts one `post_turn_jobs` row — now including `route` and trace metadata
@@ -220,7 +232,7 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | `orchestration.unsupported_turn` | `orchestration/runCharacterTurn.ts` | No | No DB. Marker span for unsupported / safe-deflection execution. |
 | `retrieval.query_rewrite` | `retrieval/query/rewriteQuery.ts` | Yes | No DB. |
 | `retrieval.query_rewrite.phase_b` | `retrieval/query/rewriteQuery.ts` | Yes | No DB. |
-| `embedding.query_batch` | `orchestration/retrievalEmbeddingBatch.ts` | Embedding | No DB. Batches memory, canon, raw-memory, and HyDE embeddings in parallel. Traces query kinds, model, char counts, estimated tokens, and duration. |
+| `embedding.query_batch` | `orchestration/retrievalEmbeddingBatch.ts` | Embedding | No DB. Batches memory, canon, raw-memory, HyDE, and optional motif embeddings in parallel. Traces query kinds, model, char counts, estimated tokens, and duration. |
 | `retrieval.interactive_memories` | `retrieval/memory/retrieveInteractiveMemories.ts` | No | Reads `interactive_memory_events`; best-effort access update. Filters to `status = 'active'`. |
 | `retrieval.canon` | `retrieval/canon/retrieveCanonTier3Pipeline.ts` | No | Reads canon tables. |
 | `retrieval.canon.scene_summary_search` | `retrieval/canon/searchSceneSummaries.ts` | No | Reads scene/chapter/arc/episode rows. |
@@ -241,10 +253,14 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | `retrieval.context_diagnostics` | `orchestration/retrievalDiagnostics.ts` | No | Emits planning, selection, timing, injection/drop diagnostics including `droppedBudgetCount`. |
 | `prompt.build_context` | `orchestration/buildPromptContext.ts` | No | No DB. Builds system prompt blocks. Traces prompt version, hash, block presence, per-block token estimates, and total estimated tokens. |
 | `llm.recall_thought` | `orchestration/runCharacterTurn.ts` | Yes | No DB. Traces memory/canon context presence, output length, and timeout-before-final-replay flag. |
-| `llm.response_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Output carries token usage and cost via `attachTraceLlmMetadata`. |
-| `llm.response_rewrite_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. |
+| `llm.response_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Output carries token usage and cost via `attachTraceLlmMetadata`. Traces `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`, and prompt stats. |
+| `llm.response_rewrite_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Same trace inputs as response_generation. |
 | `tool.canon_lookup` | `llm/tools/canonLookupTool.ts` | Embedding | Embeds tool query and retrieves compact canon context. |
-| `llm.run_response_validator` | `llm/validation/runResponseValidator.ts` | Yes | No DB; optional attribution judge can run inside. Output carries token usage and cost. |
+| `tool.lookup_structmem` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves StructMem entries before the recent window. |
+| `tool.lookup_structmem_consolidation` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves StructMem consolidation summaries. |
+| `tool.lookup_older_session_memory` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves older session memory chunks. |
+| `tool.lookup_interactive_memory` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves durable interactive memory events. |
+| `llm.run_response_validator` | `llm/validation/runResponseValidator.ts` | Yes | No DB; optional attribution judge can run inside. Output carries token usage and cost. Traces `wasCanonInjected`, `wasCanonLookupCalled`, and draft chars. |
 | `llm.run_attribution_judge` | `llm/validation/runAttributionJudge.ts` | Yes | No DB. Output carries token usage and cost. |
 | `llm.run_memory_dedup_judge` | `llm/validation/runMemoryDedupJudge.ts` | Yes | No DB. Output carries token usage and cost. |
 | `llm.extract_post_turn_signals` | `llm/extraction/extractPostTurnSignals.ts` | Yes | No direct DB; creates embeddings for extracted candidates. Output carries token usage and cost. |
@@ -269,20 +285,22 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | Routing dispatch | `orchestration.roleplay_turn` or `orchestration.app_command` or `orchestration.unsupported_turn` | Marker spans for the executed route. App command and unsupported routes use cheap safe-deflection replies without LLM generation. |
 | Context resolution shell | `orchestration.run_character_turn_stream` | Character/default loading, context resolution call, prompt build, persistence, and final SSE replay are inside the parent span. |
 | Query rewrite | `retrieval.query_rewrite`, `retrieval.query_rewrite.phase_b` | Rewrite input/output, model confidence, parse/fallback behavior, and phase-B LLM call. |
-| Embedding batch | `embedding.query_batch` | Batched memory, canon, raw-memory, and HyDE embeddings as a first-class span. Traces query kinds, embedding model, input char counts, estimated tokens, request count, failed count, and duration. |
-| Main retrieval fan-out | `retrieval.interactive_memories`, `retrieval.canon` or `retrieval.canon_narrative`, `retrieval.recent_turns`, `retrieval.session_summary`, `retrieval.session_state` | DB retrieval branches and canon pipeline children. Main fan-out duration is also summarized in diagnostics. |
+| Motif signal detection | (inside `orchestration.run_character_turn_stream`) | Deterministic — no LLM span. Detects repeated relationship gestures from lexicons. When active, may add motif queries to the embedding batch. |
+| Embedding batch | `embedding.query_batch` | Batched memory, canon, raw-memory, HyDE, and optional motif embeddings as a first-class span. Traces query kinds, embedding model, input char counts, estimated tokens, request count, failed count, and duration. |
+| Main retrieval fan-out | `retrieval.interactive_memories`, `retrieval.canon` or `retrieval.canon_narrative`, `retrieval.recent_turns`, `retrieval.session_summary`, `retrieval.session_state` | DB retrieval branches and canon pipeline children. Main fan-out duration is also summarized in diagnostics. In hybrid_lazy mode, canon retrieval is skipped when `needsCanon=false`. |
 | Tier-3 canon internals | `retrieval.canon.scene_summary_search`, `retrieval.canon.facts_search`, `retrieval.canon.unit_search`, `retrieval.canon.lexical_unit_search`, `retrieval.canon.anchor_fusion`, `retrieval.canon.fine_expansion` | Coarse searches, rank fusion, and fine scene expansion as child retrieval stages. |
-| Older recall | `retrieval.session_memory_chunks`, `retrieval.structmem_entries`, `retrieval.structmem_consolidations` | Older session chunks, StructMem entries, and StructMem synthesis retrieval. Older-recall timing is also in diagnostics. |
+| Older recall | `retrieval.session_memory_chunks`, `retrieval.structmem_entries`, `retrieval.structmem_consolidations` | Older session chunks, StructMem entries, and StructMem synthesis retrieval. Older-recall timing is also in diagnostics. In hybrid_lazy mode, skipped entirely when none of needsOlderSessionRecall/needsStructMem/needsStructMemConsolidation. |
+| Motif probe retrieval | `retrieval.structmem_entries`, `retrieval.structmem_consolidations` (reused) | When motif detection finds a strong signal, a separate StructMem probe runs using the motif query embeddings. Zero new LLM calls — reuses existing retrievers with smaller k. |
 | Active open threads | `retrieval.open_threads` | Counts and source split for open threads from StructMem and session summaries. |
 | Prompt memory selection | `retrieval.prompt_context_selector` | Compact selected/dropped diagnostics: source caps, injected counts, duplicate drops, low-score drops, correction drops, correction-supersession drops, budget drops, and top sources. |
 | StructMem parent expansion | `retrieval.structmem_entry_context_expansions` | Selected expansion count and budget-drop count for parent message context. |
 | Retrieval diagnostics | `retrieval.context_diagnostics` | Final per-turn diagnostic payload: intent, plan, query mode, rewrite confidence, retrieved/injected counts, dropped counts (including `droppedBudgetCount`), open-thread count, top sources, expansion diagnostics, and timing buckets. |
-| Prompt build | `prompt.build_context` | System prompt construction with block-level stats: prompt version, hash, block presence, per-block token estimates, conversation message count, and total estimated tokens. |
+| Prompt build | `prompt.build_context` | System prompt construction with block-level stats: prompt version, hash, block presence, per-block token estimates, conversation message count, and total estimated tokens. In hybrid_lazy mode, traces `injectedTokensBySource`. |
 | Recall thought | `llm.recall_thought` | First-class LLM span for recall summary generation. Traces memory/canon context presence, output length, and timeout-before-final-replay. Token usage and cost attached. |
-| Draft generation | `llm.response_generation` | Streaming LLM span for draft generation, including native reasoning deltas and tool-loop events. Token usage and cost attached from accumulated stream data. |
-| Tool calls | `llm.response_generation`, tool-specific spans such as `tool.canon_lookup` | Tool decision/result thoughts are emitted in the parent generation stream; tool internals may add their own spans. |
-| Validation | `llm.run_response_validator`, optional `llm.run_attribution_judge` | Validator result, rewrite decision, issues, and optional attribution judge checks. Token usage and cost attached to both spans. |
-| Rewrite generation | `llm.response_rewrite_generation` | Streaming LLM span for one rewrite pass when validation reports actionable issues. Token usage and cost attached. |
+| Draft generation | `llm.response_generation` | Streaming LLM span for draft generation, including native reasoning deltas and tool-loop events. Traces `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`, `enableTools`, and prompt stats (chars/message count/preview). Token usage and cost attached from accumulated stream data. |
+| Tool calls | `llm.response_generation`, tool-specific spans (`tool.canon_lookup`, `tool.lookup_structmem`, `tool.lookup_structmem_consolidation`, `tool.lookup_older_session_memory`, `tool.lookup_interactive_memory`) | Tool decision/result thoughts are emitted in the parent generation stream; tool internals add their own spans. |
+| Validation | `llm.run_response_validator`, optional `llm.run_attribution_judge` | Validator result, rewrite decision, issues, and optional attribution judge checks. Traces `wasCanonInjected`, `wasCanonLookupCalled`, and draft chars. Token usage and cost attached to both spans. |
+| Rewrite generation | `llm.response_rewrite_generation` | Streaming LLM span for one rewrite pass when validation reports actionable issues. Token usage and cost attached. When canon-evidence issues are present, forces `canon_lookup` in allowed tools. |
 | Turn persistence | parent `orchestration.run_character_turn_stream` | Persists user/assistant messages, session state, chat session update, and post-turn job in one transaction. Now includes `route` (persisted route for roleplay results) and trace metadata with token usage totals on the parent span. |
 | Post-turn extraction | `llm.extract_post_turn_signals` | Background extraction LLM call and candidate counts through output payload. |
 | Post-turn write plan | `post_turn.write_plan` | Session/env gates, memory fact counts, native StructMem count, and skipped reasons for write paths. |
@@ -416,6 +434,38 @@ The rewrite path:
 Fail-open behavior: malformed parse/model output falls back to the raw user
 message or heuristic annotations.
 
+#### 3.2.5 Motif Signal Detection (Phase 1 — Hybrid Lazy)
+
+When `STRUCTMEM_MOTIF_PROBE_ENABLED=true`, `detectMotifSignal()` runs after
+query rewrite but **before** the retrieval plan is built. This is a purely
+deterministic step with zero LLM calls.
+
+The detector scans the user's action text (from the query rewrite's `user_action`
+lane) and raw message against five lexicons:
+
+| Lexicon | Size | Example terms |
+| --- | --- | --- |
+| `BODY_OR_OBJECT` | ~45 terms | 手腕内侧, 锁骨, 唇, 颈后, 腰, 戒指 |
+| `MOTIF_ACTION` | ~35 terms | 咬, 轻咬, 吻, 握住, 抚摸, 抱, 揉 |
+| `PRIVATE_TERMS` | ~12 terms | 轻轻, 温柔, 慢慢, 悄悄 |
+| `MOTIF_NEGATION` | ~10 patterns | 不, 没有, 别, 不要 |
+| `MOTIF_EXPLICIT_MARKERS` | ~20 terms | 回应, 亲密, 害羞, 心跳, 又, 上次 |
+
+The detection produces a `MotifSignal` with:
+- `hasNegation` — negation present (disqualifies probing)
+- `bodyOrObjectTerms` — matched body/object words
+- `actionTerms` — matched action words
+- `privateTerms` / `motifMarkers` — softer signals
+- `confidence` — 0..1 heuristic score
+
+`shouldProbeStructMemMotif(signal)` gates the probe:
+- No negation
+- Body + action with confidence ≥ 0.7, OR
+- Private/marker terms with confidence ≥ 0.6
+
+If gating passes, `buildMotifQueries(signal)` produces up to 4 cross-product
+queries (body × action pairs), capped for the embedding batch.
+
 #### 3.3 Embeddings
 
 Embedding creation is now centralized through `runRetrievalEmbeddingBatch(...)`
@@ -424,14 +474,15 @@ Embedding creation is now centralized through `runRetrievalEmbeddingBatch(...)`
 `buildRetrievalEmbeddingRequests(...)` determines which embeddings to create:
 
 - **memory** (always) — uses the memory-specific query text
-- **canon** (always) — uses the canon-specific query text
+- **canon** (always, unless canonMode is `"skip"`) — uses the canon-specific query text
 - **rawMemory** (conditional) — when raw/rewrite fusion is active
-- **hyde** (conditional) — when HyDE is enabled, tier-3 canon, and
+- **hyde** (conditional) — when HyDE is enabled, tier-3 canon, canon not skipped, and
   hypothetical text is non-empty
+- **motif** (conditional) — when motif detection triggered a probe; up to 4 queries
 
 The batch runs all embeddings in `Promise.all` and traces:
 
-- `queryKinds` — which embedding types were requested
+- `queryKinds` — which embedding types were requested (now may include `"motif"`)
 - `embeddingModelProvider` / `embeddingModelName`
 - `inputCharCounts` — character counts per query kind
 - `estimatedInputTokens` — token estimates per query kind (chars / 4)
@@ -469,10 +520,37 @@ After embeddings, `resolveContext(...)` runs the main retrieval branches with
 4. `retrieval.session_summary`
 5. `retrieval.session_state`
 
-It also builds an internal retrieval plan from rewrite intent and confidence.
-Known intents include scene continuation, canon facts, personal recall,
-emotional response, plan/promise, relationship progression, and general turns.
-Low-confidence or unknown intent keeps the broad fail-open retrieval plan.
+It also builds an **enhanced retrieval plan** from rewrite intent, confidence,
+and optional motif signal. Known intents include scene continuation, canon facts,
+personal recall, emotional response, plan/promise, relationship progression, and
+general turns. Low-confidence or unknown intent keeps the broad fail-open
+retrieval plan.
+
+The retrieval plan now includes an `EnhancedContextNeed` with per-source flags:
+
+```ts
+interface EnhancedContextNeed {
+  needsRecentTurns: boolean;
+  needsOlderSessionRecall: boolean;
+  needsDurableMemory: boolean;
+  needsStructMem: boolean;
+  needsStructMemConsolidation: boolean;
+  needsCanon: boolean;
+  needsWeb: boolean;
+  structMemReason?: string;
+  injectionMode: RetrievalInjectionMode; // "full" | "compact" | "skip"
+  expectedToolUse: string[];              // e.g. ["canon_lookup", "lookup_structmem"]
+  reason: string;
+}
+```
+
+**Hybrid lazy retrieval-skipping:** When `CONTEXT_RETRIEVAL_MODE=hybrid_lazy`:
+
+- If `contextNeed.needsCanon` is false, `canonMode` is overridden to `"skip"` and
+  canon retrieval is skipped entirely.
+- If none of `needsOlderSessionRecall`/`needsStructMem`/`needsStructMemConsolidation`
+  are true, older recall is skipped entirely.
+- HyDE embedding is suppressed when canon retrieval is skipped.
 
 #### 4.1 Durable Interactive Memories
 
@@ -514,6 +592,9 @@ When `CANON_RETRIEVAL_PIPELINE === "tier1"`, the backend uses
 `retrieveCanonNarrativeLegacy(...)`, a legacy unit-level vector/lexical search
 with same-scene expansion.
 
+In `hybrid_lazy` mode when `canonMode === "skip"`, both paths return empty arrays
+and are not awaited.
+
 #### 4.3 Recent Turns
 
 `getRecentConversationWindow(...)` reads recent `chat_messages`, orders them
@@ -553,6 +634,10 @@ before the recent-window boundary, then runs these in parallel:
 The overlap intentionally makes boundary-adjacent older memories eligible; the
 prompt selector removes duplicates already covered by recent chat.
 
+In `hybrid_lazy` mode, the entire older recall step is **skipped** when none of
+`needsOlderSessionRecall`/`needsStructMem`/`needsStructMemConsolidation` are set
+on the context need. Empty arrays are returned.
+
 #### 5.1 Session Memory Chunks
 
 `session_memory_chunks` stores session-local semantic memories. Retrieval
@@ -582,6 +667,29 @@ Retrieval can include:
 
 Current-session rows receive a recency boost. Cross-session rows are ranked by
 similarity only.
+
+#### 5.4 Motif Probe Retrieval (Phase 1 — Hybrid Lazy)
+
+When motif detection was triggered and motif query embeddings were produced, a
+separate **motif probe** retrieval runs after the main older recall. This step:
+
+1. Uses the first motif query embedding as the probe vector.
+2. Retrieves StructMem entries via `retrieveStructMemEntriesTraced` with
+   `limit: probeTopK * 2` (default 6).
+3. If StructMem consolidation retrieval is enabled, also retrieves
+   `retrieveStructMemConsolidationsTraced` with `limit: probeTopK` (default 3).
+4. Filters results by lexical match against the triggered body/object/action
+   terms and minimum cosine similarity (`STRUCTMEM_MOTIF_PROBE_MIN_SCORE`, default 0.5).
+5. Caps at `STRUCTMEM_MOTIF_PROBE_TOP_K` (default 3) entries and consolidations.
+6. Produces a `StructMemMotifProbeSummary` with `hasStrongMatch`, matching entries,
+   matching consolidations, and triggered terms.
+
+**Zero new LLM calls** — reuses existing retrieval functions. The probe result
+feeds into:
+
+- The prompt's `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block (when
+  `hasStrongMatch`)
+- The retrieval plan's `applyContextNeedConflictRules` (forces `needsStructMem`)
 
 ### 6. Active Open Threads and Corrections
 
@@ -664,36 +772,52 @@ The function is traced as `prompt.build_context` with a `PromptTracePayload`:
 - `blockPresence` — per-block boolean map
 - `estimatedTokensByBlock` — per-block token estimate (chars / 4)
 - `selectedSourceCounts` — injected counts per source
+- `injectedTokensBySource` — per-source token estimates for the 8 injectable blocks
 
 Block analysis uses `analyzePromptBlocks()` from `tracePayloads.ts`, which
 splits the system prompt on `[BLOCK NAME]\n` headers and estimates tokens for
 each block body.
+
+#### Prompt Block Gating (Hybrid Lazy Mode)
+
+When `contextRetrievalMode === "hybrid_lazy"`, five heavy blocks are
+**conditionally included** based on the `EnhancedContextNeed` flags:
+
+| Block | Gate |
+| --- | --- |
+| RELEVANT SESSION RECALL | `contextNeed.needsOlderSessionRecall` |
+| STRUCTURED EVENT MEMORY | `contextNeed.needsStructMem` |
+| STRUCTURED MEMORY SYNTHESIS | `contextNeed.needsStructMemConsolidation` |
+| INTERACTIVE MEMORY | `contextNeed.needsDurableMemory` |
+| CANON NARRATIVE | `contextNeed.needsCanon` |
+
+Always-included blocks: SYSTEM, BASE PERSONA, CONTINUITY OVERLAY, RELATIONSHIP
+EXPRESSION, CHARACTER DEFAULTS, SESSION STATE, DERIVED STATE, ACTIVE OPEN
+THREADS, MEMORY CORRECTIONS, LATEST TURN DELTA, SESSION SUMMARY, STRUCTURED
+USER QUERY, USER MESSAGE ANNOTATIONS.
+
+In hybrid_lazy mode, a compact `AVAILABLE CONTEXT SOURCES` block is also added
+(after CHARACTER DEFAULTS), listing the lookup tools the model can invoke at
+generation time.
+
+When `STRUCTMEM_MOTIF_PROBE_ENABLED` and a probe found `hasStrongMatch`, a
+`RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block is injected (placed
+after STRUCTURED MEMORY SYNTHESIS, before INTERACTIVE MEMORY). This block is
+compact (≤2000 chars) and shows matching entries (up to 3) and consolidation
+summaries (up to 2) with triggered terms.
 
 Prompt block priority is encoded in the system prompt:
 
 `RECENT CHAT` and the current user message are highest priority, followed by
 derived state, active open threads, memory corrections, the latest turn delta,
 summary, session recall, StructMem entries and expansions, StructMem synthesis,
-interactive memory, and canon narrative.
+relationship motif (when present), interactive memory, and canon narrative.
 
-The prompt can include:
-
-- base persona
-- continuity overlay
-- relationship expression
-- session state
-- derived state
-- active open threads
-- memory corrections
-- latest turn delta
-- session summary
-- relevant session recall
-- structured event memory
-- structured memory synthesis
-- durable interactive memory
-- canon narrative
-- structured user query
-- user message annotation rules
+The SYSTEM block now includes tool descriptions for all available lookup tools
+(`web_search`, `canon_lookup`, `lookup_structmem`, `lookup_structmem_consolidation`,
+`lookup_older_session_memory`, `lookup_interactive_memory`) so the generation
+model understands their purpose. The actual tool calling is handled via native
+API tool schemas, not system prompt text.
 
 Before this step, `selectPromptMemoryContext(...)` applies source caps, minimum
 scores, same-turn precedence, recent-chat dedup, cross-source dedup, correction
@@ -733,30 +857,107 @@ The thought is stored in `thoughtsAcc` and eventually persisted on the assistant
 `generateAndValidateStream(...)` calls `generateWithToolsStream(...)`, traced as
 `llm.response_generation`.
 
+The generation call site now passes several hybrid-lazy parameters:
+
+- **`allowedToolNames`** — computed by `buildAllowedToolNames(contextNeed)`.
+  Filters `getOpenAISchemas()` to only matching tools. The model can only call
+  tools in this list. Always includes `web_search`. Includes `canon_lookup`
+  when `HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP=true` (default) or
+  `needsCanon=true`. Includes the 4 lookup tools based on corresponding
+  context-need flags.
+- **`expectedToolUse`** — from `contextNeed.expectedToolUse`, for tracing
+  only. Not enforced.
+- **`forceFinalOnExhaustion`** — when `true` (hybrid_lazy mode), instead of
+  throwing `ToolLoopExceededError` after exhausting `maxToolSteps`, the loop
+  runs a final non-tool generation to produce a best-effort reply.
+- **`maxToolSteps`** — capped at `GENERATION_LOOKUP_MAX_STEPS` (default 1)
+  in hybrid_lazy mode.
+
+The generation trace span (`llm.response_generation`) now includes via its
+custom `processInputs`:
+
+- `contextRetrievalMode`, `hybridLazyEmergencyCanon`, `generationLookupToolsEnabled`
+- `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`
+- `enableTools`, `systemPromptChars`, `conversationMessageCount`, `userMessageChars`,
+  `userMessagePreview`
+
 Tool behavior:
 
 - tools are enabled for draft generation
-- `getOpenAISchemas()` exposes provider-native tool schemas
-- the provider chooses tools automatically
+- `getOpenAISchemas()` exposes provider-native tool schemas (filtered by
+  `allowedToolNames`)
+- the provider chooses tools automatically from the available set
 - the loop dispatches the first tool call returned by a model step
 - default maximum assistant completion rounds is `MAX_TOOL_STEPS = 4`
+  (overridden by `GENERATION_LOOKUP_MAX_STEPS` in hybrid_lazy)
 
 Available tool dispatch comes from `llm/tools`.
 
-Common tools:
+**Core tools (always available when tool flag enabled):**
 
 - `canon_lookup`: embeds the lookup query and retrieves canon context
 - `web_search`: uses the configured external search provider when available
+
+**Generation-time lookup tools (available when `GENERATION_LOOKUP_TOOLS_ENABLED=true`):**
+
+| Tool | Retrieval function | Description |
+| --- | --- | --- |
+| `lookup_structmem` | `retrieveStructMemEntriesTraced` | Retrieves structured event memory entries (decisions, promises, emotional shifts) from this session before the recent window. Supports optional `entryTypes` filter and `motifMode`. |
+| `lookup_structmem_consolidation` | `retrieveStructMemConsolidationsTraced` | Retrieves synthesized memory summaries (current-session and cross-session). |
+| `lookup_older_session_memory` | `retrieveSessionMemoryChunksTraced` | Retrieves older conversation chunks from this session that fell out of the recent raw window. |
+| `lookup_interactive_memory` | `retrieveInteractiveMemories` | Retrieves durable cross-session interactive memory events (facts, preferences, relationship patterns). Scoped by `memoryNamespace` from `ToolCtx`. |
+
+Each lookup tool follows the same pattern as `canon_lookup`:
+
+1. Zod schema for parameter validation (`query`, `k`, and tool-specific params)
+2. Embeds the query text
+3. Computes the recent-window boundary
+4. Calls the corresponding traced retrieval function
+5. Formats results using the existing prompt formatters
+6. Returns `{ digest, itemCount, error? }`
+7. Traced via `traceStageWithIO` as `tool.lookup_<name>`
+
+The `ToolCtx` passed to tool dispatch now includes `memoryNamespace` alongside
+`sessionId`, `characterId`, `continuityScope`, `continuityFamily`, and `signal`.
 
 During draft generation, normal assistant prose deltas are withheld from the
 client until validation and persistence complete. Native provider reasoning
 deltas may be converted into `native` thoughts. Tool calls and summarized tool
 results are streamed as events.
 
+**DeepSeek thinking mode compatibility:** When the generation provider is
+DeepSeek in thinking mode, assistant messages with tool calls must include
+`reasoning_content` — the accumulated native reasoning from the stream.
+`generateWithToolsStream` now accumulates reasoning deltas and includes
+`reasoning_content` on assistant messages in the tool-call message chain.
+
 ### 12. Validate, Rewrite, or Deflect
 
 `runResponseValidator(...)` validates the generated draft against character,
 continuity, canon attribution, safety, and recent context.
+
+The validator now receives three additional inputs:
+
+- `wasCanonInjected` — whether canon narrative was present in the prompt (length > 30)
+- `wasCanonLookupCalled` — whether the draft generation called `canon_lookup`
+- `retrievedCanonNarrative` — the canon narrative string (for length tracking)
+
+#### Deterministic Guards
+
+Before the LLM validator runs, `runDeterministicValidatorGuards(...)` checks
+four rule-based guard kinds:
+
+1. **`meta_assistant_language`** — AI/assistant/LLM meta-language that breaks
+   character.
+2. **`scope_leakage`** — relationship milestones beyond the active continuity
+   scope.
+3. **`nsfw_bounds`** — explicit sexual content when the scope is `none` or
+   `low`.
+4. **`canon_unsupported_claim`** (NEW) — when the response asserts canon-attribution
+   facts (matching `CANON_ATTRIBUTION_CUES`: 提议, 安排, 第一次, 在.*章, 原作, etc.)
+   but **no canon was injected** AND **no canon_lookup was called**. This guard
+   flags unsupported canon claims in hybrid_lazy mode where canon retrieval was
+   skipped.
 
 If validation passes:
 
@@ -771,12 +972,21 @@ If validation requests a rewrite:
   `maxToolSteps: 2`
 - the rewrite is validated once more
 
+**Targeted rewrite for canon-evidence issues:** If the validation issues include
+canon-attribution failures (issues starting with "Attribution claim" or
+containing "canon_unsupported_claim"), the rewrite is run with
+`allowedToolNames=["canon_lookup", "web_search"]` to **force** the model to
+look up canon before asserting. An attribution rewrite hint is prepended to
+the rewrite system prompt.
+
 If the second validation still has actionable issues:
 
 - a `deflect` thought is emitted
 - the final reply becomes `characterDefaults.safe_deflection`
 
-Tool-loop exhaustion during draft or rewrite also produces a safe deflection.
+Tool-loop exhaustion during draft or rewrite produces a safe deflection
+(in hybrid_lazy mode, the tool loop uses `forceFinalOnExhaustion` instead of
+throwing, so exhaustion should not occur).
 
 ### 13. Persist Completed Turn
 
@@ -1039,18 +1249,23 @@ StructMem consolidations:
 Session load and turn route classification are sequential. The classifier LLM
 call (`llm.classify_turn_route`) runs before any retrieval work.
 
+### Motif Detection
+
+Runs after query rewrite, before the retrieval plan. Deterministic (no LLM
+calls), negligible overhead.
+
 ### Embedding Batch
 
-In tier-3 mode, memory, canon, optional raw-memory fusion, and optional HyDE
-query embeddings run together in a single `Promise.all` inside the traced
-`embedding.query_batch` span.
+In tier-3 mode, memory, canon, optional raw-memory fusion, optional HyDE, and
+optional motif query embeddings run together in a single `Promise.all` inside
+the traced `embedding.query_batch` span.
 
 ### Main Retrieval
 
 These run together:
 
 - durable interactive memories
-- canon retrieval
+- canon retrieval (skipped in hybrid_lazy when `canonMode === "skip"`)
 - recent raw turns
 - session summary
 - session state
@@ -1065,6 +1280,15 @@ These now run together after the recent-window boundary is known:
 - session memory chunks
 - StructMem entries
 - StructMem consolidations
+
+In hybrid_lazy mode, the entire step is skipped when corresponding context-need
+flags are all false.
+
+### Motif Probe
+
+When triggered, runs after older recall using the motif query embedding.
+Reuses existing StructMem retrievers with smaller k. Runs in parallel for
+entries + consolidations.
 
 ### Generation and Validation
 
@@ -1084,11 +1308,12 @@ StructMem consolidation is a separate durable job queue.
 | --- | --- | --- |
 | Turn route classification | Extractor chat JSON | Yes, fail-open (defaults to `roleplay_turn`). |
 | Query rewrite phase B | Extractor chat JSON stream | Yes, fail-open. |
-| Query embeddings | Embedding model (batched) | Yes for retrieval; memory + canon always, raw-memory + HyDE conditional. |
+| Query embeddings | Embedding model (batched) | Yes for retrieval; memory + canon always, raw-memory + HyDE + motif conditional. |
 | Recall thought | Extractor chat | Only when recall context exists and streaming thoughts are produced. Now first-class `llm.recall_thought` span. |
 | Draft reply | Generation streaming chat | Yes; only for `roleplay_turn`. |
 | Tool thought summaries | Chat LLM | Only when tools are called. |
-| Tool query embeddings | Embedding model | Only for tools such as `canon_lookup`. |
+| Tool query embeddings (canon_lookup) | Embedding model | Only for tools such as `canon_lookup`. |
+| Tool query embeddings (lookup_structmem, etc.) | Embedding model | Only when generation-time lookup tools are called (hybrid_lazy mode). |
 | Response validator | Validator chat JSON stream | Yes after first draft; only for `roleplay_turn`. |
 | Attribution judge | Validator/judge chat | Only when strict attribution path applies. |
 | Rewrite reply | Generation streaming chat | Only when validator requests actionable rewrite. |
@@ -1241,6 +1466,49 @@ Startup validation warns for suspicious combinations, such as consolidation
 without `STRUCTMEM_ENABLED`, cross-session write with no read or promotion path,
 or cross-session retrieval without consolidation enabled.
 
+### Hybrid Lazy Retrieval
+
+The hybrid lazy retrieval system reduces prompt token usage by deferring
+heavyweight memory/canon retrieval behind generation-time lookup tools for
+simple turns (e.g., immediate actions, scene continuations).
+
+**Feature flags:**
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `CONTEXT_RETRIEVAL_MODE` | `"eager"` | `"eager"` = current behavior (all sources always retrieved). `"hybrid_lazy"` = conditional prompt blocks, retrieval skipping, generation-time lookup tools. |
+| `HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP` | `true` | Always include `canon_lookup` in allowed tools even when canon not planned. |
+| `GENERATION_LOOKUP_TOOLS_ENABLED` | `false` | Register the 4 lookup tools (`lookup_structmem`, etc.) as native tool schemas. |
+| `GENERATION_LOOKUP_MAX_STEPS` | `1` | Max tool-calling rounds in hybrid_lazy mode before forced-final generation. |
+| `STRUCTMEM_MOTIF_PROBE_ENABLED` | `false` | Enable deterministic motif detection + StructMem probe retrieval. |
+| `STRUCTMEM_MOTIF_PROBE_TOP_K` | `3` | Max entries per motif probe query. |
+| `STRUCTMEM_MOTIF_PROBE_MIN_SCORE` | `0.5` | Minimum cosine similarity for motif probe matches. |
+| `STRUCTMEM_MOTIF_INJECT_MODE` | `"synthesis_only"` | `"synthesis_only"` or `"entries_and_synthesis"`. Controls which probe results are injected. |
+
+**Recommended starting config (Phase 1 only):**
+
+```env
+CONTEXT_RETRIEVAL_MODE=eager
+STRUCTMEM_MOTIF_PROBE_ENABLED=true
+STRUCTMEM_MOTIF_INJECT_MODE=synthesis_only
+GENERATION_LOOKUP_TOOLS_ENABLED=false
+GENERATION_LOOKUP_MAX_STEPS=1
+```
+
+**Recommended long-term config (after eval):**
+
+```env
+CONTEXT_RETRIEVAL_MODE=hybrid_lazy
+STRUCTMEM_MOTIF_PROBE_ENABLED=true
+STRUCTMEM_MOTIF_INJECT_MODE=compact_when_matched
+GENERATION_LOOKUP_TOOLS_ENABLED=true
+GENERATION_LOOKUP_MAX_STEPS=1
+HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP=true
+```
+
+**Rollback:** Setting `CONTEXT_RETRIEVAL_MODE=eager` restores the original
+behavior. All hybrid_lazy code paths are gated behind this flag.
+
 ## End-to-End Timeline
 
 ```mermaid
@@ -1264,18 +1532,24 @@ sequenceDiagram
     Orch->>Orch: tracedRoleplayTurn
     Orch->>Ctx: resolveContext(session, userMessage)
     Ctx->>LLM: query rewrite
-    Ctx->>LLM: embedding.query_batch (memory/canon/raw/hyde)
+    Ctx->>Ctx: detectMotifSignal (deterministic)
+    Ctx->>Ctx: buildRetrievalPlan (enhanced with contextNeed)
+    Ctx->>LLM: embedding.query_batch (memory/canon/raw/hyde/motif)
     par Main retrieval fan-out
       Ctx->>DB: SELECT/UPDATE interactive_memory_events
-      Ctx->>DB: SELECT canon tables
+      Ctx->>DB: SELECT canon tables (skipped in hybrid_lazy if !needsCanon)
       Ctx->>DB: SELECT chat_messages recent turns
       Ctx->>DB: SELECT session_summaries
       Ctx->>DB: SELECT session_state
     end
-    par Older recall
+    par Older recall (skipped in hybrid_lazy if not needed)
       Ctx->>DB: SELECT session_memory_chunks
       Ctx->>DB: SELECT structmem_entries
       Ctx->>DB: SELECT structmem_consolidations
+    end
+    opt Motif probe (when motif detected)
+      Ctx->>DB: SELECT structmem_entries (motif probe)
+      Ctx->>DB: SELECT structmem_consolidations (motif probe)
     end
     Ctx->>DB: SELECT active open threads
     Ctx->>DB: retrieve active memory corrections
@@ -1283,14 +1557,14 @@ sequenceDiagram
     Ctx->>DB: expand selected StructMem entries
     Ctx->>Ctx: emit retrieval diagnostics
     Ctx-->>Orch: context inputs
-    Orch->>LLM: prompt.build_context
+    Orch->>LLM: prompt.build_context (conditional blocks in hybrid_lazy)
     par Nonblocking thought and draft
       Orch->>LLM: llm.recall_thought
-      Orch->>LLM: llm.response_generation, optional tools
+      Orch->>LLM: llm.response_generation (filtered tools, forced-final)
     end
-    Orch->>LLM: validate draft
+    Orch->>LLM: validate draft (with canon_unsupported_claim guard)
     opt validation needs rewrite
-      Orch->>LLM: rewrite draft
+      Orch->>LLM: rewrite draft (targeted canon_lookup forcing)
       Orch->>LLM: validate rewrite
     end
     Orch->>Orch: tracedRouteSwitch
@@ -1345,11 +1619,18 @@ sequenceDiagram
 - `chatbot/backend/src/orchestration/promptMemoryContextSelector.ts`
 - `chatbot/backend/src/orchestration/retrievalDiagnostics.ts`
 - `chatbot/backend/src/orchestration/retrievalEmbeddingBatch.ts`
+- `chatbot/backend/src/orchestration/retrievalPlan.ts`
+- `chatbot/backend/src/orchestration/motifTypes.ts`
+- `chatbot/backend/src/orchestration/detectMotifSignal.ts`
 - `chatbot/backend/src/orchestration/memoryCorrections.ts`
 - `chatbot/backend/src/orchestration/generateAndValidate.ts`
 - `chatbot/backend/src/orchestration/generateWithTools.ts`
 - `chatbot/backend/src/orchestration/turnPersistence.ts`
 - `chatbot/backend/src/orchestration/turnDelta.ts`
+- `chatbot/backend/src/llm/tools/memoryLookupTools.ts`
+- `chatbot/backend/src/llm/tools/index.ts`
+- `chatbot/backend/src/llm/tools/types.ts`
+- `chatbot/backend/src/llm/validation/runResponseValidator.ts`
 - `chatbot/backend/src/jobs/backgroundRunner.ts`
 - `chatbot/backend/src/jobs/postTurnRunner.ts`
 - `chatbot/backend/src/jobs/postTurnPolicies.ts`
@@ -1380,5 +1661,8 @@ sequenceDiagram
 - `chatbot/backend/src/db/schema/memory.ts`
 - `chatbot/backend/src/db/schema/structmem.ts`
 - `chatbot/backend/src/db/schema/canon.ts`
+- `chatbot/backend/src/config/env.ts`
+- `chatbot/backend/src/eval/datasets/hybridLazyToolRouting.ts`
+- `chatbot/backend/src/eval/evaluators/hybridLazyEvaluators.ts`
 - `chatbot/frontend/src/hooks/useStreamMessage.ts`
 - `chatbot/frontend/src/lib/thoughtDisplay.ts`
