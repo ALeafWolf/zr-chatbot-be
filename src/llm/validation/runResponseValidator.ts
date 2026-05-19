@@ -73,6 +73,13 @@ export const VALIDATOR_FAIL_OPEN: ValidationResult = {
   needs_rewrite: false,
 };
 
+/** Whether strict attribution should run — requires real canon evidence, not a placeholder. */
+export function isStrictAttributionEligible(wasCanonInjected: boolean | undefined): boolean {
+  return !!wasCanonInjected;
+}
+
+export const __testing = { isStrictAttributionEligible };
+
 const META_LANGUAGE_PATTERNS = [
   /\bAI\b/i,
   /\bartificial intelligence\b/i,
@@ -189,34 +196,19 @@ export function runDeterministicValidatorGuards(
     }
   }
 
-  const canonEvidenceFailures = runCanonEvidenceCheck({
-    draft,
-    wasCanonInjected: input.wasCanonInjected,
-  });
-  failures.push(...canonEvidenceFailures);
-
   return failures;
 }
 
 function validationFromDeterministicFailures(
   failures: DeterministicGuardFailure[],
 ): ValidationResult {
-  const canonClaimFailures = failures.filter(
-    (f) => f.kind === "canon_unsupported_claim",
-  );
-  const rewriteFailures = failures.filter(
-    (f) => f.kind !== "canon_unsupported_claim",
-  );
   return {
     in_character: !failures.some((f) => f.kind === "meta_assistant_language"),
-    canon_consistent: !failures.some(
-      (f) => f.kind === "scope_leakage" || f.kind === "canon_unsupported_claim",
-    ),
+    canon_consistent: !failures.some((f) => f.kind === "scope_leakage"),
     session_state_consistent: true,
     nsfw_within_bounds: !failures.some((f) => f.kind === "nsfw_bounds"),
     issues: failures.map((f) => f.issue),
-    needs_rewrite:
-      rewriteFailures.length > 0 || canonClaimFailures.length > 0,
+    needs_rewrite: failures.length > 0,
     deterministic_guard_failures: failures,
   };
 }
@@ -224,14 +216,17 @@ function validationFromDeterministicFailures(
 const VALIDATOR_SYSTEM_PROMPT = `You are a balanced character-consistency validator for a character roleplay system.
 Analyze the given draft response and return a JSON object — nothing else.
 
-Principles (read before each check):
-- The recent transcript + current user message are the live session truth for what is happening *right now*. Retrieved canon is RAG context: it may contain multiple unrelated scenes or chapters. Do NOT merge those scenes into one rigid timeline, and do NOT reject a draft because a different scene mentions the same calendar word (e.g. "周六") or the same broad place name unless the transcript clearly shows the user and character are continuing *that same* established beat.
+Evidence hierarchy (read before each check):
+- Recent transcript + current user message = highest-priority live truth for what is happening *right now*.
+- Selected context (memory/session sources listed in the prompt) = secondary evidence to follow when present.
+- Retrieved canon = tertiary, optional evidence. Injected canon may be absent on many turns. When no canon is provided, treat canon_consistent as "does not contradict transcript/context" rather than "all canon-flavored wording must have proof."
+- Retrieved canon is RAG context: it may contain multiple unrelated scenes or chapters. Do NOT merge those scenes into one rigid timeline, and do NOT reject a draft because a different scene mentions the same calendar word (e.g. "周六") or the same broad place name unless the transcript clearly shows the user and character are continuing *that same* established beat.
 - Prefer transcript continuity over tangential canon. If the user is clearly in a casual or self-contained thread (e.g. tickets, invitation) and the draft follows that thread, treat conflicts with unrelated retrieved scenes as non-blocking: note them in issues only if helpful, but keep canon_consistent true unless the draft explicitly contradicts a fact already stated in the transcript or the same named in-session event.
 - In-character improvisation is allowed: minor NPCs, colleagues, or plausible scheduling details that are not contradicted by the transcript should not by themselves make session_state_consistent false. Only fail when the draft ignores the user's stated actions, contradicts an explicit prior line in the transcript, or breaks mode/NSFW rules.
 
 Check all of the following:
 1. in_character: Does the reply stay fully in character? (false if it claims to be AI, breaks the fourth wall, or uses out-of-character phrasing)
-2. canon_consistent: Does the reply avoid contradicting facts that are explicit in the provided transcript or that clearly bind this session? The retrieved canon excerpt is partial and multi-scene—not exhaustive lore. Do not fail solely because the draft does not reference canon, or because canon from another scene could be read as a different commitment. Fail only on clear contradiction with (a) the transcript / current user message, or (b) the excerpt when the same entity, promise, or event is clearly continued in the transcript and the draft denies or rewrites it.
+2. canon_consistent: Does the reply avoid contradicting facts that are explicit in the provided transcript or that clearly bind this session? The retrieved canon excerpt is partial and multi-scene—not exhaustive lore. Do not fail solely because the draft does not reference canon, or because canon from another scene could be read as a different commitment. When no canon is provided, this check defaults to "does the draft contradict transcript/selected-context evidence?" — not "does every claim have external proof." Fail only on clear contradiction with (a) the transcript / current user message, or (b) provided canon when it is actually injected and the same entity/event is continued in the transcript.
 3. session_state_consistent: Does the reply respect the current user message and recent transcript (callbacks, objects, questions)? Allow reasonable invented detail that does not conflict with those. Do not fail solely for new names or off-screen logistics unless they contradict the transcript or the user's prompt.
 4. nsfw_within_bounds: Is the NSFW content level within the allowed max_nsfw_level and escalation_rule?
 5. issues: List specific problems (empty if none). Prefer concise, actionable notes; avoid speculative cross-chapter timeline accusations when the session transcript does not establish that linkage.
@@ -276,7 +271,7 @@ function applyStrictAttributionSoftPenalty(
 function canonForValidatorPrompt(raw: string): string {
   const t = raw.trim();
   if (!t) {
-    return "Retrieved canon narrative: No canon excerpt retrieved for this turn.";
+    return "(No retrieved canon for this turn.)";
   }
   const max = CANON_PROMPT_LIMITS.maxTotalChars;
   const body = t.length <= max ? t : `${t.slice(0, max)}…`;
@@ -284,6 +279,18 @@ function canonForValidatorPrompt(raw: string): string {
 """
 ${body}
 """`;
+}
+
+function selectedContextForValidatorPrompt(
+  sources?: Array<{ source: string; relevance: string; usageInstruction: string }>,
+): string {
+  if (!sources || sources.length === 0) return "";
+  const lines = sources.map(
+    (s, i) =>
+      `${i + 1}. source: ${s.source}, relevance: ${s.relevance}, usage: ${s.usageInstruction}`,
+  );
+  return `Selected context (sources provided to generation):
+${lines.join("\n")}`;
 }
 
 /** Anthropic/OpenAI-style overload / capacity — safe to retry and eventually fail-open for the validator. */
@@ -331,6 +338,7 @@ export async function runResponseValidator(
   }
 
   const canonBlock = canonForValidatorPrompt(input.retrievedCanonNarrative ?? "");
+  const selectedContextBlock = selectedContextForValidatorPrompt(input.selectedMemorySources);
 
   const userMessage = `
 Character: ${input.characterId}
@@ -341,6 +349,7 @@ Escalation rule: ${input.escalationRule}
 Out-of-scope behavior: ${input.outOfScopeChapterBehavior}
 
 ${canonBlock}
+${selectedContextBlock ? `\n${selectedContextBlock}` : ""}
 
 Turn context (recent transcript up to last 4 messages plus current user message):
 ${input.recentContext}
@@ -417,10 +426,11 @@ Return the JSON validation result.`.trim();
   let parsed = result.data;
   let attributionJudgeMeta: AttributionJudgeResult | undefined;
 
-  if (env.VALIDATOR_STRICT_ATTRIBUTION && input.retrievedCanonNarrative?.trim()) {
+  if (env.VALIDATOR_STRICT_ATTRIBUTION && isStrictAttributionEligible(input.wasCanonInjected)) {
+    const canonEvidence = input.retrievedCanonNarrative ?? "";
     const judgeRun = await runAttributionJudge({
       draft: input.draft,
-      retrievedCanonNarrative: input.retrievedCanonNarrative,
+      retrievedCanonNarrative: canonEvidence,
       recentContext: input.recentContext,
       signal: input.signal,
     });
@@ -445,7 +455,7 @@ Return the JSON validation result.`.trim();
         needs_rewrite: true,
         issues: [
           ...parsed.issues,
-          `Attribution claim "${claimStr}" not supported by retrieved canon or transcript. Use canon_lookup to verify before re-stating, or omit.`,
+          `Attribution claim "${claimStr}" not supported by retrieved canon or transcript. Verify with the provided evidence or omit.`,
         ],
       };
     } else if (judgeRun.usedFailOpen) {
@@ -453,7 +463,7 @@ Return the JSON validation result.`.trim();
         parsed,
         input.draft,
         input.recentContext,
-        input.retrievedCanonNarrative,
+        canonEvidence,
       );
     }
   }
