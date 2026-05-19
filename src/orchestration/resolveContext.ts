@@ -82,6 +82,10 @@ import {
   formatTurnDelta,
   type LatestTurnDelta,
 } from "./turnDelta";
+import {
+  buildRecallThoughtContext,
+  type RecallThoughtContext,
+} from "./recallThoughtContext";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
 import {
   buildRetrievalEmbeddingRequests,
@@ -128,6 +132,7 @@ export interface ResolvedContext {
   motifSignal?: MotifSignal;
   motifProbe?: StructMemMotifProbeSummary;
   rerankOutput?: MemoryRerankOutput | null;
+  recallThoughtContext: RecallThoughtContext;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -893,5 +898,18 @@ export async function resolveContext(input: {
     motifSignal,
     motifProbe,
     rerankOutput,
+    recallThoughtContext: buildRecallThoughtContext({
+      memories: selectedContext.memories,
+      sessionRecall: selectedContext.sessionRecall,
+      structMemEntries: selectedContext.structMemEntries,
+      structMemConsolidations: selectedContext.structMemConsolidations,
+      openThreads: selectedContext.openThreads,
+      canonChunks,
+      canonScenes,
+      sessionSummary: filteredSessionSummary,
+      latestTurnDelta: filteredLatestTurnDelta,
+      memoryCorrections: filteredMemoryCorrections,
+      rerankOutput,
+    }),
   };
 }

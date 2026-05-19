@@ -12,7 +12,6 @@ import { buildPromptContextTraced } from "./buildPromptContext";
 import { generateAndValidateStream } from "./generateAndValidate";
 import { postTurnRunner } from "../jobs/postTurnRunner";
 import type { ChatSession } from "../db/schema/chat";
-import { CANON_RETRIEVAL } from "../character/canonRules";
 import {
   traceLLMStage,
   traceStage,
@@ -48,20 +47,19 @@ import {
 type RecallThoughtTraceInput = {
   characterName: string;
   context: {
-    memories: Array<{ type: string; summary: string }>;
-    canon: Array<{ excerpt: string }>;
+    selected: Array<{ source: string; text: string }>;
   };
   voiceHints: string;
   cache: Map<string, string>;
   traceState: { timedOutBeforeFinalReplay: boolean };
+  selectionMode: string;
 };
 
 type RecallThoughtTraceOutput = {
   text: string;
-  memoryContextPresent: boolean;
-  canonContextPresent: boolean;
-  memoryContextCount: number;
-  canonContextCount: number;
+  selectedContextCount: number;
+  selectionMode: string;
+  countsBySource: Partial<Record<string, number>>;
   outputChars: number;
   timedOutBeforeFinalReplay: boolean;
 };
@@ -78,12 +76,16 @@ const tracedRecallThought = traceLLMStage(
       },
       input.cache,
     );
+    const selected = input.context.selected;
+    const countsBySource: Partial<Record<string, number>> = {};
+    for (const s of selected) {
+      countsBySource[s.source] = (countsBySource[s.source] ?? 0) + 1;
+    }
     const output = {
       text: thought.text,
-      memoryContextPresent: input.context.memories.length > 0,
-      canonContextPresent: input.context.canon.length > 0,
-      memoryContextCount: input.context.memories.length,
-      canonContextCount: input.context.canon.length,
+      selectedContextCount: selected.length,
+      selectionMode: input.selectionMode,
+      countsBySource,
       outputChars: thought.text.length,
       timedOutBeforeFinalReplay: input.traceState.timedOutBeforeFinalReplay,
     };
@@ -103,20 +105,23 @@ const tracedRecallThought = traceLLMStage(
     llm: { binding: models.extractor, modelRole: "extractor" },
     processInputs: (inputs) => {
       const input = unwrapRecallThoughtInput(inputs);
+      const selected = input.context.selected;
+      const canonCount = selected.filter(
+        (s) => s.source === "canon_chunk" || s.source === "canon_scene",
+      ).length;
       return {
-        memoryContextPresent: input.context.memories.length > 0,
-        canonContextPresent: input.context.canon.length > 0,
-        memoryContextCount: input.context.memories.length,
-        canonContextCount: input.context.canon.length,
+        selectedContextCount: selected.length,
+        canonContextCount: canonCount,
+        memoryContextCount: selected.length - canonCount,
+        sources: selected.map((s) => s.source).join(","),
       };
     },
     processOutputs: (outputs) => {
       const out = outputs as unknown as RecallThoughtTraceOutput;
       return {
-        memoryContextPresent: out.memoryContextPresent,
-        canonContextPresent: out.canonContextPresent,
-        memoryContextCount: out.memoryContextCount,
-        canonContextCount: out.canonContextCount,
+        selectedContextCount: out.selectedContextCount,
+        selectionMode: out.selectionMode,
+        countsBySource: JSON.stringify(out.countsBySource),
         outputChars: out.outputChars,
         timedOutBeforeFinalReplay: out.timedOutBeforeFinalReplay,
       };
@@ -294,31 +299,23 @@ async function* runRoleplayTurnStream(
     const thoughtsAcc: Thought[] = [];
     const recallTraceState = { timedOutBeforeFinalReplay: false };
 
-    const canonExcerptsForThought =
-      context.canonScenes.length > 0
-        ? context.canonScenes
-            .flatMap((s) => s.units.map((u) => ({ excerpt: u.textContent.slice(0, 160) })))
-            .slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2))
-        : context.canonChunks.slice(0, Math.max(8, CANON_RETRIEVAL.anchorTopK * 2)).map((c) => ({
-            excerpt: c.textContent.slice(0, 160),
-          }));
-
     const recallThoughtTask =
-      context.memories.length > 0 || canonExcerptsForThought.length > 0
+      context.recallThoughtContext.items.length > 0
         ? createRecallThoughtTask(async () => {
+            const recallItems = context.recallThoughtContext.items;
             const recallRun = await tracedRecallThought(
               {
                 characterName: characterDefaults.name,
                 context: {
-                  memories: context.memories.slice(0, 5).map((m) => ({
-                    type: m.memoryType,
-                    summary: m.summary,
+                  selected: recallItems.map((item) => ({
+                    source: item.source,
+                    text: item.text,
                   })),
-                  canon: canonExcerptsForThought,
                 },
                 voiceHints,
                 cache: thoughtSummaryCache,
                 traceState: recallTraceState,
+                selectionMode: context.recallThoughtContext.selectionMode,
               },
             );
             return {

@@ -38,7 +38,8 @@ The main API path is:
    model's tool use. When a motif probe finds strong matches, a
    `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block is injected.
 8. A recall thought may be generated in parallel with draft generation when
-   retrieved memories or canon excerpts exist, traced as `llm.recall_thought`.
+   the selected context (after rerank or fallback selection) is non-empty,
+   traced as `llm.recall_thought`.
 9. `generateAndValidateStream(...)` drafts with tools enabled (filtered by
    `allowedToolNames` derived from context need), validates the draft
    (including a narrow `canon_unsupported_claim` deterministic guard),
@@ -252,7 +253,7 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | `retrieval.prompt_context_selector` | `orchestration/promptMemoryContextSelector.ts` | No | Applies source budgets, score thresholds, dedup, correction drops, and correction-supersession drops. Tracks `droppedBudgetCount`. |
 | `retrieval.context_diagnostics` | `orchestration/retrievalDiagnostics.ts` | No | Emits planning, selection, timing, injection/drop diagnostics including `droppedBudgetCount`. |
 | `prompt.build_context` | `orchestration/buildPromptContext.ts` | No | No DB. Builds system prompt blocks. Traces prompt version, hash, block presence, per-block token estimates, and total estimated tokens. |
-| `llm.recall_thought` | `orchestration/runCharacterTurn.ts` | Yes | No DB. Traces memory/canon context presence, output length, and timeout-before-final-replay flag. |
+| `llm.recall_thought` | `orchestration/runCharacterTurn.ts` | Yes | No DB. Traces selected-context count, selection mode, source breakdown, output length, and timeout-before-final-replay flag. |
 | `llm.response_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Output carries token usage and cost via `attachTraceLlmMetadata`. Traces `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`, and prompt stats. |
 | `llm.response_rewrite_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Same trace inputs as response_generation. |
 | `tool.canon_lookup` | `llm/tools/canonLookupTool.ts` | Embedding | Embeds tool query and retrieves compact canon context. |
@@ -827,14 +828,32 @@ retrieved, injected, and dropped counts including `droppedBudgetCount`.
 ### 10. Optional Recall Thought
 
 `runCharacterTurnStream(...)` starts a nonblocking recall-thought task via
-`createRecallThoughtTask(...)` when retrieved durable memories or canon
-excerpts exist. Draft generation is allowed to begin while the recall summary is
-still running.
+`createRecallThoughtTask(...)` when the resolved context contains selected
+recall/context items after rerank or deterministic fallback selection
+(`context.recallThoughtContext.items.length > 0`). Draft generation is allowed
+to begin while the recall summary is still running.
+
+The recall thought input is built from `recallThoughtContext.items`, which
+includes all selected context sources that generation can see:
+`interactive_memory`, `session_chunk`, `structmem_entry`,
+`structmem_consolidation`, `open_thread`, `session_summary`,
+`latest_turn_delta`, `memory_correction`, and canon sources. Items are limited
+to at most 8 and follow rerank selected order when available.
+
+When a selected item has `usageInstruction: "do_not_mention_explicitly"` or
+`"tone_only"`, the raw text is replaced with an abstract private-hint string
+so the recall thought does not leak private context. Items with
+`"must_use"` or `"use_subtly"` pass their text directly.
+
+If rerank succeeds with `selected: []`, `recallThoughtContext` is empty and
+no recall thought is started — no rejected candidate is summarized just to
+produce visible UI.
 
 The recall thought is now traced as `llm.recall_thought`, with:
 
-- `memoryContextPresent` / `canonContextPresent` — whether context exists
-- `memoryContextCount` / `canonContextCount` — how many items
+- `selectedContextCount` — total items passed to the recall LLM
+- `selectionMode` — `"rerank"` for successful rerank-selected context, `"fallback"` for deterministic fallback-selected context 
+- `countsBySource` — JSON-dumped per-source count breakdown
 - `outputChars` — thought output length
 - `timedOutBeforeFinalReplay` — whether the recall missed the final reply window
 
@@ -1309,7 +1328,7 @@ StructMem consolidation is a separate durable job queue.
 | Turn route classification | Extractor chat JSON | Yes, fail-open (defaults to `roleplay_turn`). |
 | Query rewrite phase B | Extractor chat JSON stream | Yes, fail-open. |
 | Query embeddings | Embedding model (batched) | Yes for retrieval; memory + canon always, raw-memory + HyDE + motif conditional. |
-| Recall thought | Extractor chat | Only when recall context exists and streaming thoughts are produced. Now first-class `llm.recall_thought` span. |
+| Recall thought | Extractor chat | Only when selected context after rerank/fallback is non-empty. Now first-class `llm.recall_thought` span. |
 | Draft reply | Generation streaming chat | Yes; only for `roleplay_turn`. |
 | Tool thought summaries | Chat LLM | Only when tools are called. |
 | Tool query embeddings (canon_lookup) | Embedding model | Only for tools such as `canon_lookup`. |
