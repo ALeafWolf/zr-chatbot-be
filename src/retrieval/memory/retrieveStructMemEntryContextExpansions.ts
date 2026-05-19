@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "../../db/client";
 import { traceStage } from "../../observability/langsmithTracing";
-import { ROLEPLAY_TURN_ROUTE } from "../../orchestration/turnRoutes";
+import { ROLEPLAY_TURN_ROUTE } from "../../orchestration/turn/turnRoutes";
 import type { RetrievedStructMemEntry } from "./retrieveStructMemEntries";
 
 export interface StructMemEntryContextExpansion {

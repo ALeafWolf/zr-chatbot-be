@@ -1,6 +1,6 @@
 import { embedText } from "../llm/embeddings/embedText";
 import { env } from "../config/env";
-import { formatCanonScenes } from "../orchestration/promptFormatters";
+import { formatCanonScenes } from "../orchestration/prompt/promptFormatters";
 import { rewriteQuery, type QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { resolveContinuityScope } from "../retrieval/scope/resolveContinuityScope";
 import { retrieveCanonCoarseToFine } from "../retrieval/canon/retrieveCanonNarrative";

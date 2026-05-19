@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCanonScenesCompact } from "../orchestration/promptFormatters";
+import { formatCanonScenesCompact } from "../orchestration/prompt/promptFormatters";
 import type { RetrievedCanonScene } from "../retrieval/canon/retrieveCanonNarrative";
 
 const baseScene = (): RetrievedCanonScene => ({

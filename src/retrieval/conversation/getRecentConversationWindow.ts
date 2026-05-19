@@ -5,7 +5,7 @@ import { RETRIEVAL_LIMITS } from "../../character/canonRules";
 import {
   ROLEPLAY_TURN_ROUTE,
   type TurnRoute,
-} from "../../orchestration/turnRoutes";
+} from "../../orchestration/turn/turnRoutes";
 
 export interface ConversationTurn {
   role: "user" | "assistant";

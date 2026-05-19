@@ -1,5 +1,5 @@
 import type { FastifyReply } from "fastify";
-import type { CharacterTurnSseEvent } from "../../orchestration/runCharacterTurn";
+import type { CharacterTurnSseEvent } from "../../orchestration/turn/runCharacterTurn";
 
 export function writeSse(reply: FastifyReply, event: string, data: unknown): void {
   reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

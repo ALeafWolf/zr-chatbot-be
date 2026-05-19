@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { getProvider } from "../providers";
 import { models } from "../../config/models";
-import type { ThoughtKind } from "../../orchestration/thoughtTypes";
+import type { ThoughtKind } from "../../orchestration/thought/thoughtTypes";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
 export interface ThoughtSummaryInput {
