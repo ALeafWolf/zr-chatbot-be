@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { buildPromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
+import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 
 const characterDefaults = {
   name: "Test Character",
@@ -75,6 +76,22 @@ function baseInput() {
     canonChunks: [],
     recentTurns: [],
     userMessage: "hello",
+  };
+}
+
+function structuredQueryRewrite(
+  overrides: Partial<QueryRewriteResult> = {},
+): QueryRewriteResult {
+  return {
+    segments: [{ lane: "user_speech", text: "你好" }],
+    combined_for_embedding: "[user speech] 你好",
+    entities: [],
+    intent: "general",
+    confidence: 0.9,
+    structuralParseOk: true,
+    labelOk: true,
+    parseOk: true,
+    ...overrides,
   };
 }
 
@@ -241,7 +258,6 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[STRUCTURED EVENT MEMORY]"), false, "STRUCTURED EVENT MEMORY should be absent");
     assert.equal(prompt.includes("[STRUCTURED MEMORY SYNTHESIS]"), false, "STRUCTURED MEMORY SYNTHESIS should be absent");
     assert.equal(prompt.includes("[INTERACTIVE MEMORY]"), false, "INTERACTIVE MEMORY should be absent");
-    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), false, "SELECTED CONTEXT USAGE should be absent (removed from generation prompt)");
     assert.equal(prompt.includes("[CANON NARRATIVE]"), false, "CANON NARRATIVE should be absent when no canon chunks exist");
   });
 
@@ -391,5 +407,71 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.ok(ctx.selectedMemorySources, "selectedMemorySources should be present");
     assert.equal(ctx.selectedMemorySources?.length, 1, "should have one selected memory source");
     assert.equal(ctx.selectedMemorySources?.[0]?.source, "interactive_memory");
+  });
+});
+
+describe("buildPromptContext structured query label rules", () => {
+  const labelRulesBlockHeader =
+    "[STRUCTURED USER QUERY LABEL RULES]\n[STRUCTURED USER QUERY] 内部的各类标签并不等同";
+
+  it("renders STRUCTURED USER QUERY LABEL RULES before STRUCTURED USER QUERY when structured query is shown", () => {
+    const queryRewrite = structuredQueryRewrite();
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      queryRewrite,
+    }).systemPrompt;
+
+    const labelRulesIdx = prompt.indexOf(labelRulesBlockHeader);
+    const structuredIdx = prompt.indexOf(
+      `[STRUCTURED USER QUERY]\n${queryRewrite.combined_for_embedding}`,
+    );
+    assert.ok(labelRulesIdx >= 0, "LABEL RULES block should be present");
+    assert.ok(structuredIdx >= 0, "STRUCTURED USER QUERY block should be present");
+    assert.ok(
+      labelRulesIdx < structuredIdx,
+      "LABEL RULES should appear before STRUCTURED USER QUERY",
+    );
+  });
+
+  it("omits STRUCTURED USER QUERY LABEL RULES when no structured query is shown", () => {
+    const withoutRewrite = buildPromptContext(baseInput()).systemPrompt;
+    assert.equal(withoutRewrite.includes(labelRulesBlockHeader), false);
+
+    const parseFailed = buildPromptContext({
+      ...baseInput(),
+      queryRewrite: structuredQueryRewrite({ parseOk: false }),
+    }).systemPrompt;
+    assert.equal(parseFailed.includes(labelRulesBlockHeader), false);
+  });
+
+  it("includes [reply direction suggestion] prohibition in LABEL RULES", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      queryRewrite: structuredQueryRewrite(),
+    }).systemPrompt;
+
+    assert.ok(prompt.includes("[reply direction suggestion]"));
+    assert.ok(
+      prompt.includes(
+        "角色绝不能推断 [reply direction suggestion] 是由 <user> 说出、发送、输入、知晓、意图表达或主动透露的内容",
+      ),
+    );
+  });
+
+  it("top [SYSTEM] block points to STRUCTURED USER QUERY LABEL RULES", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      queryRewrite: structuredQueryRewrite(),
+    }).systemPrompt;
+
+    const systemIdx = prompt.indexOf("[SYSTEM]");
+    const labelRulesRefIdx = prompt.indexOf("[STRUCTURED USER QUERY LABEL RULES]");
+    assert.ok(systemIdx >= 0);
+    assert.ok(labelRulesRefIdx > systemIdx);
+    assert.ok(
+      prompt.includes(
+        "并必须遵守 `[STRUCTURED USER QUERY LABEL RULES]`",
+      ),
+    );
   });
 });

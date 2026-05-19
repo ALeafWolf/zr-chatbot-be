@@ -392,6 +392,8 @@ export const __testing = {
   resolveCandidate,
   normalizeSelected,
   normalizeRejected,
+  validateSelected,
+  applyEmptySelectionGuard,
   rerankRequestExtensions,
   createRerankTimeout,
   safeRawPreview,

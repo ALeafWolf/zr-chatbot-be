@@ -3,7 +3,7 @@ import assert from "node:assert";
 import type { ContextCandidate } from "../context/contextCandidates";
 import type { PromptMemorySource, PromptMemorySelectionDiagnostics } from "../context/promptMemoryContextSelector";
 import { buildMemoryRerankPrompt } from "./memoryRerankPrompt";
-import { __testing, type MemoryRerankInput, type RerankFailureDiagnostics } from "./memoryRerank";
+import { __testing } from "./memoryRerank";
 import { env } from "../../config/env";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
 import type { RetrievalPlan } from "./retrievalPlan";
@@ -68,78 +68,88 @@ describe("buildMemoryRerankPrompt", () => {
   });
 });
 
-describe("validateSelected logic", () => {
-  it("drops selected IDs unknown in candidates (tested via empty guard)", () => {
-    const candidates: ContextCandidate[] = [
-      makeCandidate({ id: "real_1", source: "interactive_memory", text: "已知记忆" }),
-    ];
-    // Unknown IDs should be filtered — the reranker can't select what doesn't exist.
-    // This is tested implicitly: if the guard fires, it uses only known candidates.
-    const bestCandidate = candidates
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-    assert.equal(bestCandidate.id, "real_1");
+describe("validateSelected", () => {
+  it("drops selected IDs unknown in candidates", () => {
+    const result = __testing.validateSelected(
+      [
+        {
+          id: "ghost",
+          source: "interactive_memory",
+          relevance: "useful",
+          usageInstruction: "use_subtly",
+          reasonCode: "direct_continuity",
+        },
+        {
+          id: "real_1",
+          source: "interactive_memory",
+          relevance: "useful",
+          usageInstruction: "use_subtly",
+          reasonCode: "direct_continuity",
+        },
+      ],
+      [makeCandidate({ id: "real_1", source: "interactive_memory" })],
+      8,
+    );
+    assert.equal(result.length, 1);
+    assert.equal(result[0]!.id, "real_1");
   });
 
   it("caps selected to max count", () => {
-    const items = Array.from({ length: 12 }, (_, i) => ({
+    const selected = Array.from({ length: 12 }, (_, i) => ({
       id: `item_${i}`,
       source: "structmem_entry" as const,
-      text: `Memory ${i}`,
-      score: 0.5 + i * 0.01,
+      relevance: "useful" as const,
+      usageInstruction: "use_subtly" as const,
+      reasonCode: "direct_continuity" as const,
     }));
-    const capped = items.slice(0, 8);
-    assert.equal(capped.length, 8);
+    const candidates = selected.map((s) => makeCandidate({ id: s.id }));
+    const result = __testing.validateSelected(selected, candidates, 8);
+    assert.equal(result.length, 8);
   });
 });
 
-describe("empty-selection guard", () => {
+describe("applyEmptySelectionGuard", () => {
   const candidates: ContextCandidate[] = [
     makeCandidate({ id: "best_mem", source: "interactive_memory", text: "重要回忆", score: 0.9 }),
     makeCandidate({ id: "best_canon", source: "canon_chunk", text: "原作事实", score: 0.8 }),
   ];
 
-  it("fires for explicit_recall when selected is empty", () => {
-    // Simulates guard logic: explicit_recall + empty → pick best non-canon
-    const best = candidates
-      .filter((c) => c.source !== "canon_chunk")
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-    assert.equal(best.id, "best_mem");
+  const emptyOutput = {
+    selected: [],
+    rejected: [],
+    finalContextMode: "recent_only" as const,
+    needsEvidenceFallback: false,
+  };
+
+  it("picks best non-canon for explicit_recall when selected is empty", () => {
+    const result = __testing.applyEmptySelectionGuard(
+      emptyOutput,
+      candidates,
+      "explicit_recall",
+    );
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.selected[0]!.id, "best_mem");
+    assert.equal(result.selected[0]!.reasonCode, "direct_continuity");
   });
 
-  it("fires for canon_question when selected is empty — picks canon", () => {
-    // Simulates guard logic: canon_question + empty → pick best canon
-    const best = candidates
-      .filter((c) => c.source === "canon_chunk")
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-    assert.equal(best.id, "best_canon");
-  });
-
-  it("accepts too_old rejected reasonCode via compact schema", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [],
-      rejected: [
-        { id: "mem_1", reasonCode: "too_old" },
-        { id: "mem_2", reasonCode: "irrelevant" },
-      ],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
-    });
-    assert.ok(parsed.success, `schema rejected too_old: ${JSON.stringify(parsed.error?.format())}`);
-    assert.equal(parsed.data!.rejected.length, 2);
-    assert.equal(parsed.data!.rejected[0].reasonCode, "too_old");
+  it("picks best canon for canon_question when selected is empty", () => {
+    const result = __testing.applyEmptySelectionGuard(
+      emptyOutput,
+      candidates,
+      "canon_question",
+    );
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.selected[0]!.id, "best_canon");
   });
 
   it("does not apply for scene_continuation", () => {
-    // Guard should NOT fire for scene_continuation
-    const intent = "scene_continuation" as "scene_continuation" | "explicit_recall" | "implicit_memory_callback" | "canon_question";
-    const needsGuard =
-      [].length === 0 &&
-      (intent === "explicit_recall" ||
-        intent === "canon_question" ||
-        intent === "implicit_memory_callback");
-    assert.equal(needsGuard, false);
+    const result = __testing.applyEmptySelectionGuard(
+      emptyOutput,
+      candidates,
+      "scene_continuation",
+    );
+    assert.equal(result.selected.length, 0);
   });
-
 });
 
 describe("compact selected reason codes", () => {
@@ -601,30 +611,7 @@ describe("rerankRequestExtensions", () => {
     assert.equal(openai, undefined);
   });
 
-  it("is used in the chatJson call (tested via __testing export availability)", () => {
-    // Verify the function is properly exported and takes ModelBinding shape
-    assert.equal(typeof __testing.rerankRequestExtensions, "function");
-    const result = __testing.rerankRequestExtensions({ provider: "deepseek", model: "deepseek-chat" });
-    assert.ok(result !== undefined);
-    assert.ok("thinking" in result!);
-  });
 });
-
-const TEST_PLANNER_HINTS: MemoryRerankInput["plannerHints"] = {
-  sourcePriority: [],
-  queryVariants: {
-    memory: [],
-    structmem: [],
-    structmemConsolidation: [],
-    interactiveMemory: [],
-    canon: [],
-    web: [],
-  },
-  possibleMotif: false,
-  possibleCanonClaim: false,
-  possibleOldMemoryReference: false,
-  possibleDurableMemoryReference: false,
-};
 
 describe("rerank timeout and abort", () => {
   it("MEMORY_RERANK_TIMEOUT_MS defaults to 30000", () => {
@@ -652,37 +639,6 @@ describe("rerank timeout and abort", () => {
     ]);
     assert.equal(result, "sentinel", "canceled timeout should not resolve");
     assert.ok(!controller.signal.aborted, "canceled timeout should not abort the controller");
-  });
-
-  it("abort signal is passed through MemoryRerankInput", () => {
-    const controller = new AbortController();
-    const input: MemoryRerankInput = {
-      currentUserMessage: "test",
-      structuredUserQuery: {},
-      plannerIntent: "scene_continuation",
-      plannerHints: TEST_PLANNER_HINTS,
-      recentChatDigest: "",
-      relationshipState: "",
-      continuityScope: "",
-      candidates: [],
-      signal: controller.signal,
-    };
-    assert.ok(input.signal instanceof AbortSignal);
-    assert.equal(input.signal, controller.signal);
-  });
-
-  it("signal is optional and defaults to a new AbortController", () => {
-    const input: MemoryRerankInput = {
-      currentUserMessage: "test",
-      structuredUserQuery: {},
-      plannerIntent: "scene_continuation",
-      plannerHints: TEST_PLANNER_HINTS,
-      recentChatDigest: "",
-      relationshipState: "",
-      continuityScope: "",
-      candidates: [],
-    };
-    assert.equal(input.signal, undefined);
   });
 });
 
@@ -766,22 +722,6 @@ describe("rerank diagnostics shape", () => {
   });
 });
 
-describe("rerank fallback reason preservation", () => {
-  it("preserves non-generic fallback reasons from the catch block", () => {
-    // Simulates the catch-block logic in resolveContext.ts
-    const reasons = [
-      new Error("timeout_after_60000ms"),
-      new Error("rerank_llm_failed: Expected string, received number"),
-      new Error("exception: something went wrong"),
-    ];
-
-    for (const err of reasons) {
-      const preserved = err instanceof Error ? err.message : "reranker_call_failed";
-      assert.equal(preserved, err.message);
-    }
-  });
-});
-
 describe("reranker non-JSON failure diagnostics", () => {
   it("safeRawPreview strips control characters", () => {
     const raw = "hello\x00world\x01test";
@@ -809,48 +749,6 @@ describe("reranker non-JSON failure diagnostics", () => {
     const raw = "line1\nline2\r\nline3";
     const result = __testing.safeRawPreview(raw);
     assert.ok(result.includes("\n"), "newlines should be preserved");
-  });
-
-  it("RerankFailureDiagnostics shape is populated for non-JSON raw output", () => {
-    // Simulate the diagnostics that tracedRerank builds on chatJson failure.
-    const raw = "  Some assistant text without JSON delimiters.  ";
-    const diagnostics: RerankFailureDiagnostics = {
-      error: "No JSON object/array found",
-      rawPreview: __testing.safeRawPreview(raw),
-      rawLength: raw.length,
-      finishReason: "stop",
-      inputTokens: 150,
-      outputTokens: 25,
-      transportMode: "non_streaming",
-    };
-
-    assert.equal(diagnostics.error, "No JSON object/array found");
-    assert.equal(diagnostics.rawPreview, raw.trim());
-    assert.equal(diagnostics.rawLength, raw.length);
-    assert.equal(diagnostics.finishReason, "stop");
-    assert.equal(diagnostics.inputTokens, 150);
-    assert.equal(diagnostics.outputTokens, 25);
-    assert.equal(diagnostics.transportMode, "non_streaming");
-  });
-
-  it("diagnostics includes transportMode: non_streaming for zero-token empty output", () => {
-    // Simulates the zero-token empty-output signature that previously
-    // occurred with streaming transport.
-    const diagnostics: RerankFailureDiagnostics = {
-      error: "No JSON object/array found",
-      rawPreview: "",
-      rawLength: 0,
-      finishReason: null,
-      inputTokens: 0,
-      outputTokens: 0,
-      transportMode: "non_streaming",
-    };
-
-    assert.equal(diagnostics.error, "No JSON object/array found");
-    assert.equal(diagnostics.rawPreview, "");
-    assert.equal(diagnostics.rawLength, 0);
-    assert.equal(diagnostics.finishReason, null);
-    assert.equal(diagnostics.transportMode, "non_streaming");
   });
 
   it("diagnostics rawPreview is bounded and never contains full raw output when raw is long", () => {

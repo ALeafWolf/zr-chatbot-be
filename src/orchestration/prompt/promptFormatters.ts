@@ -9,7 +9,6 @@ import type { RetrievedStructMemEntry } from "../../retrieval/memory/retrieveStr
 import type { RetrievedStructMemConsolidation } from "../../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedOpenThread } from "../../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../../retrieval/memory/retrieveStructMemEntryContextExpansions";
-import type { MemoryRerankOutput } from "../retrieval/memoryRerank";
 import type { StructMemMotifProbeSummary } from "../context/motifTypes";
 
 
@@ -342,52 +341,3 @@ export function formatStructMemMotifBlock(
     ? `${full.slice(0, STRUCTMEM_MOTIF_MAX_CHARS - 1)}…`
     : full;
 }
-
-const USAGE_LABELS: Record<string, string> = {
-  must_use: "必须使用 — 回复中应体现此信息",
-  use_subtly: "含蓄使用 — 作为潜台词或语气背景",
-  do_not_mention_explicitly: "勿直述 — 仅作为私人连续性参考，不可在回复中挑明",
-  tone_only: "仅语气 — 仅影响回复的情绪基调，无需提及内容",
-};
-
-const RELEVANCE_LABELS: Record<string, string> = {
-  required: "必需",
-  useful: "有用",
-  subtle_tone_only: "含蓄语气",
-  background_only: "背景参考",
-};
-
-const SOURCE_LABELS: Record<string, string> = {
-  session_summary: "场次摘要",
-  latest_turn_delta: "最近回合变更",
-  open_thread: "开放线索",
-  session_chunk: "场次片段",
-  structmem_entry: "结构化事件",
-  structmem_consolidation: "记忆合成",
-  interactive_memory: "持久记忆",
-  canon_scene: "原作场景",
-  canon_chunk: "原作片段",
-  motif_probe: "母题探测",
-  memory_correction: "记忆纠正",
-};
-
-export function formatSelectedContextUsage(
-  selected: MemoryRerankOutput["selected"],
-): string {
-  if (selected.length === 0) return "";
-
-  const lines = selected.map((item, i) => {
-    const source = SOURCE_LABELS[item.source] ?? item.source;
-    const relevance = RELEVANCE_LABELS[item.relevance] ?? item.relevance;
-    const usage = USAGE_LABELS[item.usageInstruction] ?? item.usageInstruction;
-    return [
-      `${i + 1}. 来源：${source}`,
-      `   相关性：${relevance}`,
-      `   使用指引：${usage}`,
-      `   原因：${item.reasonCode}`,
-    ].join("\n");
-  });
-
-  return lines.join("\n\n");
-}
-
