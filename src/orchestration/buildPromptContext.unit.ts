@@ -241,7 +241,8 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[STRUCTURED EVENT MEMORY]"), false, "STRUCTURED EVENT MEMORY should be absent");
     assert.equal(prompt.includes("[STRUCTURED MEMORY SYNTHESIS]"), false, "STRUCTURED MEMORY SYNTHESIS should be absent");
     assert.equal(prompt.includes("[INTERACTIVE MEMORY]"), false, "INTERACTIVE MEMORY should be absent");
-    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), false, "SELECTED CONTEXT USAGE should be absent when selected is empty");
+    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), false, "SELECTED CONTEXT USAGE should be absent (removed from generation prompt)");
+    assert.equal(prompt.includes("[CANON NARRATIVE]"), false, "CANON NARRATIVE should be absent when no canon chunks exist");
   });
 
   it("with one selected session_chunk and all other sources filtered out by reranker, renders only the selected block among candidate-backed sources", () => {
@@ -299,15 +300,14 @@ describe("buildPromptContext honors reranker-empty selection", () => {
 
     // Selected block should appear
     assert.equal(prompt.includes("[RELEVANT SESSION RECALL]"), true, "selected session recall should appear");
-    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), true, "SELECTED CONTEXT USAGE should appear when selected is non-empty");
+    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), false, "SELECTED CONTEXT USAGE should be removed from generation prompt");
     assert.equal(prompt.includes("lakeside"), true, "selected chunk text should be in prompt");
 
     // Unselected canon content must not leak through
     assert.equal(prompt.includes("lakeside canon scene that should not appear"), false, "unselected canon content should be absent");
 
     // Non-selected candidate-backed blocks should all be absent.
-    // CANON NARRATIVE is expected: formatCanon([]) returns fallback text
-    // "(无相关剧情内容)", so the block is always rendered regardless of selection.
+    // CANON NARRATIVE is omitted when no canon chunks/scenes exist after filtering.
     assert.equal(prompt.includes("[SESSION SUMMARY]"), false, "SESSION SUMMARY should be absent (rejected by reranker)");
     assert.equal(prompt.includes("[MEMORY CORRECTIONS]"), false, "MEMORY CORRECTIONS should be absent (rejected by reranker)");
     assert.equal(prompt.includes("[LATEST TURN DELTA]"), false, "LATEST TURN DELTA should be absent (rejected by reranker)");
@@ -315,6 +315,7 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[STRUCTURED EVENT MEMORY]"), false, "STRUCTURED EVENT MEMORY should be absent (not selected)");
     assert.equal(prompt.includes("[STRUCTURED MEMORY SYNTHESIS]"), false, "STRUCTURED MEMORY SYNTHESIS should be absent (not selected)");
     assert.equal(prompt.includes("[INTERACTIVE MEMORY]"), false, "INTERACTIVE MEMORY should be absent (not selected)");
+    assert.equal(prompt.includes("[CANON NARRATIVE]"), false, "CANON NARRATIVE should be absent when no canon content exists after filtering");
   });
 
   it("renders selected canon chunks and excludes unselected canon when memoryRerank selects specific canon", () => {
@@ -359,10 +360,24 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[CANON NARRATIVE]"), true, "CANON NARRATIVE block should be present");
   });
 
-  it("renders exactly one [SELECTED CONTEXT USAGE] marker when one item is selected", () => {
-    // Regression: formatSelectedContextUsage previously included its own
-    // [SELECTED CONTEXT USAGE] header, duplicating buildBlock(...) in buildPromptContext.
+  it("omits [CANON NARRATIVE] when no canon chunks or scenes exist", () => {
+    // regression: formatCanon([]) returns placeholder text "(无相关剧情内容)",
+    // which previously still rendered [CANON NARRATIVE].
     const prompt = buildPromptContext({
+      ...baseInput(),
+      canonChunks: [],
+      memoryRerank: {
+        selected: [],
+        rejected: [],
+        finalContextMode: "recent_only",
+        needsEvidenceFallback: false,
+      },
+    }).systemPrompt;
+    assert.equal(prompt.includes("[CANON NARRATIVE]"), false, "CANON NARRATIVE should be absent when no canon exists");
+  });
+
+  it("preserves PromptContext.selectedMemorySources from non-empty rerank selection", () => {
+    const ctx = buildPromptContext({
       ...baseInput(),
       memoryRerank: {
         selected: [
@@ -372,10 +387,9 @@ describe("buildPromptContext honors reranker-empty selection", () => {
         finalContextMode: "selected_memory",
         needsEvidenceFallback: false,
       },
-    }).systemPrompt;
-
-    const matches = prompt.match(/\[SELECTED CONTEXT USAGE\]/g);
-    assert.notEqual(matches, null, "should have at least one [SELECTED CONTEXT USAGE]");
-    assert.equal(matches!.length, 1, "should have exactly one [SELECTED CONTEXT USAGE] marker");
+    });
+    assert.ok(ctx.selectedMemorySources, "selectedMemorySources should be present");
+    assert.equal(ctx.selectedMemorySources?.length, 1, "should have one selected memory source");
+    assert.equal(ctx.selectedMemorySources?.[0]?.source, "interactive_memory");
   });
 });

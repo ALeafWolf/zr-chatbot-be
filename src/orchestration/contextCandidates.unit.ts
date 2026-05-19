@@ -98,6 +98,26 @@ describe("applyCandidateSelection singleton sources", () => {
     assert.deepEqual(result.selectedCorrectionIds, []);
   });
 
+  it("sessionRecall filters by selected IDs, excluding unselected chunks", () => {
+    const result = applyCandidateSelection({
+      shortlist: [
+        makeCandidate("chunk_a", "session_chunk"),
+        makeCandidate("chunk_b", "session_chunk"),
+      ],
+      selectedIds: ["chunk_a"],
+      memories: [],
+      sessionRecall: [
+        { id: "chunk_a", chunkText: "selected chunk text", turnStart: 1, turnEnd: 2, finalScore: 0.9, cosineSimilarity: 0.8, chunkType: "scene" },
+        { id: "chunk_b", chunkText: "unselected chunk text that must be filtered out", turnStart: 3, turnEnd: 4, finalScore: 0.7, cosineSimilarity: 0.6, chunkType: "scene" },
+      ] as any,
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+    });
+    assert.equal(result.sessionRecall.length, 1, "only the selected chunk should remain");
+    assert.equal(result.sessionRecall[0]!.id, "chunk_a", "selected chunk id should be chunk_a");
+  });
+
   it("openThreads are filtered by selected IDs", () => {
     const result = applyCandidateSelection({
       shortlist: [

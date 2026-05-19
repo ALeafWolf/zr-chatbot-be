@@ -126,10 +126,13 @@ export function buildPromptContext(input: {
   const filteredCanonChunks = selectedCanonIds
     ? canonChunks.filter((c) => selectedCanonIds.has(c.id))
     : canonChunks;
-  const canonNarrativeBody =
-    filteredCanonScenes.length > 0
+  const hasCanonNarrative =
+    filteredCanonScenes.length > 0 || filteredCanonChunks.length > 0;
+  const canonNarrativeBody = hasCanonNarrative
+    ? filteredCanonScenes.length > 0
       ? promptFormatters.formatCanonScenes(filteredCanonScenes)
-      : promptFormatters.formatCanon(filteredCanonChunks);
+      : promptFormatters.formatCanon(filteredCanonChunks)
+    : "";
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
   const coreTraits = (characterDefaults.core_traits ?? []).join("\n- ");
@@ -162,7 +165,7 @@ export function buildPromptContext(input: {
 严格保持角色扮演。以下规则必须始终遵守：
 ${hardRules}
 
-若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
+若存在 \`[STRUCTURED USER QUERY]\`，优先按其中分区理解用户输入，并必须遵守 \`[STRUCTURED USER QUERY LABEL RULES]\`；否则按 \`[USER MESSAGE ANNOTATIONS]\`（若出现）与原始用户消息理解。
 
 冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > MEMORY CORRECTIONS > LATEST TURN DELTA > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
@@ -229,15 +232,6 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       ? [buildBlock("LATEST TURN DELTA", formatTurnDelta(latestTurnDelta))]
       : []),
 
-    ...(memoryRerank?.selected?.length
-      ? [
-          buildBlock(
-            "SELECTED CONTEXT USAGE",
-            promptFormatters.formatSelectedContextUsage(memoryRerank.selected),
-          ),
-        ]
-      : []),
-
     ...(sessionSummary?.summaryText?.trim()
       ? [
           buildBlock(
@@ -296,12 +290,15 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       ? [buildBlock("INTERACTIVE MEMORY", promptFormatters.formatMemories(memories))]
       : []),
 
-    ...(canonNarrativeBody.trim()
+    ...(hasCanonNarrative
       ? [buildBlock("CANON NARRATIVE", canonNarrativeBody)]
       : []),
 
     ...(showStructured
-      ? [buildBlock("STRUCTURED USER QUERY", structuredBlock)]
+      ? [
+          buildBlock("STRUCTURED USER QUERY LABEL RULES", STRUCTURED_QUERY_LABEL_RULES),
+          buildBlock("STRUCTURED USER QUERY", structuredBlock),
+        ]
       : []),
 
     ...(showAnnotations
@@ -479,3 +476,14 @@ function buildRelationshipExpressionContent(
 
   return parts.join("\n\n");
 }
+
+const STRUCTURED_QUERY_LABEL_RULES = `[STRUCTURED USER QUERY] 内部的各类标签并不等同。
+
+[user speech] = 用户在场景内说出口的对白；角色可感知。
+[user action] = 用户在场景内做出的身体动作或叙事动作；若场景条件允许，角色可感知。
+[user thought] = 用户的私人内心想法；角色不可感知。
+[reply direction suggestion] = 场景外的回复方向指引；角色不可感知。
+
+角色绝不能推断 [reply direction suggestion] 是由 <user> 说出、发送、输入、知晓、意图表达或主动透露的内容。
+
+当 [reply direction suggestion] 与当前连续性不冲突时，角色应将其作为回复生成方向，自然地执行或叙述该方向；但不得把它当作 <user> 在场景内传达的信息。`;
