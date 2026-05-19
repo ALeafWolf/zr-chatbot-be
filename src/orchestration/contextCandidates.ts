@@ -5,6 +5,7 @@ import type { RetrievedSessionMemoryChunk } from "../retrieval/memory/retrieveSe
 import type { RetrievedStructMemConsolidation } from "../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedStructMemEntry } from "../retrieval/memory/retrieveStructMemEntries";
 import type { RetrievedCanonChunk } from "../retrieval/canon/retrieveCanonNarrative";
+import type { RetrievedCanonScene } from "../retrieval/canon/retrieveCanonTier3Pipeline";
 import type { MemoryCorrectionContext } from "./memoryCorrections";
 
 export type ContextCandidateSource =
@@ -355,5 +356,28 @@ export function applyCandidateSelection(
     sessionSummarySelected: selectedSet.has("session_summary"),
     latestTurnDeltaSelected: selectedSet.has("latest_turn_delta"),
     selectedCorrectionIds,
+  };
+}
+
+/**
+ * Filter canon chunks and scenes to only those selected by the reranker.
+ *
+ * When no canon candidate is selected, both arrays are emptied.
+ * When canon chunks are selected, scenes are cleared to prevent
+ * re-expanding a selected chunk into the whole scene via formatCanonScenes.
+ *
+ * @param selectedCanonChunkIds IDs of canon_chunk candidates the reranker selected (may be empty).
+ */
+export function filterCanonBySelection(
+  canonChunks: RetrievedCanonChunk[],
+  canonScenes: RetrievedCanonScene[],
+  selectedCanonChunkIds: string[],
+): { canonChunks: RetrievedCanonChunk[]; canonScenes: RetrievedCanonScene[] } {
+  const selectedIdSet = new Set(selectedCanonChunkIds);
+  return {
+    canonChunks: canonChunks.filter((c) => selectedIdSet.has(c.id)),
+    // Clear scenes to prevent re-expanding a selected chunk into the whole scene;
+    // formatCanon(chunks) is used instead when scenes are empty.
+    canonScenes: [],
   };
 }

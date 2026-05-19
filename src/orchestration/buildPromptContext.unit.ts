@@ -225,8 +225,8 @@ describe("buildPromptContext honors reranker-empty selection", () => {
       memoryRerank: {
         selected: [],
         rejected: [
-          { id: "session_summary", source: "session_summary", reason: "irrelevant_to_current_turn" },
-          { id: "latest_turn_delta", source: "latest_turn_delta", reason: "irrelevant_to_current_turn" },
+          { id: "session_summary", source: "session_summary", reasonCode: "irrelevant" },
+          { id: "latest_turn_delta", source: "latest_turn_delta", reasonCode: "irrelevant" },
         ],
         finalContextMode: "recent_only",
         needsEvidenceFallback: false,
@@ -242,5 +242,140 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[STRUCTURED MEMORY SYNTHESIS]"), false, "STRUCTURED MEMORY SYNTHESIS should be absent");
     assert.equal(prompt.includes("[INTERACTIVE MEMORY]"), false, "INTERACTIVE MEMORY should be absent");
     assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), false, "SELECTED CONTEXT USAGE should be absent when selected is empty");
+  });
+
+  it("with one selected session_chunk and all other sources filtered out by reranker, renders only the selected block among candidate-backed sources", () => {
+    // Regression: a trace showed llm.memory_rerank selected only one session_chunk,
+    // but generation still received rejected memory blocks. After fix, resolveContext
+    // filters all sources based on reranker selection; buildPromptContext receives
+    // only the filtered data. This test verifies the post-filter output is correct.
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      sessionSummary: null,
+      latestTurnDelta: null,
+      memoryCorrections: [],
+      openThreads: [],
+      memories: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      // Non-empty canon retrieved but no canon selected by reranker;
+      // resolveContext filters it out before passing to buildPromptContext.
+      canonChunks: [
+        {
+          id: "canon_unused",
+          textContent: "lakeside canon scene that should not appear",
+          contentType: "narrative",
+          speaker: null,
+          canonPriority: null,
+          rankScore: 0,
+          arcKey: "main",
+          chapterName: "",
+          sceneId: "scene_99",
+        },
+      ],
+      sessionRecall: [
+        {
+          id: "c7375a00-77db-4e40-a413-6cd046f374c6",
+          chunkText: "user seemed interested in resuming the scene at the lakeside",
+          turnStart: 10,
+          turnEnd: 12,
+          finalScore: 0.91,
+          cosineSimilarity: 0.85,
+          chunkType: "scene",
+        },
+      ],
+      memoryRerank: {
+        selected: [
+          { id: "c7375a00-77db-4e40-a413-6cd046f374c6", source: "session_chunk", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" },
+        ],
+        rejected: [
+          { id: "session_summary", source: "session_summary", reasonCode: "irrelevant" },
+          { id: "latest_turn_delta", source: "latest_turn_delta", reasonCode: "irrelevant" },
+        ],
+        finalContextMode: "selected_memory",
+        needsEvidenceFallback: false,
+      },
+    }).systemPrompt;
+
+    // Selected block should appear
+    assert.equal(prompt.includes("[RELEVANT SESSION RECALL]"), true, "selected session recall should appear");
+    assert.equal(prompt.includes("[SELECTED CONTEXT USAGE]"), true, "SELECTED CONTEXT USAGE should appear when selected is non-empty");
+    assert.equal(prompt.includes("lakeside"), true, "selected chunk text should be in prompt");
+
+    // Unselected canon content must not leak through
+    assert.equal(prompt.includes("lakeside canon scene that should not appear"), false, "unselected canon content should be absent");
+
+    // Non-selected candidate-backed blocks should all be absent.
+    // CANON NARRATIVE is expected: formatCanon([]) returns fallback text
+    // "(无相关剧情内容)", so the block is always rendered regardless of selection.
+    assert.equal(prompt.includes("[SESSION SUMMARY]"), false, "SESSION SUMMARY should be absent (rejected by reranker)");
+    assert.equal(prompt.includes("[MEMORY CORRECTIONS]"), false, "MEMORY CORRECTIONS should be absent (rejected by reranker)");
+    assert.equal(prompt.includes("[LATEST TURN DELTA]"), false, "LATEST TURN DELTA should be absent (rejected by reranker)");
+    assert.equal(prompt.includes("[ACTIVE OPEN THREADS]"), false, "ACTIVE OPEN THREADS should be absent (rejected or not selected)");
+    assert.equal(prompt.includes("[STRUCTURED EVENT MEMORY]"), false, "STRUCTURED EVENT MEMORY should be absent (not selected)");
+    assert.equal(prompt.includes("[STRUCTURED MEMORY SYNTHESIS]"), false, "STRUCTURED MEMORY SYNTHESIS should be absent (not selected)");
+    assert.equal(prompt.includes("[INTERACTIVE MEMORY]"), false, "INTERACTIVE MEMORY should be absent (not selected)");
+  });
+
+  it("renders selected canon chunks and excludes unselected canon when memoryRerank selects specific canon", () => {
+    // Regression: the buildPromptContext safety filter previously matched canon chunks
+    // by c.sceneId ?? c.id. For tier3 chunks where sceneId is set (e.g. "scene_1"),
+    // this caused selected chunks (selected by chunk id like "scene_1_0") to be dropped.
+    // The filter must match by c.id to align with how resolveContext pre-filters canon.
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      canonChunks: [
+        {
+          id: "scene_1_0",
+          textContent: "selected canon text that must appear",
+          contentType: "narrative",
+          speaker: null,
+          canonPriority: null,
+          rankScore: 0.9,
+          sceneId: "scene_1",
+        },
+        {
+          id: "scene_2_0",
+          textContent: "unselected canon text that must not appear",
+          contentType: "narrative",
+          speaker: null,
+          canonPriority: null,
+          rankScore: 0.1,
+          sceneId: "scene_2",
+        },
+      ],
+      memoryRerank: {
+        selected: [
+          { id: "scene_1_0", source: "canon_chunk", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "canon_required" },
+        ],
+        rejected: [],
+        finalContextMode: "memory_and_canon",
+        needsEvidenceFallback: false,
+      },
+    }).systemPrompt;
+
+    assert.equal(prompt.includes("selected canon text that must appear"), true, "selected canon chunk text should render");
+    assert.equal(prompt.includes("unselected canon text that must not appear"), false, "unselected canon chunk text should be absent");
+    assert.equal(prompt.includes("[CANON NARRATIVE]"), true, "CANON NARRATIVE block should be present");
+  });
+
+  it("renders exactly one [SELECTED CONTEXT USAGE] marker when one item is selected", () => {
+    // Regression: formatSelectedContextUsage previously included its own
+    // [SELECTED CONTEXT USAGE] header, duplicating buildBlock(...) in buildPromptContext.
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      memoryRerank: {
+        selected: [
+          { id: "mem_1", source: "interactive_memory", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" },
+        ],
+        rejected: [],
+        finalContextMode: "selected_memory",
+        needsEvidenceFallback: false,
+      },
+    }).systemPrompt;
+
+    const matches = prompt.match(/\[SELECTED CONTEXT USAGE\]/g);
+    assert.notEqual(matches, null, "should have at least one [SELECTED CONTEXT USAGE]");
+    assert.equal(matches!.length, 1, "should have exactly one [SELECTED CONTEXT USAGE] marker");
   });
 });

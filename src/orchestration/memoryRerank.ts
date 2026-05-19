@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { models } from "../config/models";
+import { models, type ModelBinding } from "../config/models";
 import { env } from "../config/env";
-import { chatJsonStream } from "../llm/providers";
+import { chatJson } from "../llm/providers";
 import { traceLLMStage } from "../observability/langsmithTracing";
 import type { ContextCandidate, ContextCandidateSource } from "./contextCandidates";
 import type { ContextPlannerOutput } from "./contextPlanner";
@@ -21,32 +21,33 @@ const UsageInstructionSchema = z.enum([
   "tone_only",
 ]);
 
-const RERANKER_CATEGORIES = [
-  "may_derail_scene",
-  "possible_conflict",
-  "too_old",
-  "low_confidence",
-  "irrelevant_to_current_turn",
-  "too_broad",
-  "conflicts_with_recent_chat",
-  "canon_not_needed",
-  "memory_not_needed",
-  "duplicate",
-  "unsafe_to_use",
+const SELECTED_REASON_CODES = [
+  "direct_continuity",
+  "explicit_recall",
+  "relationship_motif",
+  "open_thread",
+  "canon_required",
+  "conflict_avoidance",
+  "tone_guidance",
+  "user_preference",
+  "pending_commitment",
+  "safety_boundary",
 ] as const;
 
-const RerankerCategorySchema = z.enum(RERANKER_CATEGORIES);
+const REJECTED_REASON_CODES = [
+  "irrelevant",
+  "too_broad",
+  "duplicate",
+  "conflicts_recent",
+  "too_old",
+  "low_confidence",
+  "canon_not_needed",
+  "memory_not_needed",
+  "unsafe",
+] as const;
 
-/** Accepts model "no risk" variants and normalizes them to undefined. */
-const OptionalRiskSchema = z.preprocess(
-  (value) =>
-    value === null || (typeof value === "string" && value.trim() === "")
-      ? undefined
-      : value,
-  RerankerCategorySchema.optional(),
-);
-
-const RejectReasonSchema = RerankerCategorySchema;
+const SelectedReasonCodeSchema = z.enum(SELECTED_REASON_CODES);
+const RejectedReasonCodeSchema = z.enum(REJECTED_REASON_CODES);
 
 const FinalContextModeSchema = z.enum([
   "recent_only",
@@ -56,6 +57,29 @@ const FinalContextModeSchema = z.enum([
   "no_extra_context",
 ]);
 
+/** Permissive schema: accepts `id` as `string | number` for compact selected items. */
+const CompactRawSelectedSchema = z.object({
+  id: z.union([z.string(), z.number()]),
+  relevance: RelevanceSchema,
+  usageInstruction: UsageInstructionSchema,
+  reasonCode: SelectedReasonCodeSchema,
+});
+
+/** Permissive schema: accepts `id` as `string | number` for compact rejected items. */
+const CompactRawRejectedSchema = z.object({
+  id: z.union([z.string(), z.number()]),
+  reasonCode: RejectedReasonCodeSchema,
+});
+
+const CompactRawRerankOutputSchema = z.object({
+  selected: z.array(CompactRawSelectedSchema),
+  rejected: z.array(CompactRawRejectedSchema),
+  finalContextMode: FinalContextModeSchema,
+  needsEvidenceFallback: z.boolean(),
+  missingEvidence: z.array(z.string()).optional(),
+});
+
+/** Strict schema — enforces `id: string`. Used after normalization. */
 const RerankOutputSchema = z.object({
   selected: z.array(
     z.object({
@@ -63,15 +87,14 @@ const RerankOutputSchema = z.object({
       source: z.string(),
       relevance: RelevanceSchema,
       usageInstruction: UsageInstructionSchema,
-      reason: z.string(),
-      risk: OptionalRiskSchema,
+      reasonCode: SelectedReasonCodeSchema,
     }),
   ),
   rejected: z.array(
     z.object({
       id: z.string(),
       source: z.string(),
-      reason: RejectReasonSchema,
+      reasonCode: RejectedReasonCodeSchema,
     }),
   ),
   finalContextMode: FinalContextModeSchema,
@@ -89,6 +112,8 @@ export type MemoryRerankInput = {
   relationshipState: string;
   continuityScope: string;
   candidates: ContextCandidate[];
+  /** Optional AbortSignal to cancel the in-flight LLM request. */
+  signal?: AbortSignal;
 };
 
 export type MemoryRerankSelected = {
@@ -96,14 +121,13 @@ export type MemoryRerankSelected = {
   source: ContextCandidateSource;
   relevance: z.infer<typeof RelevanceSchema>;
   usageInstruction: z.infer<typeof UsageInstructionSchema>;
-  reason: string;
-  risk?: z.infer<typeof RerankerCategorySchema>;
+  reasonCode: z.infer<typeof SelectedReasonCodeSchema>;
 };
 
 export type MemoryRerankRejected = {
   id: string;
   source: ContextCandidateSource;
-  reason: z.infer<typeof RejectReasonSchema>;
+  reasonCode: z.infer<typeof RejectedReasonCodeSchema>;
 };
 
 export type MemoryRerankOutput = {
@@ -116,7 +140,20 @@ export type MemoryRerankOutput = {
 
 export type MemoryRerankResult =
   | { ok: true; output: MemoryRerankOutput; inputTokens: number; outputTokens: number }
-  | { ok: false; fallbackReason: string };
+  | { ok: false; fallbackReason: string; rerankDiagnostics?: RerankFailureDiagnostics };
+
+export interface RerankFailureDiagnostics {
+  error: string;
+  /** Safe bounded preview of raw model output (control chars stripped, truncated). */
+  rawPreview: string;
+  /** Full length of raw model output in characters. */
+  rawLength: number;
+  finishReason?: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  /** Distinguishes non-streaming transport from streaming for diagnostics. */
+  transportMode?: "non_streaming";
+}
 
 const EMPTY_RERANK: MemoryRerankOutput = {
   selected: [],
@@ -124,6 +161,97 @@ const EMPTY_RERANK: MemoryRerankOutput = {
   finalContextMode: "recent_only",
   needsEvidenceFallback: false,
 };
+
+/**
+ * Resolve a raw (possibly numeric) reranker ID to a known candidate.
+ *
+ * - String candidates: exact match by candidate ID first; if no match and the
+ *   string is a valid integer index, resolve by position.
+ * - Numeric candidates: resolve by zero-based index into the candidate list.
+ * - Out-of-range, non-integer, or unresolvable values return `null`.
+ */
+export function resolveCandidate(
+  id: string | number,
+  candidates: ContextCandidate[],
+): ContextCandidate | null {
+  if (typeof id === "string") {
+    const exact = candidates.find((c) => c.id === id);
+    if (exact) return exact;
+    const n = Number(id);
+    if (Number.isInteger(n) && n >= 0 && n < candidates.length) {
+      return candidates[n];
+    }
+    return null;
+  }
+  if (Number.isInteger(id) && id >= 0 && id < candidates.length) {
+    return candidates[id];
+  }
+  return null;
+}
+
+/** Normalize raw selected items: resolve ID, use candidate source, drop unknowns. */
+export function normalizeSelected(
+  raw: z.infer<typeof CompactRawSelectedSchema>[],
+  candidates: ContextCandidate[],
+): MemoryRerankSelected[] {
+  const out: MemoryRerankSelected[] = [];
+  for (const item of raw) {
+    const candidate = resolveCandidate(item.id, candidates);
+    if (!candidate) continue;
+    out.push({
+      id: candidate.id,
+      source: candidate.source,
+      relevance: item.relevance,
+      usageInstruction: item.usageInstruction,
+      reasonCode: item.reasonCode,
+    });
+  }
+  return out;
+}
+
+/** Normalize raw rejected items: resolve ID, use candidate source, drop unknowns. */
+export function normalizeRejected(
+  raw: z.infer<typeof CompactRawRejectedSchema>[],
+  candidates: ContextCandidate[],
+): MemoryRerankRejected[] {
+  const out: MemoryRerankRejected[] = [];
+  for (const item of raw) {
+    const candidate = resolveCandidate(item.id, candidates);
+    if (!candidate) continue;
+    out.push({
+      id: candidate.id,
+      source: candidate.source,
+      reasonCode: item.reasonCode,
+    });
+  }
+  return out;
+}
+
+/**
+ * Return OpenAI-compatible request extensions for the rerank model binding.
+ * For DeepSeek, disables hidden reasoning/thinking tokens that consume the
+ * output budget before the compact JSON object closes.
+ */
+export function rerankRequestExtensions(
+  binding: ModelBinding,
+): Record<string, unknown> | undefined {
+  if (binding.provider === "deepseek") {
+    return { thinking: { type: "disabled" } };
+  }
+  return undefined;
+}
+
+const RAW_PREVIEW_MAX_LEN = 200;
+
+/**
+ * Normalize control characters (except newlines) and truncate to a bounded cap.
+ * Safe for traces — never includes unbounded raw model output.
+ */
+export function safeRawPreview(raw: string, maxLen = RAW_PREVIEW_MAX_LEN): string {
+  const cleaned = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, " ").trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return cleaned.slice(0, maxLen) + "...";
+}
 
 function validateSelected(
   selected: MemoryRerankOutput["selected"],
@@ -167,7 +295,7 @@ function applyEmptySelectionGuard(
         source: best.source,
         relevance: "required",
         usageInstruction: "must_use",
-        reason: "rerank_empty_guard_applied",
+        reasonCode: "direct_continuity",
       },
     ],
   };
@@ -176,9 +304,7 @@ function applyEmptySelectionGuard(
 const tracedRerank = traceLLMStage(
   "llm.memory_rerank",
   async (input: MemoryRerankInput): Promise<MemoryRerankResult> => {
-    const candidateIds = new Set(input.candidates.map((c) => c.id));
-
-    const prompt = buildMemoryRerankPrompt({
+      const prompt = buildMemoryRerankPrompt({
       currentUserMessage: input.currentUserMessage,
       plannerIntent: input.plannerIntent,
       candidates: input.candidates,
@@ -190,44 +316,60 @@ const tracedRerank = traceLLMStage(
       { role: "user" as const, content: prompt.user },
     ];
 
-    const result = await chatJsonStream(
+    // Parse with non-streaming chatJson (rerank only needs one compact JSON object).
+    const result = await chatJson(
       models.rerank,
       messages,
-      RerankOutputSchema,
-      { maxTokens: 4096, temperature: 0.3, signal: new AbortController().signal },
+      CompactRawRerankOutputSchema,
+      {
+        maxTokens: 4096,
+        temperature: 0.3,
+        signal: input.signal ?? new AbortController().signal,
+        openAICompatibleRequestExtensions: rerankRequestExtensions(models.rerank),
+      },
     );
 
     if (!result.ok) {
-      return { ok: false, fallbackReason: `rerank_llm_failed: ${result.error}` };
+      return {
+        ok: false,
+        fallbackReason: `rerank_llm_failed: ${result.error}`,
+        rerankDiagnostics: {
+          error: result.error,
+          rawPreview: safeRawPreview(result.raw),
+          rawLength: result.raw.length,
+          finishReason: result.finishReason,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          transportMode: "non_streaming",
+        },
+      };
     }
 
-    const validated = result.data;
-    let selected = validateSelected(
-      validated.selected.map((s) => ({
-        ...s,
-        source: s.source as ContextCandidateSource,
-      })),
+    const raw = result.data;
+    const selected = normalizeSelected(raw.selected, input.candidates);
+    const rejected = normalizeRejected(raw.rejected, input.candidates);
+
+    let cappedSelected = validateSelected(
+      selected,
       input.candidates,
       env.MEMORY_RERANK_MAX_SELECTED,
     );
 
-    const rejected: MemoryRerankRejected[] = validated.rejected
-      .filter((r) => candidateIds.has(r.id))
-      .map((r) => ({
-        id: r.id,
-        source: r.source as ContextCandidateSource,
-        reason: r.reason,
-      }));
-
-    const raw = applyEmptySelectionGuard(
-      { ...validated, selected, rejected },
+    const guarded = applyEmptySelectionGuard(
+      {
+        selected: cappedSelected,
+        rejected,
+        finalContextMode: raw.finalContextMode,
+        needsEvidenceFallback: raw.needsEvidenceFallback,
+        missingEvidence: raw.missingEvidence,
+      },
       input.candidates,
       input.plannerIntent,
     );
 
     return {
       ok: true,
-      output: raw,
+      output: guarded,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
     };
@@ -239,30 +381,80 @@ const tracedRerank = traceLLMStage(
   },
 );
 
-/** Exported for unit testing: the Zod schema that the LLM output must match. */
+/** Exported for unit testing: schemas, normalization helpers, and timeout helper. */
 export const __testing = {
   RerankOutputSchema,
-  RERANKER_CATEGORIES,
-  RerankerCategorySchema,
-  OptionalRiskSchema,
+  CompactRawRerankOutputSchema,
+  SELECTED_REASON_CODES,
+  REJECTED_REASON_CODES,
+  SelectedReasonCodeSchema,
+  RejectedReasonCodeSchema,
+  resolveCandidate,
+  normalizeSelected,
+  normalizeRejected,
+  rerankRequestExtensions,
+  createRerankTimeout,
+  safeRawPreview,
 };
+
+/**
+ * Create a cancellable rerank timeout with an AbortController.
+ *
+ * The returned promise resolves with a timeout-specific fallback reason
+ * after `timeoutMs`. Call `cancel()` to clear the timer when rerank
+ * completes before the deadline.
+ */
+export interface RerankTimeout {
+  promise: Promise<MemoryRerankResult>;
+  controller: AbortController;
+  cancel: () => void;
+}
+
+export function createRerankTimeout(timeoutMs: number): RerankTimeout {
+  const controller = new AbortController();
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+
+  const promise = new Promise<MemoryRerankResult>((resolve) => {
+    timerId = setTimeout(() => {
+      controller.abort();
+      resolve({ ok: false, fallbackReason: `timeout_after_${timeoutMs}ms` });
+    }, timeoutMs);
+  });
+
+  return {
+    promise,
+    controller,
+    cancel: () => {
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+        timerId = undefined;
+      }
+    },
+  };
+}
 
 /** Apply LLM usage metadata to a traceable, then run the reranker. */
 export async function rerankCandidates(
   input: MemoryRerankInput,
 ): Promise<MemoryRerankResult> {
+  const timeoutMs = env.MEMORY_RERANK_TIMEOUT_MS;
+  const { promise: timeoutPromise, controller, cancel } = createRerankTimeout(timeoutMs);
+
   try {
     const result = await Promise.race([
-      tracedRerank(input),
-      new Promise<MemoryRerankResult>((resolve) =>
-        setTimeout(
-          () => resolve({ ok: false, fallbackReason: "timeout" }),
-          5000,
-        ),
-      ),
+      tracedRerank({ ...input, signal: controller.signal }).catch((err) => {
+        // Suppress post-race rejection caused by abort after timeout
+        if (controller.signal.aborted) {
+          return { ok: false as const, fallbackReason: "suppressed_after_timeout" as const };
+        }
+        throw err;
+      }),
+      timeoutPromise,
     ]);
+    cancel(); // Clear timer when rerank completes before deadline
     return result;
   } catch (e) {
+    cancel();
     const msg = e instanceof Error ? e.message : String(e);
     return { ok: false, fallbackReason: `exception: ${msg}` };
   }

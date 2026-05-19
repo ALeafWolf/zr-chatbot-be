@@ -124,7 +124,7 @@ export function buildPromptContext(input: {
     ? canonScenes.filter((s) => selectedCanonIds.has(s.sceneId))
     : canonScenes;
   const filteredCanonChunks = selectedCanonIds
-    ? canonChunks.filter((c) => selectedCanonIds.has(c.sceneId ?? c.id))
+    ? canonChunks.filter((c) => selectedCanonIds.has(c.id))
     : canonChunks;
   const canonNarrativeBody =
     filteredCanonScenes.length > 0

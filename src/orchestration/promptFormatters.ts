@@ -384,10 +384,10 @@ export function formatSelectedContextUsage(
       `${i + 1}. 来源：${source}`,
       `   相关性：${relevance}`,
       `   使用指引：${usage}`,
-      `   原因：${item.reason}`,
+      `   原因：${item.reasonCode}`,
     ].join("\n");
   });
 
-  return `[SELECTED CONTEXT USAGE]\n${lines.join("\n\n")}`;
+  return lines.join("\n\n");
 }
 

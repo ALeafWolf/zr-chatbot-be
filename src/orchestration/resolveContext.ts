@@ -74,6 +74,7 @@ import {
   type ContextCandidate,
   type ContextCandidateSource,
   applyCandidateSelection,
+  filterCanonBySelection,
 } from "./contextCandidates";
 import { rerankCandidates, type MemoryRerankOutput } from "./memoryRerank";
 import {
@@ -677,21 +678,52 @@ export async function resolveContext(input: {
       selected.selectedCorrectionIds.includes(`correction_${c.sourceTurnIndex}`),
     );
 
-    // Build a PromptMemoryContextSelection-compatible result
+    // Apply reranker selection to canon
+    const filteredCanon = filterCanonBySelection(
+      canonChunks,
+      canonScenes,
+      rerankOutput.selected
+        .filter((s) => s.source === "canon_chunk")
+        .map((s) => s.id),
+    );
+    canonChunks = filteredCanon.canonChunks;
+    canonScenes = filteredCanon.canonScenes;
+
+    // Build a PromptMemoryContextSelection-compatible result with proper
+    // diagnostics shape (not shortlist.diagnostics which has a different type).
     selectedContext = {
       memories: selected.memories,
       sessionRecall: selected.sessionRecall,
       structMemEntries: selected.structMemEntries,
       structMemConsolidations: selected.structMemConsolidations,
       openThreads: selected.openThreads,
-      diagnostics: shortlist.diagnostics as unknown as ReturnType<
-        typeof selectPromptMemoryContextStatic
-      >["diagnostics"],
+      diagnostics: {
+        retrievedCounts: {
+          interactive_memory: memories.length,
+          session_chunk: sessionRecall.length,
+          structmem_entry: structMemEntries.length,
+          structmem_consolidation: structMemConsolidations.length,
+          open_thread: openThreads.length,
+        },
+        injectedCounts: {
+          interactive_memory: selected.memories.length,
+          session_chunk: selected.sessionRecall.length,
+          structmem_entry: selected.structMemEntries.length,
+          structmem_consolidation: selected.structMemConsolidations.length,
+          open_thread: selected.openThreads.length,
+        },
+        droppedDuplicateCount: 0,
+        droppedLowScoreCount: 0,
+        droppedCorrectionCount: 0,
+        droppedBudgetCount: 0,
+        topSources: [],
+        averageInjectedScore: null,
+      },
     };
-  } catch {
-    // Reranker call failed — fall back to deterministic eager selector
+  } catch (e) {
+    // Reranker call failed — preserve specific reason from rerankCandidates
     rerankFallbackUsed = true;
-    rerankFallbackReason = "reranker_call_failed";
+    rerankFallbackReason = e instanceof Error ? e.message : "reranker_call_failed";
     rerankOutput = null;
     selectedContext = selectPromptMemoryContextStatic({
       memories,
@@ -775,7 +807,10 @@ export async function resolveContext(input: {
   injected.structmem_consolidation =
     selectedContext.structMemConsolidations.map((c) => c.id);
   injected.open_thread = selectedContext.openThreads.map((t) => t.id);
-  injected.canon = [...retrieved.canon];
+  injected.canon =
+    canonScenes.length > 0
+      ? canonScenes.map((s) => s.sceneId)
+      : canonChunks.map((c) => c.sceneId ?? c.id);
 
   recordRetrievalSnapshot({
     query: {
@@ -816,7 +851,7 @@ export async function resolveContext(input: {
               id: s.id,
               relevance: s.relevance,
               usageInstruction: s.usageInstruction,
-              reason: s.reason,
+              reasonCode: s.reasonCode,
             })),
             rejectedCount: rerankOutput.rejected.length,
             finalContextMode: rerankOutput.finalContextMode,

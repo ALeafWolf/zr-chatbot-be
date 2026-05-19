@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ContextCandidate } from "./contextCandidates";
-import { applyCandidateSelection } from "./contextCandidates";
+import { applyCandidateSelection, filterCanonBySelection } from "./contextCandidates";
 
 function makeCandidate(id: string, source: string, extra?: Partial<ContextCandidate>): ContextCandidate {
   return {
@@ -116,5 +116,52 @@ describe("applyCandidateSelection singleton sources", () => {
     });
     assert.equal(result.openThreads.length, 1);
     assert.equal(result.openThreads[0]!.id, "ot1");
+  });
+});
+
+describe("filterCanonBySelection", () => {
+  const canonChunks = [
+    { id: "chunk_a", sceneId: "scene_1", textContent: "alpha", contentType: "narrative", arcKey: "a", chapterName: "" },
+    { id: "chunk_b", sceneId: "scene_1", textContent: "beta", contentType: "narrative", arcKey: "a", chapterName: "" },
+    { id: "chunk_c", sceneId: "scene_2", textContent: "gamma", contentType: "narrative", arcKey: "b", chapterName: "" },
+  ] as Parameters<typeof filterCanonBySelection>[0];
+  const canonScenes: Parameters<typeof filterCanonBySelection>[1] = [
+    { sceneId: "scene_1", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [], rankScore: 0.5, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+    { sceneId: "scene_2", arcKey: "b", chapterId: "ch2", episodeId: "ep2", chapterName: "Ch2", episodeLabel: "Ep2", sceneTitle: null, sceneSummary: null, units: [], facts: [], rankScore: 0.4, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+  ];
+
+  it("returns empty canon when selected IDs is empty", () => {
+    const result = filterCanonBySelection(canonChunks, canonScenes, []);
+    assert.deepEqual(result.canonChunks, []);
+    assert.deepEqual(result.canonScenes, []);
+  });
+
+  it("keeps only matching chunks and clears scenes when some canon is selected", () => {
+    const result = filterCanonBySelection(canonChunks, canonScenes, ["chunk_a"]);
+    assert.equal(result.canonChunks.length, 1);
+    assert.equal(result.canonChunks[0]!.id, "chunk_a");
+    assert.deepEqual(result.canonScenes, [], "scenes are cleared to prevent re-expansion");
+  });
+
+  it("keeps multiple selected chunks and clears scenes", () => {
+    const result = filterCanonBySelection(canonChunks, canonScenes, ["chunk_a", "chunk_c"]);
+    assert.equal(result.canonChunks.length, 2);
+    assert.deepEqual(
+      result.canonChunks.map((c) => c.id).sort(),
+      ["chunk_a", "chunk_c"],
+    );
+    assert.deepEqual(result.canonScenes, []);
+  });
+
+  it("returns empty canon when no chunk IDs match", () => {
+    const result = filterCanonBySelection(canonChunks, canonScenes, ["nonexistent"]);
+    assert.deepEqual(result.canonChunks, []);
+    assert.deepEqual(result.canonScenes, []);
+  });
+
+  it("handles empty retrieved canon gracefully", () => {
+    const result = filterCanonBySelection([], [], ["chunk_a"]);
+    assert.deepEqual(result.canonChunks, []);
+    assert.deepEqual(result.canonScenes, []);
   });
 });

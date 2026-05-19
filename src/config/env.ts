@@ -258,6 +258,14 @@ const envSchema = z.object({
       if (Number.isNaN(n) || n < 1) return 8;
       return Math.min(24, Math.max(1, n));
     }),
+  MEMORY_RERANK_TIMEOUT_MS: z
+    .string()
+    .default("30000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1000) return 60000;
+      return Math.min(300000, Math.max(1000, n));
+    }),
 
   // StructMem: Motif Probe
   // Deterministic repeated-relationship-gesture detection and optional StructMem probe.

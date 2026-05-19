@@ -37,7 +37,31 @@ export type ChatJsonErr = {
   error: string;
   inputTokens: number;
   outputTokens: number;
+  finishReason?: string | null;
 };
+
+export interface ChatJsonOptions {
+  maxTokens?: number;
+  temperature?: number;
+  signal?: AbortSignal;
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
+}
+
+/**
+ * Build provider chat options from chatJson options.
+ * Exported for testing: verifies openAICompatibleRequestExtensions forwarding.
+ */
+export function buildChatJsonOptions(options?: ChatJsonOptions): ChatOptions {
+  return {
+    maxTokens: options?.maxTokens,
+    temperature: options?.temperature,
+    jsonMode: true,
+    signal: options?.signal,
+    ...(options?.openAICompatibleRequestExtensions !== undefined
+      ? { openAICompatibleRequestExtensions: options.openAICompatibleRequestExtensions }
+      : {}),
+  };
+}
 
 /**
  * JSON-mode chat with tolerant parsing (fences, preamble) + Zod validation.
@@ -47,14 +71,10 @@ export async function chatJson<T>(
   binding: ModelBinding,
   messages: LLMMessage[],
   schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-  options?: { maxTokens?: number; temperature?: number },
+  options?: ChatJsonOptions,
 ): Promise<ChatJsonOk<T> | ChatJsonErr> {
   const provider = getProvider(binding);
-  const response = await provider.chat(messages, {
-    maxTokens: options?.maxTokens,
-    temperature: options?.temperature,
-    jsonMode: true,
-  });
+  const response = await provider.chat(messages, buildChatJsonOptions(options));
 
   const extracted = parseJsonOutput(response.content);
   if (!extracted.ok) {
@@ -64,6 +84,7 @@ export async function chatJson<T>(
       error: extracted.error,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      finishReason: response.finishReason,
     };
   }
 
@@ -75,6 +96,7 @@ export async function chatJson<T>(
       error: zResult.error.message,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      finishReason: response.finishReason,
     };
   }
 
@@ -110,6 +132,7 @@ export async function chatJsonStream<T>(
   let raw = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let finishReason: string | null | undefined;
 
   for await (const ev of provider.streamChat(msgs, {
     maxTokens: options?.maxTokens,
@@ -122,38 +145,36 @@ export async function chatJsonStream<T>(
       raw = ev.content;
       inputTokens = ev.usage.inputTokens;
       outputTokens = ev.usage.outputTokens;
+      finishReason = ev.finishReason;
     }
   }
 
+  return parseJsonStreamResult(raw, inputTokens, outputTokens, finishReason, schema);
+}
+
+/**
+ * Parse + Zod-validate a completed stream result and produce a ChatJsonOk/E.
+ * Exported for testing: given raw content and finishReason, verifies the
+ * error path preserves finishReason.
+ */
+export function parseJsonStreamResult<T>(
+  raw: string,
+  inputTokens: number,
+  outputTokens: number,
+  finishReason: string | null | undefined,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+): ChatJsonOk<T> | ChatJsonErr {
   const extracted = parseJsonOutput(raw);
   if (!extracted.ok) {
-    return {
-      ok: false,
-      raw,
-      error: extracted.error,
-      inputTokens,
-      outputTokens,
-    };
+    return { ok: false, raw, error: extracted.error, inputTokens, outputTokens, finishReason };
   }
 
   const zResult = schema.safeParse(extracted.data);
   if (!zResult.success) {
-    return {
-      ok: false,
-      raw,
-      error: zResult.error.message,
-      inputTokens,
-      outputTokens,
-    };
+    return { ok: false, raw, error: zResult.error.message, inputTokens, outputTokens, finishReason };
   }
 
-  return {
-    ok: true,
-    data: zResult.data,
-    raw,
-    inputTokens,
-    outputTokens,
-  };
+  return { ok: true, data: zResult.data, raw, inputTokens, outputTokens };
 }
 
 /** Dispatch to the correct provider by the ModelBinding derived from env. */

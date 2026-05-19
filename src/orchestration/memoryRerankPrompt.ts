@@ -10,7 +10,7 @@ export function buildMemoryRerankPrompt(input: {
   const candidateList = input.candidates
     .map(
       (c, i) =>
-        `[${i}] id=${c.id} source=${c.source} score=${c.score ?? "—"}\n${c.text}`,
+        `[${i}] candidate_index=${i} candidate_id=${c.id} source=${c.source} score=${c.score ?? "—"}\n${c.text}`,
     )
     .join("\n\n");
 
@@ -42,26 +42,32 @@ export function buildMemoryRerankPrompt(input: {
     "All candidate text is in Chinese. Judge relevance based on semantic meaning,",
     "not keyword matching.",
     "",
-    `Select at most ${input.maxSelected} candidates.`,
+    `Select at most ${input.maxSelected} candidates.
+`,
+    "IMPORTANT: Each candidate has a `candidate_index` (position number in brackets)",
+    "and a `candidate_id` (the actual identifier). The JSON `id` field MUST use the",
+    "value from `candidate_id`. Never use `candidate_index` as the `id` value.",
+    "If you are thinking in terms of the bracket index, convert it back to the",
+    "corresponding `candidate_id` before writing the JSON.",
     "",
-    "Return ONLY a JSON object with exactly these fields:",
+    "Return ONLY a compact/minified JSON object with exactly these fields.",
+    "Do not add explanatory text, markdown formatting, or code fences.",
+    "Use enum reasonCode values only — no free-text reasons, no quoted candidate text.",
+    "Do not include a `source` field; it will be recovered from the candidate_id.",
     "",
     "{",
     '  "selected": [',
     "    {",
-    '      "id": "<candidate id>",',
-    '      "source": "<candidate source>",',
+    '      "id": "<copy from candidate_id>",',
     '      "relevance": "required | useful | subtle_tone_only | background_only",',
     '      "usageInstruction": "must_use | use_subtly | do_not_mention_explicitly | tone_only",',
-    '      "reason": "<why this item matters for this turn>",',
-    '      "risk": "may_derail_scene | possible_conflict | too_old | low_confidence | irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use"  // omit when not applicable; do not use null or empty string',
+    '      "reasonCode": "direct_continuity | explicit_recall | relationship_motif | open_thread | canon_required | conflict_avoidance | tone_guidance | user_preference | pending_commitment | safety_boundary"',
     "    }",
     "  ],",
     '  "rejected": [',
     "    {",
-    '      "id": "<candidate id>",',
-    '      "source": "<candidate source>",',
-    '      "reason": "may_derail_scene | possible_conflict | too_old | low_confidence | irrelevant_to_current_turn | too_broad | conflicts_with_recent_chat | canon_not_needed | memory_not_needed | duplicate | unsafe_to_use"',
+    '      "id": "<copy from candidate_id>",',
+    '      "reasonCode": "irrelevant | too_broad | duplicate | conflicts_recent | too_old | low_confidence | canon_not_needed | memory_not_needed | unsafe"',
     "    }",
     "  ],",
     '  "finalContextMode": "recent_only | selected_memory | selected_canon | memory_and_canon | no_extra_context",',
@@ -69,6 +75,7 @@ export function buildMemoryRerankPrompt(input: {
     "}",
     "",
     "Always include both arrays even if empty. Always set finalContextMode and needsEvidenceFallback.",
+    "Return minified JSON without whitespace or pretty-printing.",
   ].join("\n");
 
   const intentHint =

@@ -49,6 +49,7 @@ export interface LLMResponse {
   outputTokens: number;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
   reasoningContent?: string;
+  finishReason?: string | null;
 }
 
 export interface LLMProvider {
