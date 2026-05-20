@@ -43,8 +43,21 @@ const envSchema = z.object({
   // Model Bindings
   // Provider:model values used by generation, validation, extraction, and embeddings.
   GENERATION_MODEL: z.string().default("anthropic:claude-sonnet-4-5"),
+
+  // Generation
+  // Foreground response-generation output-token budget (draft + rewrite).
+  // Raised above the previous hard-coded 4096 to accommodate reasoning-heavy models.
+  GENERATION_MAX_TOKENS: z
+    .string()
+    .default("8192")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 8192;
+      if (n <= 4096) return 8192;
+      return Math.min(16384, n);
+    }),
   VALIDATOR_MODEL: z.string().default("anthropic:claude-haiku-4-5"),
-  EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-chat"),
+  EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-v4-flash"),
   EMBEDDING_MODEL: z.string().default("openai:text-embedding-3-small"),
   EMBEDDING_DIMENSIONS: z
     .string()

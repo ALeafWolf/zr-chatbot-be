@@ -126,6 +126,7 @@ export async function* streamOpenAICompatibleChat(
   let finishReason: string | null | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
+  let reasoningTokens = 0;
 
   for await (const part of stream) {
     const choice = part.choices?.[0];
@@ -165,6 +166,9 @@ export async function* streamOpenAICompatibleChat(
     if (usage) {
       inputTokens = usage.prompt_tokens ?? inputTokens;
       outputTokens = usage.completion_tokens ?? outputTokens;
+      reasoningTokens =
+        (usage as { completion_tokens_details?: { reasoning_tokens?: number } })
+          .completion_tokens_details?.reasoning_tokens ?? reasoningTokens;
     }
   }
 
@@ -178,7 +182,7 @@ export async function* streamOpenAICompatibleChat(
     type: "assistant_done",
     content: buf,
     toolCalls: wantsTools ? toolCalls : undefined,
-    usage: { inputTokens, outputTokens },
+    usage: { inputTokens, outputTokens, reasoningTokens },
     finishReason,
   };
 }

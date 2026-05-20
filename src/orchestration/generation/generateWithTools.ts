@@ -1,5 +1,6 @@
 import { getProvider } from "../../llm/providers";
 import { models } from "../../config/models";
+import { env } from "../../config/env";
 import type { ToolChatMessage } from "../../llm/providers/providerTypes";
 import { getOpenAISchemas, dispatchTool } from "../../llm/tools";
 import type { ToolCtx } from "../../llm/tools/types";
@@ -15,7 +16,24 @@ export type GenerateWithToolsYield =
       name: string;
       summary: string;
     }
-  | { type: "done"; content: string; inputTokens: number; outputTokens: number };
+  | {
+      type: "done";
+      content: string;
+      inputTokens: number;
+      outputTokens: number;
+      /** Diagnostics for empty-content debugging. */
+      finishReason?: string | null;
+      contentChars: number;
+      hasContent: boolean;
+      reasoningChars: number;
+      hasReasoning: boolean;
+      toolCallCount: number;
+      toolCallNames: string[];
+      maxTokens: number;
+      generationRounds: number;
+      /** Provider reasoning-token count from the last assistant round, if reported. */
+      reasoningTokens?: number;
+    };
 
 function parseToolArgs(raw: string): unknown {
   try {
@@ -61,6 +79,12 @@ export async function* generateWithToolsStream(input: {
   let totalOut = 0;
   const maxSteps = input.maxToolSteps ?? MAX_TOOL_STEPS;
 
+  // Diagnostics accumulators for empty-content debugging.
+  let totalToolCalls = 0;
+  const allToolNames = new Set<string>();
+  let lastFinishReason: string | null | undefined;
+  let lastReasoningTokens: number | undefined;
+
   for (let step = 0; step < maxSteps; step++) {
     let assistantText = "";
     let assistantReasoning = "";
@@ -71,7 +95,7 @@ export async function* generateWithToolsStream(input: {
     const stream = provider.streamChat(messages, {
       tools,
       toolChoice,
-      maxTokens: 4096,
+      maxTokens: env.GENERATION_MAX_TOKENS,
       temperature: 1.0,
       signal: input.signal,
       ...(input.openAICompatibleRequestExtensions !== undefined
@@ -96,6 +120,8 @@ export async function* generateWithToolsStream(input: {
       if (ev.type === "assistant_done") {
         assistantText = ev.content ?? assistantText;
         toolCalls = ev.toolCalls;
+        lastFinishReason = ev.finishReason;
+        lastReasoningTokens = ev.usage.reasoningTokens;
         totalIn += ev.usage.inputTokens;
         totalOut += ev.usage.outputTokens;
       }
@@ -107,12 +133,30 @@ export async function* generateWithToolsStream(input: {
         content: assistantText,
         inputTokens: totalIn,
         outputTokens: totalOut,
+        finishReason: lastFinishReason,
+        contentChars: assistantText.length,
+        hasContent: assistantText.trim().length > 0,
+        reasoningChars: assistantReasoning.length,
+        hasReasoning: assistantReasoning.length > 0,
+        toolCallCount: totalToolCalls,
+        toolCallNames: [...allToolNames],
+        maxTokens: env.GENERATION_MAX_TOKENS,
+        generationRounds: step + 1,
+        ...(lastReasoningTokens !== undefined
+          ? { reasoningTokens: lastReasoningTokens }
+          : {}),
       };
       return;
     }
 
     const tc = toolCalls[0];
     const args = parseToolArgs(tc.arguments);
+
+    // Track tool calls across all rounds for empty-content diagnostics.
+    totalToolCalls += toolCalls.length;
+    for (const t of toolCalls) {
+      allToolNames.add(t.name);
+    }
 
     yield { type: "before_tool", id: tc.id, name: tc.name, args };
 

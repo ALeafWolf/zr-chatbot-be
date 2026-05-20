@@ -39,7 +39,12 @@ export type LLMStreamEvent =
       type: "assistant_done";
       content: string;
       toolCalls?: Array<{ id: string; name: string; arguments: string }>;
-      usage: { inputTokens: number; outputTokens: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        /** Optional reasoning/completion tokens detail (DeepSeek/OpenAI-compatible). */
+        reasoningTokens?: number;
+      };
       finishReason?: string | null;
     };
 
