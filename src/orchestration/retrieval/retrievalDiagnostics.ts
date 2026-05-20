@@ -20,6 +20,12 @@ export interface RetrievalDiagnosticsPayloadInput {
     needsEvidenceFallback?: boolean;
     fallbackUsed?: boolean;
     fallbackReason?: string;
+    /** How candidate IDs from the raw reranker output were resolved. */
+    resolution?: {
+      exactIdCount: number;
+      numericIndexCount: number;
+      unresolvedCount: number;
+    };
   };
 }
 
@@ -31,6 +37,12 @@ export interface RetrievalTimingDiagnostics {
   openThreadsMs: number;
   selectorMs: number;
   totalResolveContextMs: number;
+  /** Time to build the candidate shortlist (subset of selectorMs). */
+  shortlistMs?: number;
+  /** Time for the rerank LLM call + processing (subset of selectorMs). */
+  rerankMs?: number;
+  /** Time for the deterministic fallback selector when rerank fails (subset of selectorMs). */
+  selectorFallbackMs?: number;
 }
 
 export function buildRetrievalDiagnosticsPayload(

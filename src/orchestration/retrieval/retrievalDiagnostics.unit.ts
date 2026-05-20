@@ -83,15 +83,17 @@ describe("buildRetrievalDiagnosticsPayload", () => {
     assert.equal(payload.openThreadCount, 1);
     assert.equal(payload.droppedDuplicateCount, 2);
     assert.equal(payload.droppedCorrectionCount, 1);
-    assert.deepEqual(payload.timingsMs, {
-      queryRewriteMs: 11,
-      embeddingsMs: 22,
-      mainRetrievalMs: 33,
-      olderRecallMs: 44,
-      openThreadsMs: 55,
-      selectorMs: 66,
-      totalResolveContextMs: 77,
-    });
+    const t = payload.timingsMs as Record<string, number> | null;
+    assert.notEqual(t, null);
+    assert.equal(t!.queryRewriteMs, 11);
+    assert.equal(t!.embeddingsMs, 22);
+    assert.equal(t!.mainRetrievalMs, 33);
+    assert.equal(t!.olderRecallMs, 44);
+    assert.equal(t!.openThreadsMs, 55);
+    assert.equal(t!.selectorMs, 66);
+    assert.equal(t!.totalResolveContextMs, 77);
+    // selectorFallbackMs is omitted when fallback was not used, verify absence
+    assert.equal((t as Record<string, unknown>).selectorFallbackMs, undefined);
     assert.deepEqual(payload.structMemEntryExpansion, {
       eligibleCount: 4,
       expandedCount: 3,

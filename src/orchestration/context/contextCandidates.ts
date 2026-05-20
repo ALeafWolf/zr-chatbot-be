@@ -119,6 +119,8 @@ interface BuildCandidatesInput {
   structMemEntryTopK?: number;
   structMemConsolidationTopK?: number;
   openThreadTopK?: number;
+  /** Total candidate hard cap (defaults to TOTAL_CAP). */
+  maxCandidates?: number;
 }
 
 /** Build and normalize a diverse shortlist from all retrieval sources. */
@@ -280,10 +282,11 @@ export function buildPromptContextCandidates(
     shortlistedBySource[c.source] = current + 1;
   }
 
-  // Apply total hard cap
+  // Apply total hard cap (configurable via maxCandidates)
+  const cap = input.maxCandidates ?? TOTAL_CAP;
   const truncatedByTotalCap =
-    shortlisted.length > TOTAL_CAP ? shortlisted.length - TOTAL_CAP : 0;
-  const final = shortlisted.slice(0, TOTAL_CAP);
+    shortlisted.length > cap ? shortlisted.length - cap : 0;
+  const final = shortlisted.slice(0, cap);
 
   const countsBySource: Partial<Record<ContextCandidateSource, number>> = {};
   for (const c of final) {

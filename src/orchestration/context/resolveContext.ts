@@ -428,7 +428,7 @@ export async function resolveContext(input: {
     recentWindowStartTurn,
   );
 
-  const retrieveStructMemConsolidations =
+  const shouldRetrieveConsolidations =
     shouldRetrieveStructMemConsolidations({
       structMemEnabled: env.STRUCTMEM_ENABLED,
       structMemConsolidationEnabled: env.STRUCTMEM_CONSOLIDATION_ENABLED,
@@ -447,7 +447,7 @@ export async function resolveContext(input: {
         exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
         latestFrontierTurnIndex: latestFrontierTurn,
         structMemEnabled: env.STRUCTMEM_ENABLED,
-        retrieveStructMemConsolidations,
+        shouldRetrieveConsolidations,
         sessionRecallLimit: retrievalPlan.sessionRecallTopK,
         structMemEntryLimit: retrievalPlan.structMemEntryTopK,
         structMemConsolidationLimit:
@@ -469,7 +469,7 @@ export async function resolveContext(input: {
             exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
             latestFrontierTurnIndex: latestFrontierTurn,
             structMemEnabled: env.STRUCTMEM_ENABLED,
-            retrieveStructMemConsolidations,
+            shouldRetrieveConsolidations,
             sessionRecallLimit: retrievalPlan.sessionRecallTopK,
             structMemEntryLimit: retrievalPlan.structMemEntryTopK,
             structMemConsolidationLimit:
@@ -523,7 +523,7 @@ export async function resolveContext(input: {
         latestFrontierTurnIndex: latestFrontierTurn,
         limit: probeTopK * 2,
       }),
-      retrieveStructMemConsolidations
+      shouldRetrieveConsolidations
         ? retrieveStructMemConsolidationsTraced({
             queryEmbedding: probeEmbedding,
             sessionId: session.sessionId,
@@ -608,6 +608,9 @@ export async function resolveContext(input: {
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
   // Build candidate shortlist from all retrieved sources
   const selectorStartedAt = Date.now();
+  let shortlistMs = 0;
+  let rerankMs = 0;
+  let selectorFallbackMs = 0;
   const motifProbeText = motifProbe
     ? motifProbe.matchingEntries
         .slice(0, 3)
@@ -630,7 +633,9 @@ export async function resolveContext(input: {
     memoryCorrections,
     motifProbeText,
     openThreadTopK: retrievalPlan.openThreadTopK,
+    maxCandidates: env.MEMORY_RERANK_MAX_CANDIDATES,
   });
+  shortlistMs = Date.now() - selectorStartedAt;
 
   // Run reranker; fall back to deterministic selector on failure
   let selectedContext: ReturnType<typeof selectPromptMemoryContextStatic>;
@@ -656,6 +661,7 @@ export async function resolveContext(input: {
       continuityScope: session.continuityScope,
       candidates: shortlist.candidates,
     });
+    rerankMs = rerankResult.timingMs;
 
     if (!rerankResult.ok) {
       throw new Error(rerankResult.fallbackReason);
@@ -672,16 +678,10 @@ export async function resolveContext(input: {
       openThreads,
     });
 
-    // Apply reranker selection to singleton/control prompt sources
-    filteredSessionSummary = selected.sessionSummarySelected
-      ? sessionSummary
-      : null;
-    filteredLatestTurnDelta = selected.latestTurnDeltaSelected
-      ? latestTurnDelta
-      : null;
-    filteredMemoryCorrections = memoryCorrections.filter((c) =>
-      selected.selectedCorrectionIds.includes(`correction_${c.sourceTurnIndex}`),
-    );
+    // Preserve deterministic control/continuity context regardless
+    // of reranker selection.
+    ({ filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
+      preserveCriticalContext(sessionSummary, latestTurnDelta, memoryCorrections));
 
     // Apply reranker selection to canon
     const filteredCanon = filterCanonBySelection(
@@ -730,6 +730,7 @@ export async function resolveContext(input: {
     rerankFallbackUsed = true;
     rerankFallbackReason = e instanceof Error ? e.message : "reranker_call_failed";
     rerankOutput = null;
+    const fallbackStartedAt = Date.now();
     selectedContext = selectPromptMemoryContextStatic({
       memories,
       sessionRecall,
@@ -740,6 +741,7 @@ export async function resolveContext(input: {
       retrievalPlan,
       memoryCorrections,
     });
+    selectorFallbackMs = Date.now() - fallbackStartedAt;
     // Fallback keeps original unfiltered singleton sources (initial values)
   }
 
@@ -778,14 +780,22 @@ export async function resolveContext(input: {
         openThreadsMs,
         selectorMs,
         totalResolveContextMs: Date.now() - startedAt,
+        shortlistMs,
+        rerankMs,
+        selectorFallbackMs,
       },
       selectionDiagnostics: selectedContext.diagnostics,
+      // finalContextMode, needsEvidenceFallback, and missingEvidence are
+      // @diagnostic — emitted to traces but no behavior is driven by them yet.
       rerank: rerankOutput
         ? {
             selectedCount: rerankOutput.selected.length,
             rejectedCount: rerankOutput.rejected.length,
             finalContextMode: rerankOutput.finalContextMode,
             needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+            ...(rerankOutput.resolutionDiagnostics && {
+              resolution: rerankOutput.resolutionDiagnostics,
+            }),
           }
         : {
             fallbackUsed: true,
@@ -859,6 +869,8 @@ export async function resolveContext(input: {
               reasonCode: s.reasonCode,
             })),
             rejectedCount: rerankOutput.rejected.length,
+            // @diagnostic — finalContextMode and needsEvidenceFallback are
+            // emitted to traces but no behavior is driven by them yet.
             finalContextMode: rerankOutput.finalContextMode,
             needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
           },
@@ -869,6 +881,7 @@ export async function resolveContext(input: {
             candidateIds: createEmptyEvalSourceIds(),
             selected: [],
             rejectedCount: 0,
+            // @diagnostic — diagnostic-only default for the fallback path.
             finalContextMode: "recent_only",
             needsEvidenceFallback: false,
             fallbackUsed: true,
@@ -911,5 +924,33 @@ export async function resolveContext(input: {
       memoryCorrections: filteredMemoryCorrections,
       rerankOutput,
     }),
+  };
+}
+
+/**
+ * Apply the deterministic critical-context preservation policy.
+ *
+ * Memory corrections, session summary, and latest turn delta are
+ * always preserved after a successful rerank, regardless of reranker
+ * selection. They are deterministic control/continuity context, not
+ * optional retrieved memories.
+ *
+ * Exported for unit testing. Using this function explicitly in the
+ * rerank-success path ensures that reverting to selective filtering
+ * will cause a test failure.
+ */
+export function preserveCriticalContext(
+  sessionSummary: SessionSummaryRecord | null,
+  latestTurnDelta: LatestTurnDelta | null,
+  memoryCorrections: MemoryCorrectionContext[],
+): {
+  filteredSessionSummary: SessionSummaryRecord | null;
+  filteredLatestTurnDelta: LatestTurnDelta | null;
+  filteredMemoryCorrections: MemoryCorrectionContext[];
+} {
+  return {
+    filteredSessionSummary: sessionSummary,
+    filteredLatestTurnDelta: latestTurnDelta,
+    filteredMemoryCorrections: memoryCorrections,
   };
 }

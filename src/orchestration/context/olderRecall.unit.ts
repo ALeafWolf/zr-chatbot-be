@@ -26,7 +26,7 @@ describe("olderRecall", () => {
         exclusiveRecentWindowFirstTurn: 4,
         latestFrontierTurnIndex: 10,
         structMemEnabled: true,
-        retrieveStructMemConsolidations: true,
+        shouldRetrieveConsolidations: true,
       },
       {
         sessionMemoryChunks: async () => {

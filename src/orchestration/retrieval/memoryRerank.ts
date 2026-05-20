@@ -133,14 +133,26 @@ export type MemoryRerankRejected = {
 export type MemoryRerankOutput = {
   selected: MemoryRerankSelected[];
   rejected: MemoryRerankRejected[];
+  /** @diagnostic — emitted to traces but no behavior is driven by this value yet. */
   finalContextMode: z.infer<typeof FinalContextModeSchema>;
+  /** @diagnostic — emitted to traces but no behavior is driven by this value yet. */
   needsEvidenceFallback: boolean;
+  /** @diagnostic — emitted to traces but no behavior is driven by this value yet. */
   missingEvidence?: string[];
+  /** How candidate IDs from the raw LLM output were resolved. */
+  resolutionDiagnostics?: {
+    /** Count of IDs that matched a candidate by exact string ID. */
+    exactIdCount: number;
+    /** Count of IDs that resolved via zero-based candidate index. */
+    numericIndexCount: number;
+    /** Count of IDs that could not be matched to any candidate. */
+    unresolvedCount: number;
+  };
 };
 
 export type MemoryRerankResult =
-  | { ok: true; output: MemoryRerankOutput; inputTokens: number; outputTokens: number }
-  | { ok: false; fallbackReason: string; rerankDiagnostics?: RerankFailureDiagnostics };
+  | { ok: true; output: MemoryRerankOutput; inputTokens: number; outputTokens: number; timingMs: number }
+  | { ok: false; fallbackReason: string; timingMs: number; rerankDiagnostics?: RerankFailureDiagnostics };
 
 export interface RerankFailureDiagnostics {
   error: string;
@@ -228,6 +240,34 @@ export function normalizeRejected(
 }
 
 /**
+ * Count how raw LLM-output IDs resolved against known candidates.
+ *
+ * - exactIdCount: string IDs that matched a candidate by exact string equality.
+ * - numericIndexCount: numeric IDs (or parseable numeric strings) that resolved
+ *   via zero-based candidate-list index.
+ * - unresolvedCount: IDs that could not be matched to any candidate.
+ */
+export function countIdResolutionModes(
+  rawItems: { id: string | number }[],
+  candidates: ContextCandidate[],
+): { exactIdCount: number; numericIndexCount: number; unresolvedCount: number } {
+  let exactIdCount = 0;
+  let numericIndexCount = 0;
+  let unresolvedCount = 0;
+  for (const item of rawItems) {
+    const resolved = resolveCandidate(item.id, candidates);
+    if (!resolved) {
+      unresolvedCount++;
+    } else if (typeof item.id === "string" && candidates.some((c) => c.id === item.id)) {
+      exactIdCount++;
+    } else {
+      numericIndexCount++;
+    }
+  }
+  return { exactIdCount, numericIndexCount, unresolvedCount };
+}
+
+/**
  * Return OpenAI-compatible request extensions for the rerank model binding.
  * For DeepSeek, disables hidden reasoning/thinking tokens that consume the
  * output budget before the compact JSON object closes.
@@ -304,6 +344,7 @@ function applyEmptySelectionGuard(
 const tracedRerank = traceLLMStage(
   "llm.memory_rerank",
   async (input: MemoryRerankInput): Promise<MemoryRerankResult> => {
+      const startedAt = Date.now();
       const prompt = buildMemoryRerankPrompt({
       currentUserMessage: input.currentUserMessage,
       plannerIntent: input.plannerIntent,
@@ -333,6 +374,7 @@ const tracedRerank = traceLLMStage(
       return {
         ok: false,
         fallbackReason: `rerank_llm_failed: ${result.error}`,
+        timingMs: Date.now() - startedAt,
         rerankDiagnostics: {
           error: result.error,
           rawPreview: safeRawPreview(result.raw),
@@ -348,6 +390,14 @@ const tracedRerank = traceLLMStage(
     const raw = result.data;
     const selected = normalizeSelected(raw.selected, input.candidates);
     const rejected = normalizeRejected(raw.rejected, input.candidates);
+    const rerankTimingMs = Date.now() - startedAt;
+
+    // Count how raw IDs resolved: exact string match, numeric index, or unresolved
+    const selModes = countIdResolutionModes(raw.selected, input.candidates);
+    const rejModes = countIdResolutionModes(raw.rejected, input.candidates);
+    const exactIdCount = selModes.exactIdCount + rejModes.exactIdCount;
+    const numericIndexCount = selModes.numericIndexCount + rejModes.numericIndexCount;
+    const unresolvedCount = selModes.unresolvedCount + rejModes.unresolvedCount;
 
     let cappedSelected = validateSelected(
       selected,
@@ -367,11 +417,14 @@ const tracedRerank = traceLLMStage(
       input.plannerIntent,
     );
 
+    guarded.resolutionDiagnostics = { exactIdCount, numericIndexCount, unresolvedCount };
+
     return {
       ok: true,
       output: guarded,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      timingMs: rerankTimingMs,
     };
   },
   {
@@ -397,6 +450,7 @@ export const __testing = {
   rerankRequestExtensions,
   createRerankTimeout,
   safeRawPreview,
+  countIdResolutionModes,
 };
 
 /**
@@ -419,7 +473,7 @@ export function createRerankTimeout(timeoutMs: number): RerankTimeout {
   const promise = new Promise<MemoryRerankResult>((resolve) => {
     timerId = setTimeout(() => {
       controller.abort();
-      resolve({ ok: false, fallbackReason: `timeout_after_${timeoutMs}ms` });
+      resolve({ ok: false, fallbackReason: `timeout_after_${timeoutMs}ms`, timingMs: timeoutMs });
     }, timeoutMs);
   });
 
@@ -447,7 +501,7 @@ export async function rerankCandidates(
       tracedRerank({ ...input, signal: controller.signal }).catch((err) => {
         // Suppress post-race rejection caused by abort after timeout
         if (controller.signal.aborted) {
-          return { ok: false as const, fallbackReason: "suppressed_after_timeout" as const };
+          return { ok: false as const, fallbackReason: "suppressed_after_timeout" as const, timingMs: 0 };
         }
         throw err;
       }),
@@ -458,6 +512,6 @@ export async function rerankCandidates(
   } catch (e) {
     cancel();
     const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, fallbackReason: `exception: ${msg}` };
+    return { ok: false, fallbackReason: `exception: ${msg}`, timingMs: 0 };
   }
 }

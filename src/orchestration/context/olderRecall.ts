@@ -27,7 +27,7 @@ export interface OlderRecallInput {
   exclusiveRecentWindowFirstTurn: number;
   latestFrontierTurnIndex: number;
   structMemEnabled: boolean;
-  retrieveStructMemConsolidations: boolean;
+  shouldRetrieveConsolidations: boolean;
   sessionRecallLimit?: number;
   structMemEntryLimit?: number;
   structMemConsolidationLimit?: number;
@@ -114,7 +114,7 @@ export async function retrieveOlderRecall(
             limit: input.structMemEntryLimit,
           })
         : Promise.resolve([] as RetrievedStructMemEntry[]),
-      input.retrieveStructMemConsolidations
+      input.shouldRetrieveConsolidations
         ? retrievers.structMemConsolidations({
             ...base,
             memoryNamespace: input.memoryNamespace,

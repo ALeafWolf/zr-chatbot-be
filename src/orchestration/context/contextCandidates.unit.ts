@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ContextCandidate } from "./contextCandidates";
-import { applyCandidateSelection, filterCanonBySelection } from "./contextCandidates";
+import { applyCandidateSelection, filterCanonBySelection, buildPromptContextCandidates } from "./contextCandidates";
 
 function makeCandidate(id: string, source: string, extra?: Partial<ContextCandidate>): ContextCandidate {
   return {
@@ -183,5 +183,73 @@ describe("filterCanonBySelection", () => {
     const result = filterCanonBySelection([], [], ["chunk_a"]);
     assert.deepEqual(result.canonChunks, []);
     assert.deepEqual(result.canonScenes, []);
+  });
+});
+
+describe("buildPromptContextCandidates maxCandidates cap", () => {
+  it("defaults to TOTAL_CAP (24) when maxCandidates is not set", () => {
+    // Generate enough candidates to exceed default cap
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      recentTurns: [],
+    });
+    assert.ok(
+      result.candidates.length <= 24,
+      `expected at most 24 candidates, got ${result.candidates.length}`,
+    );
+  });
+
+  it("honors injected maxCandidates value", () => {
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      recentTurns: [],
+      maxCandidates: 10,
+    });
+    assert.ok(
+      result.candidates.length <= 10,
+      `expected at most 10 candidates, got ${result.candidates.length}`,
+    );
+  });
+
+  it("reports truncatedByTotalCap when candidates exceed cap", () => {
+    // Push enough structmem entries to exceed a tight cap
+    const entries = Array.from({ length: 8 }, (_, i) => ({
+      id: `entry_${i}`,
+      text: `entry ${i}`,
+      summaryText: `entry ${i}`,
+      finalScore: 0.5,
+      cosineSimilarity: 0.5,
+      turnIndex: i,
+      entryType: "event",
+      sourceTurnIndex: i,
+      turnStart: i,
+      turnEnd: i,
+      chunkType: "event",
+      chunkText: `entry ${i}`,
+    })) as any;
+
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: entries,
+      structMemEntries: entries,
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      recentTurns: [],
+      sessionSummaryText: "summary",
+      maxCandidates: 5,
+    });
+    assert.ok(result.diagnostics.truncatedByTotalCap > 0);
+    assert.ok(result.candidates.length <= 5);
   });
 });

@@ -631,11 +631,12 @@ describe("rerank timeout and abort", () => {
   it("createRerankTimeout cancel() prevents the timeout from firing", async () => {
     const { promise, controller, cancel } = __testing.createRerankTimeout(50);
     cancel(); // Cancel before timer fires
-    // After cancel, the promise never resolves. Race against a short sentinel
-    // to prove the timer was cleared.
+    // After cancel, the promise never resolves. Race against a delayed sentinel
+    // (100ms) to prove the timer was cleared — if cancel() did not work, the
+    // 50ms timeout would fire before the sentinel and the test would fail.
     const result = await Promise.race([
       promise.then(() => "timeout" as const),
-      Promise.resolve("sentinel" as const),
+      new Promise<"sentinel">((resolve) => setTimeout(() => resolve("sentinel"), 100)),
     ]);
     assert.equal(result, "sentinel", "canceled timeout should not resolve");
     assert.ok(!controller.signal.aborted, "canceled timeout should not abort the controller");
@@ -719,6 +720,89 @@ describe("rerank diagnostics shape", () => {
     assert.notEqual(rerank, null);
     assert.equal(rerank!.selectedCount, 1);
     assert.ok(Array.isArray(payload.topSources));
+  });
+});
+
+describe("countIdResolutionModes", () => {
+  const candidates: ContextCandidate[] = [
+    makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
+    makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
+    makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
+  ];
+
+  it("counts exact ID matches", () => {
+    const result = __testing.countIdResolutionModes(
+      [{ id: "session_summary" }, { id: "mem_1" }],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 2);
+    assert.equal(result.numericIndexCount, 0);
+    assert.equal(result.unresolvedCount, 0);
+  });
+
+  it("counts numeric index resolutions", () => {
+    const result = __testing.countIdResolutionModes(
+      [{ id: 0 }, { id: 2 }],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 0);
+    assert.equal(result.numericIndexCount, 2);
+    assert.equal(result.unresolvedCount, 0);
+  });
+
+  it("counts unresolved IDs", () => {
+    const result = __testing.countIdResolutionModes(
+      [{ id: "nonexistent" }, { id: 99 }],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 0);
+    assert.equal(result.numericIndexCount, 0);
+    assert.equal(result.unresolvedCount, 2);
+  });
+
+  it("counts numeric-string IDs that resolve by index as numeric", () => {
+    // "1" does not match any exact candidate ID, but resolves as index 1 → "latest_turn_delta"
+    const result = __testing.countIdResolutionModes(
+      [{ id: "1" }],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 0);
+    assert.equal(result.numericIndexCount, 1);
+    assert.equal(result.unresolvedCount, 0);
+  });
+
+  it("prefers exact match over numeric index for numeric-string IDs", () => {
+    // "session_summary" is a string that exactly matches a candidate ID
+    const result = __testing.countIdResolutionModes(
+      [{ id: "session_summary" }],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 1);
+    assert.equal(result.numericIndexCount, 0);
+    assert.equal(result.unresolvedCount, 0);
+  });
+
+  it("handles mixed resolution modes", () => {
+    const result = __testing.countIdResolutionModes(
+      [
+        { id: "session_summary" },  // exact
+        { id: 1 },                   // numeric index → latest_turn_delta
+        { id: "ghost" },             // unresolved
+        { id: "mem_1" },             // exact
+        { id: 99 },                  // unresolved
+      ],
+      candidates,
+    );
+    assert.equal(result.exactIdCount, 2);
+    assert.equal(result.numericIndexCount, 1);
+    assert.equal(result.unresolvedCount, 2);
+  });
+
+  it("handles empty input", () => {
+    const result = __testing.countIdResolutionModes([], candidates);
+    assert.equal(result.exactIdCount, 0);
+    assert.equal(result.numericIndexCount, 0);
+    assert.equal(result.unresolvedCount, 0);
   });
 });
 
