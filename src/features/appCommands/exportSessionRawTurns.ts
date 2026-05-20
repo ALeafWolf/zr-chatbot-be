@@ -1,6 +1,20 @@
 import type { ChatMessage } from "../../db/schema/chat";
-import type { ExportFormat, FileExportResult } from "./appCommandTypes";
+import type {
+  ExportFormat,
+  ExportOptions,
+  FileExportResult,
+  TurnType,
+} from "./appCommandTypes";
 import { APP_COMMAND_EXPORT } from "./appCommandTypes";
+
+// ---------------------------------------------------------------------------
+// Route mapping: TurnType → chat_messages.route value
+// ---------------------------------------------------------------------------
+const TURN_TYPE_ROUTE: Record<TurnType, string> = {
+  roleplay: "roleplay_turn",
+  app_command: "app_command",
+  unsupported: "unsupported",
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,29 +39,134 @@ function formatTimestamp(date: Date): string {
 }
 
 // ---------------------------------------------------------------------------
+// Thought normalization
+// ---------------------------------------------------------------------------
+interface NormalizedThought {
+  kind: string;
+  text: string;
+}
+
+/**
+ * Join streamed fragments without inserting spaces between CJK runs.
+ * Ported from frontend `joinNativeThoughtText` (`src/lib/thoughtDisplay.ts`).
+ */
+function joinTextFragments(fragments: string[]): string {
+  return fragments.reduce((prev, next) => {
+    if (!prev) return next;
+    if (!next) return prev;
+    const prevLast = prev[prev.length - 1];
+    const nextFirst = next[0];
+    if (prevLast === undefined || nextFirst === undefined) return prev + next;
+
+    // Both have spaces around boundary already
+    if (/\s/.test(prevLast) || /\s/.test(nextFirst)) return prev + next;
+
+    // Both are ASCII letters → insert space
+    if (/[a-zA-Z]/.test(prevLast) && /[a-zA-Z]/.test(nextFirst)) {
+      return `${prev} ${next}`;
+    }
+
+    // Default: concatenate (CJK or punctuation boundary)
+    return prev + next;
+  }, "");
+}
+
+function normalizeThoughts(
+  rawThoughts: unknown,
+): NormalizedThought[] {
+  if (!Array.isArray(rawThoughts) || rawThoughts.length === 0) return [];
+
+  const byKind = new Map<string, string[]>();
+
+  for (const t of rawThoughts) {
+    if (!t || typeof t !== "object") continue;
+    const kind = typeof (t as Record<string, unknown>).kind === "string"
+      ? (t as Record<string, unknown>).kind as string
+      : "native";
+    const text = typeof (t as Record<string, unknown>).text === "string"
+      ? (t as Record<string, unknown>).text as string
+      : "";
+    if (text.trim().length === 0) continue;
+
+    const arr = byKind.get(kind) ?? [];
+    arr.push(text);
+    byKind.set(kind, arr);
+  }
+
+  const result: NormalizedThought[] = [];
+  // Preserve first-appearance order
+  const seen = new Set<string>();
+  for (const t of rawThoughts) {
+    if (!t || typeof t !== "object") continue;
+    const kind = typeof (t as Record<string, unknown>).kind === "string"
+      ? (t as Record<string, unknown>).kind as string
+      : "native";
+    if (seen.has(kind)) continue;
+    const fragments = byKind.get(kind);
+    if (!fragments || fragments.length === 0) continue;
+    seen.add(kind);
+    result.push({
+      kind,
+      text: joinTextFragments(fragments),
+    });
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Message filtering
+// ---------------------------------------------------------------------------
+function filterByTurnTypes(
+  messages: ChatMessage[],
+  turnTypes: TurnType[],
+): ChatMessage[] {
+  const allowedRoutes = new Set(turnTypes.map((tt) => TURN_TYPE_ROUTE[tt]));
+  return messages.filter((m) => allowedRoutes.has(m.route));
+}
+
+// ---------------------------------------------------------------------------
 // JSON export
 // ---------------------------------------------------------------------------
 function buildJsonExport(
   messages: ChatMessage[],
   sessionId: string,
   title: string,
+  options: ExportOptions,
 ): string {
-  const exportData = {
+  const exportData: Record<string, unknown> = {
     session_id: sessionId,
     title,
     exported_at: new Date().toISOString(),
+    options: {
+      format: options.format,
+      turn_types: options.turn_types,
+      include_thoughts: options.include_thoughts,
+    },
     message_count: messages.length,
-    messages: messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      route: m.route,
-      turn_index: m.turnIndex,
-      created_at: m.createdAt,
-      content: m.content,
-      thoughts: Array.isArray(m.thoughts) ? m.thoughts : [],
-    })),
+    messages: messages.map((m) => {
+      const entry: Record<string, unknown> = {
+        id: m.id,
+        role: m.role,
+        route: m.route,
+        turn_type: turnTypeFromRoute(m.route),
+        turn_index: m.turnIndex,
+        created_at: m.createdAt,
+        content: m.content,
+      };
+      if (options.include_thoughts) {
+        entry.thoughts = normalizeThoughts(m.thoughts);
+      }
+      return entry;
+    }),
   };
   return JSON.stringify(exportData, null, 2);
+}
+
+function turnTypeFromRoute(route: string): TurnType {
+  if (route === "roleplay_turn") return "roleplay";
+  if (route === "app_command") return "app_command";
+  return "unsupported";
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +176,7 @@ function buildMarkdownExport(
   messages: ChatMessage[],
   sessionId: string,
   title: string,
+  includeThoughts: boolean,
 ): string {
   const parts: string[] = [];
   parts.push(`# Session Transcript: ${title}`);
@@ -76,6 +196,18 @@ function buildMarkdownExport(
     parts.push("");
     parts.push(m.content);
     parts.push("");
+
+    if (includeThoughts) {
+      const normalized = normalizeThoughts(m.thoughts);
+      if (normalized.length > 0) {
+        parts.push("> **Thoughts:**");
+        for (const nt of normalized) {
+          parts.push(`> _${nt.kind}_: ${nt.text}`);
+        }
+        parts.push("");
+      }
+    }
+
     parts.push("---");
     parts.push("");
   }
@@ -90,6 +222,7 @@ function buildTextExport(
   messages: ChatMessage[],
   sessionId: string,
   title: string,
+  includeThoughts: boolean,
 ): string {
   const SEP = "=".repeat(60);
   const SUB = "-".repeat(60);
@@ -113,6 +246,17 @@ function buildTextExport(
     parts.push("");
     parts.push(m.content);
     parts.push("");
+
+    if (includeThoughts) {
+      const normalized = normalizeThoughts(m.thoughts);
+      if (normalized.length > 0) {
+        parts.push("[Thoughts]");
+        for (const nt of normalized) {
+          parts.push(`  ${nt.kind}: ${nt.text}`);
+        }
+        parts.push("");
+      }
+    }
   }
 
   return parts.join("\n");
@@ -142,21 +286,36 @@ function exportMimeType(format: ExportFormat): string {
 // ---------------------------------------------------------------------------
 export function buildExportArtifact(
   messages: ChatMessage[],
-  format: ExportFormat,
+  options: ExportOptions,
   sessionId: string,
   displayTitle: string | null | undefined,
 ): FileExportResult {
   const sorted = [...messages].sort((a, b) => a.turnIndex - b.turnIndex);
+
+  // Apply turn-type filter
+  const filtered = filterByTurnTypes(sorted, options.turn_types);
+
   const title = displayTitle ?? `Session ${shortSessionId(sessionId)}`;
+  const format = options.format;
 
   const content = (() => {
     switch (format) {
       case "json":
-        return buildJsonExport(sorted, sessionId, title);
+        return buildJsonExport(filtered, sessionId, title, options);
       case "md":
-        return buildMarkdownExport(sorted, sessionId, title);
+        return buildMarkdownExport(
+          filtered,
+          sessionId,
+          title,
+          options.include_thoughts,
+        );
       case "txt":
-        return buildTextExport(sorted, sessionId, title);
+        return buildTextExport(
+          filtered,
+          sessionId,
+          title,
+          options.include_thoughts,
+        );
     }
   })();
 
@@ -166,6 +325,7 @@ export function buildExportArtifact(
     kind: "file_export",
     command: APP_COMMAND_EXPORT,
     message: `Your session transcript has been exported as ${format.toUpperCase()}.`,
+    options,
     artifact: {
       title,
       filename,
@@ -173,7 +333,7 @@ export function buildExportArtifact(
       format,
       content,
       byte_length: Buffer.byteLength(content, "utf8"),
-      message_count: sorted.length,
+      message_count: filtered.length,
     },
   };
 }

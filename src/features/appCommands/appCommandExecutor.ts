@@ -2,15 +2,15 @@ import { db } from "../../db/client";
 import { chatMessages } from "../../db/schema/chat";
 import { eq } from "drizzle-orm";
 import type { ChatSession } from "../../db/schema/chat";
-import type { AppCommandValidatorResult } from "./appCommandTypes";
+import type { AppCommandValidatorResult, ExportOptions } from "./appCommandTypes";
 import {
   APP_COMMAND_STATUS_OK,
   APP_COMMAND_STATUS_UNSUPPORTED,
 } from "./appCommandTypes";
-import type { ExportFormat } from "./appCommandTypes";
 import { parseAppCommandIntent } from "./appCommandIntent";
 import { buildExportArtifact } from "./exportSessionRawTurns";
 import { buildSessionStatus } from "./sessionStatus";
+import { buildExportHelp } from "./exportHelp";
 
 /**
  * Execute an app command for the given user message and session.
@@ -24,7 +24,7 @@ export async function executeAppCommand(
 
   switch (intent.command) {
     case "export_session_raw_turns": {
-      const format = intent.args.format as ExportFormat;
+      const options = intent.args as unknown as ExportOptions;
 
       const rows = await db
         .select()
@@ -32,15 +32,9 @@ export async function executeAppCommand(
         .where(eq(chatMessages.sessionId, session.sessionId))
         .orderBy(chatMessages.turnIndex);
 
-      // Default export omits prior app-command rows so transcripts represent the
-      // roleplay conversation rather than earlier utility commands (design: include_app_commands defaults false).
-      const transcriptMessages = rows.filter(
-        (m) => m.route !== "app_command",
-      );
-
       const result = buildExportArtifact(
-        transcriptMessages,
-        format,
+        rows,
+        options,
         session.sessionId,
         session.displayTitle,
       );
@@ -73,6 +67,18 @@ export async function executeAppCommand(
       };
     }
 
+    case "show_export_help": {
+      const language = intent.args.language as "en" | "zh";
+      const result = buildExportHelp(language);
+
+      return {
+        route: "app_command",
+        status: APP_COMMAND_STATUS_OK,
+        command: "show_export_help",
+        app_command: result,
+      };
+    }
+
     default: {
       return {
         route: "app_command",
@@ -82,10 +88,11 @@ export async function executeAppCommand(
           kind: "unsupported",
           command: "unknown",
           message:
-            "Unrecognized command. Available commands: export_session_raw_turns, show_session_status.",
+            "Unrecognized command. Available commands: export_session_raw_turns, show_session_status, show_export_help.",
           available_commands: [
             "export_session_raw_turns",
             "show_session_status",
+            "show_export_help",
           ],
         },
       };

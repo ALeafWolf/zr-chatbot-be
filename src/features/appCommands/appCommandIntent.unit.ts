@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { parseAppCommandIntent } from "./appCommandIntent";
 import {
   APP_COMMAND_EXPORT,
+  APP_COMMAND_HELP,
   APP_COMMAND_STATUS,
   APP_COMMAND_UNKNOWN,
 } from "./appCommandTypes";
@@ -78,6 +79,134 @@ describe("parseAppCommandIntent", () => {
   it('prefers explicit format over implicit "export"', () => {
     const result = parseAppCommandIntent("export as json please");
     assert.equal(result.args.format, "json");
+  });
+
+  // ---- default turn_types ----
+  it('defaults turn_types to ["roleplay", "unsupported"]', () => {
+    const result = parseAppCommandIntent("export this session");
+    assert.deepEqual(result.args.turn_types, ["roleplay", "unsupported"]);
+  });
+
+  it('defaults include_thoughts to false', () => {
+    const result = parseAppCommandIntent("export this session");
+    assert.equal(result.args.include_thoughts, false);
+  });
+
+  // ---- turn type filter parsing ----
+  it('parses "roleplay only" filter', () => {
+    const result = parseAppCommandIntent("export roleplay only as json");
+    assert.deepEqual(result.args.turn_types, ["roleplay"]);
+  });
+
+  it('parses "all" types filter', () => {
+    const result = parseAppCommandIntent("export all turns as text");
+    assert.deepEqual(result.args.turn_types, ["roleplay", "app_command", "unsupported"]);
+  });
+
+  it('parses "unsupport" as unsupported', () => {
+    const result = parseAppCommandIntent("export unsupport only");
+    assert.deepEqual(result.args.turn_types, ["unsupported"]);
+  });
+
+  it('parses "app commands" filter', () => {
+    const result = parseAppCommandIntent("export app commands as json");
+    assert.deepEqual(result.args.turn_types, ["app_command"]);
+  });
+
+  it('parses combined types: "roleplay and app commands"', () => {
+    const result = parseAppCommandIntent("export roleplay and app commands");
+    assert.deepEqual(result.args.turn_types, ["roleplay", "app_command"]);
+  });
+
+  // ---- include_thoughts parsing ----
+  it('parses "with thoughts"', () => {
+    const result = parseAppCommandIntent("export as json with thoughts");
+    assert.equal(result.args.include_thoughts, true);
+  });
+
+  it('parses "include thoughts"', () => {
+    const result = parseAppCommandIntent("export include thoughts");
+    assert.equal(result.args.include_thoughts, true);
+  });
+
+  it('parses "with reasoning" as include_thoughts', () => {
+    const result = parseAppCommandIntent("export as json with reasoning");
+    assert.equal(result.args.include_thoughts, true);
+  });
+
+  it('parses "with thinking" as include_thoughts', () => {
+    const result = parseAppCommandIntent("export with thinking");
+    assert.equal(result.args.include_thoughts, true);
+  });
+
+  it('parses "without thoughts" as exclude (precedence)', () => {
+    const result = parseAppCommandIntent("export as json with thoughts but without thoughts");
+    assert.equal(result.args.include_thoughts, false);
+  });
+
+  it('parses "no thoughts" as exclude', () => {
+    const result = parseAppCommandIntent("export as json no thoughts");
+    assert.equal(result.args.include_thoughts, false);
+  });
+
+  it('parses "exclude thoughts" as exclude', () => {
+    const result = parseAppCommandIntent("export exclude thoughts");
+    assert.equal(result.args.include_thoughts, false);
+  });
+
+  // ---- missing aliases (Review 010) ----
+  it('parses "full" as all types', () => {
+    const result = parseAppCommandIntent("export full history");
+    assert.deepEqual(result.args.turn_types, ["roleplay", "app_command", "unsupported"]);
+  });
+
+  it('parses "commands" as app_command', () => {
+    const result = parseAppCommandIntent("export commands only");
+    assert.deepEqual(result.args.turn_types, ["app_command"]);
+  });
+
+  it('parses "tool output" as app_command', () => {
+    const result = parseAppCommandIntent("export tool output");
+    assert.deepEqual(result.args.turn_types, ["app_command"]);
+  });
+
+  it('parses "story" as roleplay', () => {
+    const result = parseAppCommandIntent("export story");
+    assert.deepEqual(result.args.turn_types, ["roleplay"]);
+  });
+
+  it('parses "chat" as roleplay', () => {
+    const result = parseAppCommandIntent("export chat turns");
+    assert.deepEqual(result.args.turn_types, ["roleplay"]);
+  });
+
+  // ---- help detection ----
+  it('detects English help: "how do I export"', () => {
+    const result = parseAppCommandIntent("how do I export the session");
+    assert.equal(result.command, APP_COMMAND_HELP);
+    assert.equal(result.args.language, "en");
+  });
+
+  it('detects English help: "help with export"', () => {
+    const result = parseAppCommandIntent("help me with export options");
+    assert.equal(result.command, APP_COMMAND_HELP);
+  });
+
+  it('detects English help: "what export options"', () => {
+    const result = parseAppCommandIntent("what export options do I have");
+    assert.equal(result.command, APP_COMMAND_HELP);
+  });
+
+  it('detects Chinese help: "怎么导出"', () => {
+    const result = parseAppCommandIntent("怎么导出会话记录");
+    assert.equal(result.command, APP_COMMAND_HELP);
+    assert.equal(result.args.language, "zh");
+  });
+
+  it('detects Chinese help: "导出帮助"', () => {
+    const result = parseAppCommandIntent("导出帮助");
+    assert.equal(result.command, APP_COMMAND_HELP);
+    assert.equal(result.args.language, "zh");
   });
 
   // ---- status detection ----

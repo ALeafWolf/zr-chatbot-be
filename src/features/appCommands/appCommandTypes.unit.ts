@@ -15,6 +15,11 @@ describe("tryExtractAppCommandPayload", () => {
         kind: "file_export",
         command: "export_session_raw_turns",
         message: "Exported.",
+        options: {
+          format: "md",
+          turn_types: ["roleplay", "unsupported"],
+          include_thoughts: false,
+        },
         artifact: {
           title: "Test",
           filename: "test.md",
@@ -69,6 +74,11 @@ describe("AppCommandValidatorResultSchema", () => {
         kind: "file_export",
         command: "export_session_raw_turns",
         message: "Download ready.",
+        options: {
+          format: "json",
+          turn_types: ["roleplay", "unsupported"],
+          include_thoughts: false,
+        },
         artifact: {
           title: "S",
           filename: "s.json",
