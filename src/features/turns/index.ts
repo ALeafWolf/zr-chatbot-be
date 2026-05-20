@@ -5,4 +5,4 @@ export {
   type CharacterTurnSseEvent,
   type TurnInput,
   type TurnOutput,
-} from "../../orchestration/runCharacterTurn";
+} from "../../orchestration/turn/runCharacterTurn";

@@ -86,13 +86,6 @@ const envSchema = z.object({
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
   VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
-  CANON_LOOKUP_TOOL_ENABLED: z
-    .string()
-    .default("1")
-    .transform((v) => {
-      const s = v.trim().toLowerCase();
-      return s !== "0" && s !== "false" && s !== "off";
-    }),
   EVAL_ENABLE_LLM_JUDGE: z
     .string()
     .default("0")
@@ -243,6 +236,69 @@ const envSchema = z.object({
       const n = parseFloat(v.trim());
       if (Number.isNaN(n)) return 0.75;
       return Math.min(1, Math.max(0, n));
+    }),
+
+  // Memory Rerank
+  // Model binding for the LLM that judges which retrieved context to inject.
+  // Use EXTRACTOR_MODEL to reuse the extractor binding (same sentinel as STRUCTMEM_CONSOLIDATION_MODEL).
+  MEMORY_RERANK_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  MEMORY_RERANK_MAX_CANDIDATES: z
+    .string()
+    .default("24")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 24;
+      return Math.min(50, Math.max(8, n));
+    }),
+  MEMORY_RERANK_MAX_SELECTED: z
+    .string()
+    .default("8")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 8;
+      return Math.min(24, Math.max(1, n));
+    }),
+  MEMORY_RERANK_TIMEOUT_MS: z
+    .string()
+    .default("30000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1000) return 60000;
+      return Math.min(300000, Math.max(1000, n));
+    }),
+
+  // StructMem: Motif Probe
+  // Deterministic repeated-relationship-gesture detection and optional StructMem probe.
+  STRUCTMEM_MOTIF_PROBE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  STRUCTMEM_MOTIF_PROBE_TOP_K: z
+    .string()
+    .default("3")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 3;
+      return Math.min(10, n);
+    }),
+  STRUCTMEM_MOTIF_PROBE_MIN_SCORE: z
+    .string()
+    .default("0.5")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 0.5;
+      return Math.min(1, Math.max(0, n));
+    }),
+  STRUCTMEM_MOTIF_INJECT_MODE: z
+    .string()
+    .default("synthesis_only")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "entries_and_synthesis") return s;
+      return "synthesis_only";
     }),
 
   // Background Jobs

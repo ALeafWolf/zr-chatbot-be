@@ -44,9 +44,11 @@ export function createDeepSeekProvider(model: string): LLMProvider {
             })),
           },
         ) as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+        { signal: options.signal },
       );
 
-      const msg = response.choices[0]?.message as
+      const choice = response.choices[0];
+      const msg = choice?.message as
         | { content?: string | null; reasoning_content?: string | null }
         | undefined;
       const content = msg?.content ?? "";
@@ -58,6 +60,7 @@ export function createDeepSeekProvider(model: string): LLMProvider {
           typeof msg?.reasoning_content === "string"
             ? msg.reasoning_content
             : undefined,
+        finishReason: choice?.finish_reason ?? null,
       };
     },
 

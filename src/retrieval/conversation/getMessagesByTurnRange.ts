@@ -4,7 +4,7 @@ import { and, asc, between, eq } from "drizzle-orm";
 import {
   ROLEPLAY_TURN_ROUTE,
   type TurnRoute,
-} from "../../orchestration/turnRoutes";
+} from "../../orchestration/turn/turnRoutes";
 
 export interface MessageRow {
   role: "user" | "assistant";

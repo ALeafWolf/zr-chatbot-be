@@ -8,7 +8,7 @@ import {
   boolean,
   doublePrecision,
 } from "drizzle-orm/pg-core";
-import type { TurnRoute } from "../../orchestration/turnRoutes";
+import type { TurnRoute } from "../../orchestration/turn/turnRoutes";
 
 // ---------------------------------------------------------------------------
 // chat_sessions

@@ -1,4 +1,4 @@
-import { defaultTools } from "./toolRegistry";
+import { defaultTools, registerTool } from "./toolRegistry";
 
 defaultTools();
 
@@ -9,4 +9,3 @@ export {
 } from "./toolRegistry";
 export type { ToolCtx, ToolDef } from "./types";
 export { webSearchTool } from "./webSearchTool";
-export { canonLookupTool } from "./canonLookupTool";

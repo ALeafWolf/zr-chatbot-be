@@ -10,6 +10,13 @@ export interface PromptBlockStats {
   present: boolean;
 }
 
+export interface PromptSourceTokenEstimate {
+  source: string;
+  chars: number;
+  estimatedTokens: number;
+  present: boolean;
+}
+
 export interface PromptTracePayload {
   promptVersion: number;
   promptHash: string;
@@ -21,6 +28,7 @@ export interface PromptTracePayload {
   blockPresence: Record<string, boolean>;
   estimatedTokensByBlock: Record<string, number>;
   selectedSourceCounts?: Record<string, number>;
+  injectedTokensBySource?: PromptSourceTokenEstimate[];
 }
 
 export function estimateTextTokens(text: string | undefined | null): number {
@@ -48,6 +56,36 @@ export function analyzePromptBlocks(systemPrompt: string): PromptBlockStats[] {
       estimatedTokens: estimateTextTokens(body),
       present: body.length > 0,
     };
+  });
+}
+
+const INJECTED_SOURCE_LABELS = [
+  "RECENT CHAT",
+  "LATEST TURN DELTA",
+  "SESSION SUMMARY",
+  "RELEVANT SESSION RECALL",
+  "STRUCTURED EVENT MEMORY",
+  "STRUCTURED MEMORY SYNTHESIS",
+  "INTERACTIVE MEMORY",
+  "CANON NARRATIVE",
+];
+
+export function estimateInjectedTokensBySource(
+  systemPrompt: string,
+): PromptSourceTokenEstimate[] {
+  const blocks = analyzePromptBlocks(systemPrompt);
+  const blockMap = new Map(blocks.map((b) => [b.label, b]));
+
+  return INJECTED_SOURCE_LABELS.map((label) => {
+    const block = blockMap.get(label);
+    return block
+      ? {
+          source: label,
+          chars: block.chars,
+          estimatedTokens: block.estimatedTokens,
+          present: block.present,
+        }
+      : { source: label, chars: 0, estimatedTokens: 0, present: false };
   });
 }
 

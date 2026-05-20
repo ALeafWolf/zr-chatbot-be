@@ -114,13 +114,16 @@ export function createAnthropicProvider(model: string): LLMProvider {
         apiMessages.push({ role: "assistant", content: "{" });
       }
 
-      const response = await getClient().messages.create({
-        model,
-        max_tokens: options.maxTokens ?? 2048,
-        temperature: options.temperature ?? 1.0,
-        system: systemText.trim().length ? systemText.trim() : undefined,
-        messages: apiMessages,
-      });
+      const response = await getClient().messages.create(
+        {
+          model,
+          max_tokens: options.maxTokens ?? 2048,
+          temperature: options.temperature ?? 1.0,
+          system: systemText.trim().length ? systemText.trim() : undefined,
+          messages: apiMessages,
+        },
+        { signal: options.signal },
+      );
 
       const textChunks = response.content
         .filter((b): b is Anthropic.Messages.TextBlock => b.type === "text")
@@ -134,6 +137,7 @@ export function createAnthropicProvider(model: string): LLMProvider {
         content: text,
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
+        finishReason: response.stop_reason,
       };
     },
 
@@ -209,7 +213,7 @@ export function createAnthropicProvider(model: string): LLMProvider {
         temperature: options.temperature ?? 1.0,
         system: systemText.trim().length ? systemText.trim() : undefined,
         messages: anthropicMessages,
-      });
+      }, { signal: options.signal });
 
       let buf = "";
       for await (const event of stream) {

@@ -1,4 +1,4 @@
-import type { MemoryCorrectionContext } from "../../orchestration/memoryCorrections";
+import type { MemoryCorrectionContext } from "../../orchestration/context/memoryCorrections";
 
 export interface SupersessionCandidate {
   id: string;

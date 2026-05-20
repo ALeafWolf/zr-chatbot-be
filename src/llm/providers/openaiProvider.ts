@@ -24,22 +24,27 @@ export function createOpenAIProvider(model: string): LLMProvider {
       messages: LLMMessage[],
       options: ChatOptions = {},
     ): Promise<LLMResponse> {
-      const response = await getClient().chat.completions.create({
-        model,
-        max_tokens: options.maxTokens ?? 2048,
-        temperature: options.temperature ?? 1.0,
-        response_format: options.jsonMode ? { type: "json_object" } : undefined,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-      });
+      const response = await getClient().chat.completions.create(
+        {
+          model,
+          max_tokens: options.maxTokens ?? 2048,
+          temperature: options.temperature ?? 1.0,
+          response_format: options.jsonMode ? { type: "json_object" } : undefined,
+          messages: messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        },
+        { signal: options.signal },
+      );
 
-      const content = response.choices[0]?.message?.content ?? "";
+      const choice = response.choices[0];
+      const content = choice?.message?.content ?? "";
       return {
         content,
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
+        finishReason: choice?.finish_reason ?? null,
       };
     },
 

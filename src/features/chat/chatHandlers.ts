@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   runCharacterTurn,
   runCharacterTurnStreamTraced,
-} from "../../orchestration/runCharacterTurn";
+} from "../../orchestration/turn/runCharacterTurn";
 import { MessageParams, SendMessageBody } from "./chatSchemas";
 import { writeCharacterTurnEvent, writeSse } from "./sse";
 

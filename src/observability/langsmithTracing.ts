@@ -65,7 +65,8 @@ function isTestProcess(): boolean {
   return (
     process.env.NODE_ENV === "test" ||
     process.env.npm_lifecycle_event === "test:unit" ||
-    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test="))
+    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test=")) ||
+    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test"))
   );
 }
 

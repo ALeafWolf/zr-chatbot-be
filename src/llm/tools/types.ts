@@ -3,6 +3,7 @@ import type { ZodTypeAny } from "zod";
 export interface ToolCtx {
   sessionId: string;
   characterId: string;
+  memoryNamespace: string;
   continuityScope: string;
   continuityFamily: "main_world" | "au";
   signal: AbortSignal;

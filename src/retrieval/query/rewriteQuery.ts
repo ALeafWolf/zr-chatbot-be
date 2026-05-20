@@ -5,7 +5,7 @@ import { traceLLMStage, traceStage } from "../../observability/langsmithTracing"
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { CANON_RETRIEVAL, CANON_TIER3 } from "../../character/canonRules";
 import { env } from "../../config/env";
-import { REWRITE_ANNOTATION_INSTRUCTIONS } from "../../orchestration/userMessageAnnotations";
+import { REWRITE_ANNOTATION_INSTRUCTIONS } from "../../orchestration/annotations/userMessageAnnotations";
 import { extractLexicalTerms } from "../canon/lexicalCanonTerms";
 import {
   parseStructuralSpans,

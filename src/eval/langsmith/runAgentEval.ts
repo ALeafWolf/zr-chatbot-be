@@ -1,6 +1,6 @@
 import { env } from "../../config/env";
 import { postTurnRunner } from "../../jobs/postTurnRunner";
-import { runCharacterTurn } from "../../orchestration/runCharacterTurn";
+import { runCharacterTurn } from "../../orchestration/turn/runCharacterTurn";
 import { withTraceContext } from "../../observability/langsmithTracing";
 import {
   buildAgentEvalOutput,

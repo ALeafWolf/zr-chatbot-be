@@ -18,6 +18,7 @@ export type ToolChatMessage =
       role: "assistant";
       content: string | null;
       tool_calls?: OpenAIToolCall[];
+      reasoning_content?: string;
     }
   | { role: "tool"; tool_call_id: string; content: string };
 
@@ -48,6 +49,7 @@ export interface LLMResponse {
   outputTokens: number;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
   reasoningContent?: string;
+  finishReason?: string | null;
 }
 
 export interface LLMProvider {

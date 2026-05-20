@@ -34,6 +34,21 @@ export interface RetrievalEvalSnapshot {
     reason?: string;
   }>;
   timingsMs?: Record<string, number> | null;
+  rerank?: {
+    enabled: boolean;
+    candidateIds: EvalSourceIds;
+    selected: Array<{
+      source: EvalMemorySource | "canon" | "session_summary";
+      id: string;
+      relevance: string;
+      usageInstruction: string;
+      reason?: string;
+    }>;
+    rejectedCount: number;
+    finalContextMode: string;
+    needsEvidenceFallback: boolean;
+    fallbackUsed?: boolean;
+  };
 }
 
 export interface ValidationEvalSnapshot {
