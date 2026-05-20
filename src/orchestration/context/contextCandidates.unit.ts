@@ -187,59 +187,106 @@ describe("filterCanonBySelection", () => {
 });
 
 describe("buildPromptContextCandidates maxCandidates cap", () => {
-  it("defaults to TOTAL_CAP (24) when maxCandidates is not set", () => {
-    // Generate enough candidates to exceed default cap
+  // Generate enough candidates across multiple sources to exceed the
+  // default TOTAL_CAP (24) and any injected cap used in these tests.
+  // Caps per source (SOURCE_CAPS): structmem_entry=6, session_chunk=5,
+  // open_thread=3, interactive_memory=4, canon_chunk=4,
+  // structmem_consolidation=4, memory_correction=3, plus session_summary=1,
+  // latest_turn_delta=1, motif_probe=3. Total possible = 34.
+  const entries = Array.from({ length: 10 }, (_, i) => ({
+    id: `entry_${i}`,
+    text: `entry ${i}`,
+    summaryText: `entry ${i}`,
+    finalScore: 0.5,
+    cosineSimilarity: 0.5,
+    turnIndex: i,
+    entryType: "event" as const,
+    sourceTurnIndex: i,
+    turnStart: i,
+    turnEnd: i,
+    chunkType: "event" as const,
+    chunkText: `entry ${i}`,
+    textContent: `entry ${i}`,
+    canonPriority: 0.5,
+    contentType: "narrative" as const,
+    speaker: null,
+    rankScore: 0.5,
+  })) as any;
+
+  const memories = Array.from({ length: 10 }, (_, i) => ({
+    id: `mem_${i}`,
+    summary: `memory ${i}`,
+    cosineSimilarity: 0.5,
+    importanceScore: 0.5,
+    emotionScore: 0.5,
+  })) as any;
+
+  const openThreads = Array.from({ length: 8 }, (_, i) => ({
+    id: `ot_${i}`,
+    source: "session_summary" as const,
+    text: `thread ${i}`,
+    status: "open" as const,
+    sourceTurnIndex: i,
+    score: 0.5,
+  })) as any;
+
+  it("defaults to TOTAL_CAP (24) with enough candidates to exceed it", () => {
     const result = buildPromptContextCandidates({
-      memories: [],
-      sessionRecall: [],
-      structMemEntries: [],
-      structMemConsolidations: [],
-      openThreads: [],
-      canonChunks: [],
+      memories,
+      sessionRecall: entries,
+      structMemEntries: entries,
+      structMemConsolidations: entries,
+      openThreads,
+      canonChunks: entries,
       recentTurns: [],
+      sessionSummaryText: "A long session summary that should appear as a candidate.",
+      latestTurnDeltaText: "Latest turn delta text for the shortlist.",
+      memoryCorrections: [
+        { sourceTurnIndex: 0, oldClaim: "wrong", correctedClaim: "right" },
+        { sourceTurnIndex: 1, oldClaim: "old", correctedClaim: "new" },
+        { sourceTurnIndex: 2, oldClaim: "bad", correctedClaim: "good" },
+      ],
+      motifProbeText: "matched motif term text from probe",
     });
+    // With all sources populated the shortlist exceeds 24; the cap should
+    // truncate to exactly 24.
+    assert.equal(result.candidates.length, 24,
+      `expected exactly 24 candidates (TOTAL_CAP), got ${result.candidates.length}`);
     assert.ok(
-      result.candidates.length <= 24,
-      `expected at most 24 candidates, got ${result.candidates.length}`,
+      result.diagnostics.truncatedByTotalCap > 0,
+      "should report truncation when candidates exceed TOTAL_CAP",
     );
   });
 
-  it("honors injected maxCandidates value", () => {
+  it("honors injected maxCandidates=10 with enough candidates to exceed it", () => {
     const result = buildPromptContextCandidates({
-      memories: [],
-      sessionRecall: [],
-      structMemEntries: [],
-      structMemConsolidations: [],
-      openThreads: [],
-      canonChunks: [],
+      memories,
+      sessionRecall: entries,
+      structMemEntries: entries,
+      structMemConsolidations: entries,
+      openThreads,
+      canonChunks: entries,
       recentTurns: [],
+      sessionSummaryText: "summary",
+      latestTurnDeltaText: "delta",
+      memoryCorrections: [
+        { sourceTurnIndex: 0, oldClaim: "wrong", correctedClaim: "right" },
+        { sourceTurnIndex: 1, oldClaim: "old", correctedClaim: "new" },
+      ],
+      motifProbeText: "probe",
       maxCandidates: 10,
     });
+    assert.equal(result.candidates.length, 10,
+      `expected exactly 10 candidates (maxCandidates=10), got ${result.candidates.length}`);
     assert.ok(
-      result.candidates.length <= 10,
-      `expected at most 10 candidates, got ${result.candidates.length}`,
+      result.diagnostics.truncatedByTotalCap > 0,
+      "should report truncation when candidates exceed maxCandidates",
     );
   });
 
-  it("reports truncatedByTotalCap when candidates exceed cap", () => {
-    // Push enough structmem entries to exceed a tight cap
-    const entries = Array.from({ length: 8 }, (_, i) => ({
-      id: `entry_${i}`,
-      text: `entry ${i}`,
-      summaryText: `entry ${i}`,
-      finalScore: 0.5,
-      cosineSimilarity: 0.5,
-      turnIndex: i,
-      entryType: "event",
-      sourceTurnIndex: i,
-      turnStart: i,
-      turnEnd: i,
-      chunkType: "event",
-      chunkText: `entry ${i}`,
-    })) as any;
-
+  it("reports truncatedByTotalCap when candidates exceed a tight cap", () => {
     const result = buildPromptContextCandidates({
-      memories: [],
+      memories,
       sessionRecall: entries,
       structMemEntries: entries,
       structMemConsolidations: [],
