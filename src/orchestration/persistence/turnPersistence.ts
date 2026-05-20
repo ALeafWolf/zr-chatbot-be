@@ -39,6 +39,11 @@ export interface PersistCompletedTurnInput {
   derivedState?: DerivedState;
   memories?: RetrievedMemory[];
   thoughts: Thought[];
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number | null;
+  };
 }
 
 export interface PersistCompletedTurnResult {
@@ -99,6 +104,20 @@ async function persistCompletedTurnImpl(
     const assistantMsgId = uuidv4();
     const now = new Date();
 
+    // Merge generation usage metadata into validator_result for roleplay
+    // assistant rows so session status can aggregate tracked tokens/cost.
+    const finalValidatorResult: unknown =
+      input.usage && input.route === ROLEPLAY_TURN_ROUTE
+        ? {
+            ...(input.validatorResult as Record<string, unknown> | undefined),
+            usage: {
+              input_tokens: input.usage.inputTokens,
+              output_tokens: input.usage.outputTokens,
+              estimated_cost_usd: input.usage.estimatedCostUsd,
+            },
+          }
+        : input.validatorResult;
+
     await tx.insert(chatMessages).values([
       {
         id: userMsgId,
@@ -117,7 +136,7 @@ async function persistCompletedTurnImpl(
         role: "assistant",
         route: input.route,
         content: input.assistantReply,
-        validatorResult: input.validatorResult as unknown as Record<
+        validatorResult: finalValidatorResult as unknown as Record<
           string,
           unknown
         >,

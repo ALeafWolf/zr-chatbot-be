@@ -33,6 +33,9 @@ export function writeCharacterTurnEvent(
     case "error":
       writeSse(reply, "error", ev.data);
       break;
+    case "route":
+      writeSse(reply, "route", ev.data);
+      break;
     default:
       break;
   }

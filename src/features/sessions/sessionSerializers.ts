@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatSession } from "../../db/schema/chat";
+import { tryExtractAppCommandPayload } from "../appCommands/appCommandTypes";
 
 export function serializeSessionListItem(
   s: Pick<
@@ -54,6 +55,7 @@ export function serializeSessionDetail(
       turn_index: m.turnIndex,
       created_at: m.createdAt,
       thoughts: Array.isArray(m.thoughts) ? (m.thoughts as unknown[]) : [],
+      app_command: tryExtractAppCommandPayload(m.validatorResult),
     })),
   };
 }
