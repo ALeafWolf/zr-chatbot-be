@@ -183,6 +183,21 @@ function parseIncludeThoughts(input: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Native thought option parsing (explicit debug-only prompts)
+// ---------------------------------------------------------------------------
+function parseIncludeNativeThoughts(input: string): boolean {
+  // Only explicit native/debug phrases enable native thought export.
+  // Generic phrases like "with thoughts" or "with reasoning" must NOT match.
+  return (
+    /\b(with|include|show)\s+.*\bnative\b.*\bthoughts?\b/i.test(input) ||
+    /\bdebug\s+(native\s+)?thoughts?\b/i.test(input) ||
+    /包含原生思考/i.test(input) ||
+    /原生思考.*(包含|显示|导出)/i.test(input) ||
+    /调试.*(原生思考|思考)/i.test(input)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Language detection for help text
 // ---------------------------------------------------------------------------
 function hasCjk(text: string): boolean {
@@ -213,6 +228,7 @@ export function parseAppCommandIntent(
         format: detectExportFormat(userMessage) ?? "md",
         turn_types: parseTurnTypes(userMessage),
         include_thoughts: parseIncludeThoughts(userMessage),
+        include_native_thoughts: parseIncludeNativeThoughts(userMessage),
       },
     };
   }

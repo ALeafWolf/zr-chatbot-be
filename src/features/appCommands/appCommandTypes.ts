@@ -39,6 +39,7 @@ export const ExportOptionsSchema = z.object({
   format: ExportFormatSchema,
   turn_types: z.array(TurnTypeSchema).min(1),
   include_thoughts: z.boolean(),
+  include_native_thoughts: z.boolean().default(false),
 });
 export type ExportOptions = z.infer<typeof ExportOptionsSchema>;
 

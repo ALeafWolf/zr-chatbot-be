@@ -19,6 +19,7 @@ describe("tryExtractAppCommandPayload", () => {
           format: "md",
           turn_types: ["roleplay", "unsupported"],
           include_thoughts: false,
+          include_native_thoughts: false,
         },
         artifact: {
           title: "Test",
@@ -78,6 +79,7 @@ describe("AppCommandValidatorResultSchema", () => {
           format: "json",
           turn_types: ["roleplay", "unsupported"],
           include_thoughts: false,
+          include_native_thoughts: false,
         },
         artifact: {
           title: "S",

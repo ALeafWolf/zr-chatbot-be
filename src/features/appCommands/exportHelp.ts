@@ -26,6 +26,8 @@ const EN_SECTIONS = [
     title: "Thoughts",
     items: [
       "Excluded by default — ask for \"with thoughts\" to include normalized reasoning.",
+      "Normal thought export includes recall, tool decisions, rewrites, and deflects.",
+      "Native/internal thoughts require an explicit \"with native thoughts\" or \"debug thoughts\" request.",
     ],
   },
   {
@@ -64,6 +66,8 @@ const ZH_SECTIONS = [
     title: "思考过程",
     items: [
       "默认不包含思考过程，添加 \"包含思考\" 可以导出规范化思考内容。",
+      "正常思考导出包含 recall、tool_decision、rewrite 和 deflect 类型。",
+      "原生/内部思考需要明确添加 \"包含原生思考\" 或 \"调试思考\" 请求。",
     ],
   },
   {

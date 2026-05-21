@@ -71,9 +71,9 @@ function joinTextFragments(fragments: string[]): string {
   }, "");
 }
 
-/** Supported thought kinds eligible for export when include_thoughts is true. */
+/** Normal exportable thought kinds — excludes `native` (gated behind
+ *  `include_native_thoughts` for privacy). */
 const EXPORTABLE_THOUGHT_KINDS = new Set([
-  "native",
   "recall",
   "tool_decision",
   "tool_result",
@@ -83,8 +83,12 @@ const EXPORTABLE_THOUGHT_KINDS = new Set([
 
 function normalizeThoughts(
   rawThoughts: unknown,
+  includeNative: boolean,
 ): NormalizedThought[] {
   if (!Array.isArray(rawThoughts) || rawThoughts.length === 0) return [];
+
+  const allowed = new Set(EXPORTABLE_THOUGHT_KINDS);
+  if (includeNative) allowed.add("native");
 
   const byKind = new Map<string, string[]>();
 
@@ -92,7 +96,7 @@ function normalizeThoughts(
     if (!t || typeof t !== "object") continue;
     const row = t as Record<string, unknown>;
     const kind = row.kind;
-    if (typeof kind !== "string" || !EXPORTABLE_THOUGHT_KINDS.has(kind)) continue;
+    if (typeof kind !== "string" || !allowed.has(kind)) continue;
     const text = typeof row.text === "string" ? row.text : "";
     if (text.trim().length === 0) continue;
 
@@ -107,7 +111,7 @@ function normalizeThoughts(
   for (const t of rawThoughts) {
     if (!t || typeof t !== "object") continue;
     const kind = (t as Record<string, unknown>).kind;
-    if (typeof kind !== "string" || !EXPORTABLE_THOUGHT_KINDS.has(kind)) continue;
+    if (typeof kind !== "string" || !allowed.has(kind)) continue;
     if (seen.has(kind)) continue;
     const fragments = byKind.get(kind);
     if (!fragments || fragments.length === 0) continue;
@@ -149,6 +153,7 @@ function buildJsonExport(
       format: options.format,
       turn_types: options.turn_types,
       include_thoughts: options.include_thoughts,
+      include_native_thoughts: options.include_native_thoughts,
     },
     message_count: messages.length,
     messages: messages.map((m) => {
@@ -162,7 +167,7 @@ function buildJsonExport(
         content: m.content,
       };
       if (options.include_thoughts) {
-        entry.thoughts = normalizeThoughts(m.thoughts);
+        entry.thoughts = normalizeThoughts(m.thoughts, options.include_native_thoughts);
       }
       return entry;
     }),
@@ -184,6 +189,7 @@ function buildMarkdownExport(
   sessionId: string,
   title: string,
   includeThoughts: boolean,
+  includeNative: boolean,
 ): string {
   const parts: string[] = [];
   parts.push(`# Session Transcript: ${title}`);
@@ -205,7 +211,7 @@ function buildMarkdownExport(
     parts.push("");
 
     if (includeThoughts) {
-      const normalized = normalizeThoughts(m.thoughts);
+      const normalized = normalizeThoughts(m.thoughts, includeNative);
       if (normalized.length > 0) {
         parts.push("> **Thoughts:**");
         for (const nt of normalized) {
@@ -230,6 +236,7 @@ function buildTextExport(
   sessionId: string,
   title: string,
   includeThoughts: boolean,
+  includeNative: boolean,
 ): string {
   const SEP = "=".repeat(60);
   const SUB = "-".repeat(60);
@@ -255,7 +262,7 @@ function buildTextExport(
     parts.push("");
 
     if (includeThoughts) {
-      const normalized = normalizeThoughts(m.thoughts);
+      const normalized = normalizeThoughts(m.thoughts, includeNative);
       if (normalized.length > 0) {
         parts.push("[Thoughts]");
         for (const nt of normalized) {
@@ -315,6 +322,7 @@ export function buildExportArtifact(
           sessionId,
           title,
           options.include_thoughts,
+          options.include_native_thoughts,
         );
       case "txt":
         return buildTextExport(
@@ -322,6 +330,7 @@ export function buildExportArtifact(
           sessionId,
           title,
           options.include_thoughts,
+          options.include_native_thoughts,
         );
     }
   })();

@@ -17,6 +17,7 @@ function opts(
     format,
     turn_types: ["roleplay", "unsupported"],
     include_thoughts: false,
+    include_native_thoughts: false,
     ...overrides,
   };
 }
@@ -157,7 +158,7 @@ describe("buildExportArtifact", () => {
       assert.equal(parsed.session_id, SESSION_ID);
       assert.equal(parsed.title, "Test");
       assert.equal(parsed.message_count, 4);
-      assert.deepEqual(parsed.options, { format: "json", turn_types: ["roleplay"], include_thoughts: false });
+      assert.deepEqual(parsed.options, { format: "json", turn_types: ["roleplay"], include_thoughts: false, include_native_thoughts: false });
       assert.ok(typeof parsed.exported_at === "string");
     });
 
@@ -246,7 +247,7 @@ describe("buildExportArtifact", () => {
 
     it("includes normalized thoughts when include_thoughts is true (JSON)", () => {
       const r = buildExportArtifact(
-        messagesWithThoughts, opts("json", { include_thoughts: true }), SESSION_ID, null,
+        messagesWithThoughts, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null,
       );
       const parsed = JSON.parse(r.artifact.content);
       const thoughts = parsed.messages[0].thoughts;
@@ -263,7 +264,7 @@ describe("buildExportArtifact", () => {
 
     it("includes thoughts in Markdown when include_thoughts is true", () => {
       const r = buildExportArtifact(
-        messagesWithThoughts, opts("md", { include_thoughts: true }), SESSION_ID, null,
+        messagesWithThoughts, opts("md", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null,
       );
       assert.match(r.artifact.content, /remembered context/);
       assert.match(r.artifact.content, /The user says/);
@@ -271,7 +272,7 @@ describe("buildExportArtifact", () => {
 
     it("includes thoughts in text when include_thoughts is true", () => {
       const r = buildExportArtifact(
-        messagesWithThoughts, opts("txt", { include_thoughts: true }), SESSION_ID, null,
+        messagesWithThoughts, opts("txt", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null,
       );
       assert.match(r.artifact.content, /remembered context/);
       assert.match(r.artifact.content, /The user says/);
@@ -301,7 +302,7 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(ascii, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(ascii, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts[0].text, "I think so");
     });
@@ -317,7 +318,7 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(cjk, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(cjk, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts[0].text, "我觉得可以");
     });
@@ -332,7 +333,7 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(mixed, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(mixed, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts[0].text, "OK 好的");
     });
@@ -349,7 +350,7 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(unknown, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(unknown, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts.length, 2);
       assert.equal(parsed.messages[0].thoughts[0].kind, "native");
@@ -367,7 +368,7 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(noKind, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(noKind, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts.length, 2);
       assert.equal(parsed.messages[0].thoughts[0].kind, "native");
@@ -402,10 +403,47 @@ describe("buildExportArtifact", () => {
           ],
         }),
       ];
-      const r = buildExportArtifact(mixed, opts("txt", { include_thoughts: true }), SESSION_ID, null);
+      const r = buildExportArtifact(mixed, opts("txt", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
       assert.match(r.artifact.content, /keep me/);
       assert.match(r.artifact.content, /keep me too/);
       assert.doesNotMatch(r.artifact.content, /drop me/);
+    });
+
+    it("excludes native thoughts when include_native_thoughts is false", () => {
+      const msg: ChatMessage[] = [
+        makeMsg({
+          id: "g1", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "native", text: "should be excluded", ts: 1 },
+            { kind: "recall", text: "should be included", ts: 2 },
+            { kind: "tool_decision", text: "also included", ts: 3 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(msg, opts("json", { include_thoughts: true, include_native_thoughts: false }), SESSION_ID, null);
+      const parsed = JSON.parse(r.artifact.content);
+      assert.equal(parsed.messages[0].thoughts.length, 2);
+      assert.equal(parsed.messages[0].thoughts[0].kind, "recall");
+      assert.equal(parsed.messages[0].thoughts[1].kind, "tool_decision");
+    });
+
+    it("includes native thoughts when include_native_thoughts is true", () => {
+      const msg: ChatMessage[] = [
+        makeMsg({
+          id: "g2", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "recall", text: "context", ts: 1 },
+            { kind: "native", text: "native text", ts: 2 },
+            { kind: "deflect", text: "deflected", ts: 3 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(msg, opts("json", { include_thoughts: true, include_native_thoughts: true }), SESSION_ID, null);
+      const parsed = JSON.parse(r.artifact.content);
+      assert.equal(parsed.messages[0].thoughts.length, 3);
+      assert.equal(parsed.messages[0].thoughts[0].kind, "recall");
+      assert.equal(parsed.messages[0].thoughts[1].kind, "native");
+      assert.equal(parsed.messages[0].thoughts[2].kind, "deflect");
     });
   });
 

@@ -154,6 +154,47 @@ describe("parseAppCommandIntent", () => {
     assert.equal(result.args.include_thoughts, false);
   });
 
+  // ---- include_native_thoughts parsing ----
+  it('defaults include_native_thoughts to false', () => {
+    const result = parseAppCommandIntent("export as json with thoughts");
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('does not enable native from "with thoughts"', () => {
+    const result = parseAppCommandIntent("export with thoughts");
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('does not enable native from "with reasoning"', () => {
+    const result = parseAppCommandIntent("export with reasoning");
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('does not enable native from "with thinking"', () => {
+    const result = parseAppCommandIntent("export with thinking");
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('enables native from "include native thoughts"', () => {
+    const result = parseAppCommandIntent("export include native thoughts");
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  it('enables native from "with native thoughts"', () => {
+    const result = parseAppCommandIntent("export with native thoughts");
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  it('enables native from "debug thoughts"', () => {
+    const result = parseAppCommandIntent("export debug thoughts");
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  it('enables native from Chinese "包含原生思考"', () => {
+    const result = parseAppCommandIntent("导出包含原生思考");
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
   // ---- missing aliases (Review 010) ----
   it('parses "full" as all types', () => {
     const result = parseAppCommandIntent("export full history");
