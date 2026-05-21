@@ -20,6 +20,7 @@ import {
 import {
   attachTraceLlmMetadata,
   buildTraceBaseMetadata,
+  estimateModelCost,
 } from "../../observability/traceMetadata";
 import { models } from "../../config/models";
 import type { Thought } from "../thought/thoughtTypes";
@@ -38,6 +39,8 @@ import {
   persistedRouteForRoleplayResult,
   type TurnRoute,
 } from "./turnRoutes";
+import { executeAppCommand } from "../../features/appCommands/appCommandExecutor";
+import type { AppCommandResult } from "../../features/appCommands/appCommandTypes";
 import {
   createRecallThoughtTask,
   takeReadyRecallThought,
@@ -170,9 +173,11 @@ export type CharacterTurnSseEvent =
         was_deflected: boolean;
         route: TurnRoute;
         thoughts: Thought[];
+        app_command?: AppCommandResult;
       };
     }
-  | { event: "error"; data: { message: string } };
+  | { event: "error"; data: { message: string } }
+  | { event: "route"; data: { route: TurnRoute } };
 
 const FINAL_REPLY_REPLAY_SLICE = 96;
 
@@ -438,6 +443,11 @@ async function* runRoleplayTurnStream(
       persistedRoute,
     });
 
+    const estimatedCostUsd = estimateModelCost(models.generation, {
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+    });
+
     const persisted = await persistCompletedTurn({
       session,
       userMessage,
@@ -447,6 +457,11 @@ async function* runRoleplayTurnStream(
       derivedState: context.derivedState,
       memories: context.memories,
       thoughts: thoughtsAcc,
+      usage: {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        estimatedCostUsd,
+      },
     });
 
     if (finalRecallThought.timedOut) {
@@ -506,23 +521,23 @@ async function* runAppCommandTurnStream(
     userMessageChars: userMessage.length,
   });
 
-  const content =
-    "App command recognized. Command execution is not implemented yet.";
+  const validatorResult = await executeAppCommand(userMessage, session);
+
+  if (signal?.aborted) return;
+
+  const content = validatorResult.app_command.message;
   const persisted = await persistCompletedTurn({
     session,
     userMessage,
     assistantReply: content,
-    validatorResult: {
-      route: APP_COMMAND_ROUTE,
-      status: "not_implemented",
-    },
+    validatorResult,
     route: APP_COMMAND_ROUTE,
     thoughts: [],
   });
 
   if (signal?.aborted) return;
 
-  yield* replayPersistedContent(content);
+  // App commands emit a single done event with structured payload — no deltas.
   yield {
     event: "done",
     data: {
@@ -533,6 +548,7 @@ async function* runAppCommandTurnStream(
       was_deflected: false,
       route: APP_COMMAND_ROUTE,
       thoughts: [],
+      app_command: validatorResult.app_command,
     },
   };
 }
@@ -596,6 +612,10 @@ export async function* runCharacterTurnStream(
       confidence: routeIntent.confidence,
       fallbackReason: routeIntent.fallbackReason,
     });
+
+    // Emit the route early so the frontend can adapt its UI — for example,
+    // suppress the character streaming bubble for app commands.
+    yield { event: "route", data: { route: routeIntent.type } };
 
     switch (routeIntent.type) {
       case ROLEPLAY_TURN_ROUTE:
