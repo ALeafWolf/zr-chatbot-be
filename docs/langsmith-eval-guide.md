@@ -4,25 +4,39 @@ How to create, run, and interpret LangSmith-based evaluations for the chatbot ba
 
 ## Overview
 
-The eval system runs isolated, reproducible full-turn agent evaluations and reports structured results to LangSmith. It covers retrieval quality, validation correctness, memory write behavior, token usage, and latency — all without touching real user sessions.
+The eval system runs isolated, reproducible evaluations and reports structured results to LangSmith. It covers three modes:
+
+| Mode | Entry | What runs |
+| --- | --- | --- |
+| **Validator-only** (`eval_mode` omitted or `"default"`) | `input_draft` present | `runResponseValidator` on a fixed draft — no retrieval or generation |
+| **Retrieval-only** (`eval_mode: "retrieval"`) | `runRetrievalEvalForScenario` | Query rewrite + Tier-3 canon retrieval — no generation |
+| **Full agent turn** (`eval_mode: "agent_turn"`) | `runAgentEval` | Normal `runCharacterTurn` pipeline inside an isolated `eval_*` session, synchronous post-turn job, snapshot capture, cleanup |
+
+Metrics captured in agent-turn mode include retrieval (including **memory rerank** decisions), validation ladder, memory writes, token usage, and latency — without touching real user sessions.
 
 ### What's implemented
 
-- **Eval snapshot capture** (`src/eval/evalSnapshots.ts`) — side-channel data collection using Node.js `AsyncLocalStorage`. During an eval run, the orchestration, validation, and memory layers record structured snapshots without changing their normal function signatures.
+- **Eval snapshot capture** (`src/eval/evalSnapshots.ts`) — side-channel data collection using Node.js `AsyncLocalStorage`. During an eval run, orchestration, validation, and memory layers record structured snapshots without changing normal function signatures.
 - **Isolated eval sessions** (`src/eval/langsmith/seedEvalSession.ts`) — creates temporary sessions, messages, memories, StructMem entries, and consolidations with `eval_`-prefixed IDs.
 - **Cleanup** (`src/eval/langsmith/cleanupEvalSession.ts`) — deletes all seeded data after the eval completes, even on errors.
-- **Full-turn runner** (`src/eval/langsmith/runAgentEval.ts`) — seeds, runs a turn through the normal pipeline, executes the post-turn job synchronously, captures `AgentEvalOutput`, and cleans up.
+- **Full-turn runner** (`src/eval/langsmith/runAgentEval.ts`) — seeds, runs a turn through `runCharacterTurn`, executes the post-turn job synchronously when enqueued, captures `AgentEvalOutput`, and cleans up.
 - **Usage tracking** — LLM token counts and estimated cost are captured per span and aggregated.
+- **Deterministic assertions** (`src/eval/evalAssertions.ts`) — reply checks, validator field checks, canon/retrieval checks, and **rerank-specific** assertion types.
+- **Rerank evaluators** (`src/eval/evaluators/rerankEvaluators.ts`) — precision/recall/rejection/context-mode LangSmith evaluators (standalone helpers; not yet registered in `runLangSmithExperiment.ts`).
+- **Rerank scenario library** (`src/eval/datasets/rerankScenarios.ts`) — labeled scenarios for memory-rerank behavior (separate from `scenarios.json`; not pushed by default).
 
 ### What's not yet implemented
 
-LLM-as-judge evaluators, CI integration, online feedback, and the multi-dataset system (Milestones 5–9 in the implementation plan).
+- Wiring rerank LangSmith evaluators and `rerankScenarios.ts` into the main dataset push / experiment runner.
+- Passing rerank snapshot fields into `assertionsEvaluator` for `agent_turn` rows (rerank assertion types work in local `runAllAssertions` when you supply `AssertionContext.rerank` manually).
+- `npm run eval` local CLI for full agent-turn replay (use LangSmith or call `runAgentEval` directly).
+- CI integration, online feedback, and multi-dataset milestone automation.
 
 ## Prerequisites
 
 1. **LangSmith account** — API key from [smith.langchain.com](https://smith.langchain.com).
-2. **PostgreSQL** — running with the schema migrated (`npm run db:migrate`).
-3. **LLM provider keys** — at minimum `OPENAI_API_KEY` (for embeddings) plus your generation/validator model provider keys.
+2. **PostgreSQL** — running with the schema migrated (`npm run db:migrate`) and canon data populated.
+3. **LLM provider keys** — at minimum `OPENAI_API_KEY` (embeddings) plus generation, validator, extractor, and rerank model provider keys.
 4. **Node.js** — 20+.
 
 ## Environment Setup
@@ -45,8 +59,14 @@ APP_VERSION=dev                 # your app version tag
 GIT_SHA=unknown                 # set to $(git rev-parse HEAD) for CI
 TRACE_PLAYER_HASH_SALT=zuoran-local-trace-salt
 
-# Optional: enable LLM judges (not yet wired to agents, only validator)
-# EVAL_ENABLE_LLM_JUDGE=0
+# Memory rerank (used during agent_turn evals)
+MEMORY_RERANK_MODEL=EXTRACTOR_MODEL
+MEMORY_RERANK_MAX_CANDIDATES=24
+MEMORY_RERANK_MAX_SELECTED=8
+MEMORY_RERANK_TIMEOUT_MS=30000
+
+# Tier-4 attribution judge scenarios (optional)
+# VALIDATOR_STRICT_ATTRIBUTION=1
 ```
 
 Verify your config works:
@@ -72,13 +92,18 @@ seedEvalSession()              ← insert eval_* rows into DB
 createAgentEvalCapture()       ← start AsyncLocalStorage context
   │
   ▼
-runCharacterTurn()             ← normal pipeline runs inside capture
-  │  ├── resolveContext()      → recordRetrievalSnapshot()
+withTraceContext({ eval: true })
+  │
+  ▼
+runCharacterTurn()             ← normal pipeline inside capture
+  │  ├── classifyTurnRoute()
+  │  ├── resolveContext()      → planContext, retrieval, llm.memory_rerank
+  │  │                           → recordRetrievalSnapshot() (incl. rerank)
   │  ├── generateAndValidate() → recordValidationAttempt/Snapshot()
   │  └── llm calls             → recordLlmUsageSnapshot() (via tracing)
   │
   ▼
-postTurnRunner.runJobByIdForEval()  ← synchronous post-turn execution
+postTurnRunner.runJobByIdForEval()  ← synchronous post-turn (roleplay_turn only)
   │  ├── writeInteractiveMemory()   → incrementDurableMemoryStatus()
   │  ├── writeSessionMemoryChunk()  → incrementSessionChunkWrite()
   │  ├── writeStructMemTurn()       → recordMemoryWriteSnapshot()
@@ -94,22 +119,24 @@ cleanupEvalSession()            ← DELETE all eval_* rows
 LangSmith evaluators           ← assertionsEvaluator, retrievalQualityEvaluator
 ```
 
+Post-turn jobs are enqueued only when the persisted route is `roleplay_turn`. App-command and unsupported eval routes skip background memory work.
+
 ### Snapshot types captured
 
 | Snapshot | What it captures | Recorded by |
-|----------|-----------------|-------------|
-| `RetrievalEvalSnapshot` | Retrieved vs injected IDs per source, drop reasons, query intent, timings | `resolveContext.ts` |
-| `ValidationEvalSnapshot` | Each validation attempt, final pass/rewrite/deflection state | `generateAndValidate.ts` |
-| `MemoryWriteEvalSnapshot` | Post-turn job status, extraction counts, write plan, durable/session/structmem write counts, summary compaction | `postTurnRunner.ts`, `writeInteractiveMemory.ts`, `writeSessionMemoryChunk.ts`, `writeStructMemTurn.ts`, `turnPersistence.ts` |
-| `UsageEvalSnapshot` | Per-LLM-span input/output tokens, estimated cost, aggregated totals | `langsmithTracing.ts` |
+| --- | --- | --- |
+| `RetrievalEvalSnapshot` | Retrieved vs injected IDs per source, drop reasons, query intent, timings, **rerank selected/rejected/finalContextMode/fallbackUsed** | `orchestration/context/resolveContext.ts` |
+| `ValidationEvalSnapshot` | Each validation attempt, final pass/rewrite/deflection state | `orchestration/generation/generateAndValidate.ts` |
+| `MemoryWriteEvalSnapshot` | Post-turn job status, extraction counts, write plan, durable/session/structmem write counts, summary compaction | `jobs/postTurnRunner.ts`, memory write modules, `orchestration/persistence/turnPersistence.ts` |
+| `UsageEvalSnapshot` | Per-LLM-span input/output tokens, estimated cost, aggregated totals | `observability/langsmithTracing.ts` |
 
 ### Isolation guarantees
 
 - **Session IDs** — prefixed with `eval_<scenarioId>_<uuid>`.
 - **Player IDs** — prefixed with `eval_<scenarioId>_<uuid>`.
-- **Memory namespaces** — use the isolated player ID (so retrieval never crosses into real user data).
-- **`source: "eval_seed"`** — all seeded rows carry this metadata marker.
-- **Cleanup always runs** — `cleanupEvalSession` is called in a `finally`-equivalent path so eval data is deleted even when the turn throws.
+- **Memory namespaces** — use the isolated player ID (retrieval never crosses into real user data).
+- **`source: "eval_seed"`** — seeded StructMem rows carry this metadata marker.
+- **Cleanup always runs** — `cleanupEvalSession` deletes eval rows even when the turn throws.
 
 ## Running Unit Tests
 
@@ -117,13 +144,14 @@ LangSmith evaluators           ← assertionsEvaluator, retrievalQualityEvaluato
 npm run test:unit
 ```
 
-This runs all `*.unit.ts` files. The relevant test files for the eval system:
+Relevant test files:
 
 | Test file | Covers |
-|-----------|--------|
-| `src/eval/evalSnapshots.unit.ts` | Snapshot capture, retrieval recording, validation recording, LLM usage accumulation (including unknown-cost edge cases), `buildAgentEvalOutput` |
-| `src/eval/langsmith/runAgentEval.unit.ts` | `normalizeAgentEvalInput` — parsing legacy snake_case fields, error handling for missing fields |
-| `src/orchestration/retrievalDiagnostics.unit.ts` | Diagnostics payload including `droppedBudgetCount` |
+| --- | --- |
+| `src/eval/evalSnapshots.unit.ts` | Snapshot capture, retrieval (incl. rerank), validation recording, LLM usage accumulation, `buildAgentEvalOutput` |
+| `src/eval/langsmith/runAgentEval.unit.ts` | `normalizeAgentEvalInput` — legacy snake_case fields, `primed_memories` alias |
+| `src/orchestration/retrieval/memoryRerank.unit.ts` | Rerank prompt, parsing, timeout, empty-selection guard |
+| `src/orchestration/retrieval/retrievalDiagnostics.unit.ts` | Diagnostics payload including rerank timing |
 | `src/observability/traceMetadata.unit.ts` | Trace metadata construction, player ID hashing |
 | `src/observability/traceTags.unit.ts` | Tag generation and sanitization |
 
@@ -135,11 +163,113 @@ npx tsx --test src/eval/evalSnapshots.unit.ts
 
 ## Creating Eval Scenarios
 
-Scenarios live in `src/eval/scenarios.json`. Each scenario defines the seed data (session, messages, memories) and assertions.
+Primary scenarios live in `src/eval/scenarios.json` (currently **v2.1**). Each scenario defines seed data and assertions.
+
+Rerank-focused scenarios are maintained separately in `src/eval/datasets/rerankScenarios.ts` for future dataset integration.
+
+### Validator-only scenario (default mode)
+
+Uses `input_draft` — no live generation. This is what most rows in `scenarios.json` use today.
+
+```json
+{
+  "id": "no_ai_claim",
+  "description": "Character must not claim to be an AI or assistant",
+  "session": {
+    "mode": "canonical_live",
+    "continuity_scope": "main_relationship",
+    "continuity_family": "main_world"
+  },
+  "messages": [
+    { "role": "user", "content": "你是AI吗?" }
+  ],
+  "assertions": [
+    {
+      "type": "not_contains",
+      "value": "AI",
+      "description": "Reply must not contain the word AI"
+    },
+    {
+      "type": "validator_pass",
+      "field": "in_character",
+      "description": "Validator must score in_character=true"
+    }
+  ]
+}
+```
+
+For validator-only rows without `input_draft`, `npm run eval` prints a stub message and cannot check reply content. LangSmith `evalTarget` returns `mode: "skipped"` for those rows.
+
+### Tier-4 attribution judge scenario
+
+Requires `VALIDATOR_STRICT_ATTRIBUTION=1`. LangSmith skips `tier4_attribution_unsupported_first_visit` when strict mode is off.
+
+```json
+{
+  "id": "tier4_attribution_unsupported_first_visit",
+  "group": "tier4_attribution_judge",
+  "description": "Unsupported first-visit agency claim should force rewrite",
+  "session": {
+    "mode": "canonical_live",
+    "continuity_scope": "main_engaged",
+    "continuity_family": "main_world"
+  },
+  "input_draft": "第一次是她临时起意拉他去的。",
+  "validator_retrieved_canon": "（评测固件）枫河露营公园：两人首次同往为临时出行…",
+  "assertions": [
+    {
+      "type": "validator_field",
+      "field": "canon_consistent",
+      "expected": false,
+      "description": "Unsupported attribution should mark canon_consistent false"
+    },
+    {
+      "type": "validator_field",
+      "field": "needs_rewrite",
+      "expected": true,
+      "description": "Unsupported attribution should request rewrite"
+    }
+  ]
+}
+```
+
+### Scenario with eval_mode: "retrieval"
+
+Skips generation — tests Tier-3 canon retrieval only.
+
+```json
+{
+  "id": "canon_retrieval_tier3_scene_1",
+  "description": "Tier 3 retrieval should find a specific canon scene",
+  "group": "retrieval",
+  "eval_mode": "retrieval",
+  "session": {
+    "mode": "canonical_live",
+    "continuity_scope": "main_relationship",
+    "continuity_family": "main_world"
+  },
+  "messages": [
+    { "role": "user", "content": "Tell me about the first time we met at the cafe" }
+  ],
+  "retrieval_expected_needle": "cafe_first_meeting",
+  "assertions": [
+    {
+      "type": "retrieval_min_anchors",
+      "min_scenes": 1,
+      "description": "At least 1 canon scene should be found"
+    },
+    {
+      "type": "canon_contains_all",
+      "values": ["expected_substring"],
+      "description": "Retrieved canon must contain required needles"
+    }
+  ]
+}
+```
 
 ### Scenario with eval_mode: "agent_turn"
 
-This mode runs a full isolated turn through the entire backend pipeline.
+Runs the full isolated pipeline. Add `"eval_mode": "agent_turn"` to the scenario and push to LangSmith (not currently present in `scenarios.json` v2.1, but supported by `runAgentEval`).
 
 ```json
 {
@@ -154,21 +284,9 @@ This mode runs a full isolated turn through the entire backend pipeline.
     "writeback_policy": "no_writeback"
   },
   "messages": [
-    {
-      "role": "user",
-      "content": "Hey, do you remember what I told you about drinks?",
-      "turn_index": 1
-    },
-    {
-      "role": "assistant",
-      "content": "You mentioned something about coffee, right?",
-      "turn_index": 2
-    },
-    {
-      "role": "user",
-      "content": "What's my favorite drink?",
-      "turn_index": 3
-    }
+    { "role": "user", "content": "Hey, do you remember what I told you about drinks?", "turn_index": 1 },
+    { "role": "assistant", "content": "You mentioned something about coffee, right?", "turn_index": 2 },
+    { "role": "user", "content": "What's my favorite drink?", "turn_index": 3 }
   ],
   "durableMemories": [
     {
@@ -179,133 +297,104 @@ This mode runs a full isolated turn through the entire backend pipeline.
   ],
   "assertions": [
     {
-      "type": "contains",
-      "value": "coffee",
+      "type": "contains_any",
+      "values": ["coffee", "黑咖啡"],
       "description": "Reply must mention coffee"
-    },
-    {
-      "type": "not_contains",
-      "value": "tea",
-      "description": "Reply should not mention tea as a preference"
     }
   ]
 }
 ```
 
-### Scenario with eval_mode: "retrieval" (retrieval only)
-
-Skips generation — only tests canon retrieval quality.
-
-```json
-{
-  "id": "canon_retrieval_tier3_scene_1",
-  "description": "Tier 3 retrieval should find a specific canon scene",
-  "group": "retrieval",
-  "eval_mode": "retrieval",
-  "session": {
-    "mode": "canonical_live",
-    "continuity_scope": "main_relationship",
-    "continuity_family": "main_world"
-  },
-  "messages": [
-    {
-      "role": "user",
-      "content": "Tell me about the first time we met at the cafe"
-    }
-  ],
-  "retrieval_expected_needle": "cafe_first_meeting",
-  "assertions": [
-    {
-      "type": "retrieval_min_anchors",
-      "min_scenes": 1,
-      "description": "At least 1 canon scene should be found"
-    }
-  ]
-}
-```
-
-### Scenario with eval_mode: "default" (validator only)
-
-Tests just the validator against a pre-written draft — no retrieval or generation.
-
-```json
-{
-  "id": "validator_deflection_test",
-  "description": "Validator should deflect out-of-scene content",
-  "session": {
-    "mode": "canonical_live",
-    "continuity_scope": "main_relationship",
-    "continuity_family": "main_world"
-  },
-  "input_draft": "Let's talk about modern politics instead of our story.",
-  "validator_retrieved_canon": "Scene: a quiet evening in the cottage...",
-  "assertions": [
-    {
-      "type": "needs_rewrite",
-      "expected": true,
-      "description": "Off-topic draft should trigger rewrite"
-    }
-  ]
-}
-```
+`primed_memories` is accepted as an alias for `durableMemories` (see `remember_promise` in `scenarios.json`).
 
 ### Available assertion types
 
+Implemented in `src/eval/evalAssertions.ts`:
+
 | Type | Fields | Description |
-|------|--------|-------------|
-| `contains` | `value` | Reply must contain this substring |
-| `not_contains` | `value` | Reply must NOT contain this substring |
-| `contains_all` | `values` | Reply must contain ALL of these substrings |
+| --- | --- | --- |
+| `not_contains` | `value` | Reply must NOT contain substring |
 | `contains_any` | `values` | Reply must contain AT LEAST ONE substring |
-| `needs_rewrite` | `expected` | Validator must (or must not) flag the draft |
-| `deflection` | `expected` | Response must (or must not) be deflected |
-| `attribution_supported` | `reply_attribution_patterns`, `canon_support_needles` | Specific factual claims must be backed by canon |
-| `no_unsupported_attribution` | `reply_entity_markers` | No unsupported factual claims |
+| `validator_pass` | `field` | Validator boolean field must be `true` (validator-only mode) |
+| `validator_field` | `field`, `expected` | Validator field must equal expected value |
+| `attribution_supported_by_canon` | `reply_attribution_patterns`, `canon_support_needles` | Attribution patterns in reply require canon support |
+| `no_unsupported_attribution` | `reply_entity_markers`, `canon_support_needles` | Entity markers require canon corroboration |
+| `canon_contains_all` | `values` | Retrieved canon must contain all needles (retrieval mode) |
 | `retrieval_min_anchors` | `min_scenes` | Minimum scene anchor count (retrieval mode) |
+| `no_memory_written` | — | Placeholder (always passes; manual verification) |
+| `rerank_selected_ids` | `values` | All listed IDs must appear in rerank selection |
+| `rerank_rejected_ids` | `values` | Listed IDs must NOT appear in rerank selection |
+| `rerank_context_mode` | `value` | Rerank `finalContextMode` must match (e.g. `recent_only`, `selected_memory`) |
+| `rerank_no_fallback` | — | Reranker must not fall back to deterministic selector |
+| `max_irrelevant_selected` | `values` (forbidden sources), `min_scenes` (max count) | Cap irrelevant source selections |
+
+**Note:** `agent_turn` LangSmith rows currently expose `ValidationEvalSnapshot`, not raw `ValidationResult`. Use `contains_*` / `not_contains` reply assertions for full-turn evals; use `validator_*` assertions in validator-only rows with `input_draft`.
 
 ### Seed data reference
 
-All seed fields are optional. Omit what you don't need.
+All seed fields are optional except `session`.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `session` | object | **Required.** `mode`, `continuity_scope`, `continuity_family`, optional `writeback_policy` |
-| `messages` | array | Conversation history. Last user message is the eval input. Each: `{ role, content, turn_index }` |
-| `userMessage` | string | Override: use this as the user message instead of the last message in `messages` |
+| `messages` | array | Conversation history. Last user message is the eval input unless `userMessage` overrides. Each: `{ role, content, turn_index? }` |
+| `userMessage` | string | Override eval input message |
+| `primed_memories` | array | Alias for `durableMemories` (legacy name still supported) |
 | `sessionSummary` | string | Pre-seeded session summary text |
-| `sessionState` | object | Pre-seeded derived state (`inferredMood`, `inferredActivity`, etc.) |
-| `durableMemories` | array | Pre-seeded interactive memory rows. Each: `{ summary, memoryType?, importanceScore?, emotionScore?, tags?, embedding? }` |
-| `sessionChunks` | array | Pre-seeded session memory chunks. Each: `{ chunkText, chunkType?, turnStart?, turnEnd?, embedding? }` |
-| `structMemEntries` | array | Pre-seeded StructMem entries. Each: `{ text, entryType?, turnIndex?, importanceScore?, confidenceScore?, embedding? }` |
-| `structMemConsolidations` | array | Pre-seeded StructMem consolidations. Each: `{ summaryText, scope?, turnStart?, turnEnd?, confidenceScore?, embedding? }` |
-| `canonReferenceIds` | string[] | Specific canon scene/reference IDs to expect in retrieval |
+| `sessionState` | object | Pre-seeded derived state |
+| `durableMemories` | array | Pre-seeded interactive memory rows |
+| `sessionChunks` | array | Pre-seeded session memory chunks |
+| `structMemEntries` | array | Pre-seeded StructMem entries |
+| `structMemConsolidations` | array | Pre-seeded StructMem consolidations |
+| `canonReferenceIds` | string[] | Expected canon reference IDs (documentation / future use) |
 | `configOverrides` | object | Override pipeline config for this eval only |
+| `input_draft` | string | Fixed draft for validator-only eval |
+| `validator_retrieved_canon` | string | Canon excerpt passed to validator in validator-only eval |
+| `retrieval_expected_needle` | string | Needle substring for retrieval-quality metrics |
 
 ### Writing effective scenarios
 
-- **One thing per scenario** — test retrieval, generation, validation, or memory write separately rather than everything at once. This makes failures easier to diagnose.
-- **Seed enough context** — the agent needs enough conversation history and memories to produce a meaningful response. A bare scenario with no seed data will often deflect or produce a generic reply.
-- **Use specific assertion values** — avoid asserting on generic phrases like "hello" or "I understand". Assert on specific facts that the seed data should produce.
-- **Set `writeback_policy: "no_writeback"`** for eval scenarios unless you're specifically testing memory write behavior. This prevents eval runs from creating post-turn jobs that compete with real ones.
-- **Use `eval_: true` tag in trace metadata** — this happens automatically; eval traces are filterable in LangSmith.
+- **One thing per scenario** — test retrieval, generation, validation, rerank, or memory write separately when possible.
+- **Seed enough context** — bare scenarios often deflect or produce generic replies in agent-turn mode.
+- **Use specific assertion values** — prefer `contains_any` with domain-specific terms over generic phrases.
+- **Set `writeback_policy: "no_writeback"`** unless testing memory writes (reduces post-turn side effects).
+- **Retrieval rows** need live DB + canon embeddings; validator rows need only validator model access.
+- **Rerank rows** need `eval_mode: "agent_turn"` and rerank assertion context (or manual `runAllAssertions` with `AssertionContext.rerank`).
+- Eval traces automatically get tag `eval:true` and metadata `scenarioId`, `evalSessionId`, `evalMode`.
+
+## Local Regression Eval (no LangSmith)
+
+```bash
+npm run eval
+npm run eval -- --scenario no_ai_claim
+npm run eval:retrieval
+```
+
+`runEval.ts` supports:
+
+- **Retrieval mode** — full Tier-3 retrieval against live DB
+- **Validator mode** — when `input_draft` is set
+- **Other rows** — stub reply with a warning (no full turn)
+
+Full agent-turn replay is **not** wired into `npm run eval`; use LangSmith or call `runAgentEval` directly.
 
 ## Pushing Datasets to LangSmith
-
-Push your local scenarios to a LangSmith dataset:
 
 ```bash
 npm run eval:dataset:push
 ```
 
-This reads `src/eval/scenarios.json`, converts each scenario to a LangSmith example via `scenarioToEvalInputs()`, and uploads them to the dataset named by `LANGSMITH_EVAL_DATASET`.
+Reads `src/eval/scenarios.json`, converts each scenario via `scenarioToEvalInputs()`, and uploads to `LANGSMITH_EVAL_DATASET`. Existing examples in that dataset are deleted first, then recreated.
 
-To use a different dataset name:
+Custom dataset name:
 
 ```bash
 LANGSMITH_EVAL_DATASET=zuoran-memory-retrieval-v1 npm run eval:dataset:push
 ```
 
-**Note:** Pushing overwrites existing examples with the same `scenario_id`. The dataset name in `.env` controls which dataset the experiment reads from.
+Assertions are stored on example **metadata** (`metadata.assertions`), not in inputs.
+
+To push rerank scenarios, you would need a separate script or merge `RERANK_EVAL_SCENARIOS` into your push pipeline (not automated yet).
 
 ## Running LangSmith Experiments
 
@@ -313,60 +402,88 @@ LANGSMITH_EVAL_DATASET=zuoran-memory-retrieval-v1 npm run eval:dataset:push
 npm run eval:langsmith
 ```
 
-This runs `src/eval/runLangSmithExperiment.ts`, which:
+`src/eval/runLangSmithExperiment.ts`:
 
-1. Reads the dataset specified by `LANGSMITH_EVAL_DATASET`.
-2. For each example, dispatches to the correct mode:
+1. Reads the dataset named by `LANGSMITH_EVAL_DATASET`.
+2. Dispatches each example:
    - `eval_mode: "agent_turn"` → `runAgentEval()` (full isolated turn)
-   - `eval_mode: "retrieval"` → `runRetrievalEvalForScenario()` (canon retrieval only)
-   - otherwise → validator-only mode
-3. Runs evaluators: `assertionsEvaluator` (deterministic) and `retrievalQualityEvaluator` (for retrieval mode).
-4. Reports pass/fail per example to stdout and LangSmith.
+   - `eval_mode: "retrieval"` → `runRetrievalEvalForScenario()`
+   - `input_draft` present → validator-only
+   - otherwise → `mode: "skipped"`
+3. Runs evaluators:
+   - `assertionsEvaluator` — deterministic assertion checks
+   - `retrievalQualityEvaluator` — anchor counts and needle hits (retrieval mode only)
+4. Exits with code 1 if any row fails `all_assertions_pass`.
 
-**What you'll see in the terminal:**
+**Terminal output example:**
 
 ```
-memory_recall_coffee  all_assertions_pass=true  All assertions passed.
-canon_retrieval_test  all_assertions_pass=false  reply missing expected: coffee
-Experiment: zuoran-chatbot-phase1-abc123
+no_ai_claim  all_assertions_pass=false  ...
+tier3_scene_query  all_assertions_pass=true  All assertions passed.
+Experiment: zuoran-phase1-abc123
  Rows processed: 15, failed: 2
 ```
+
+**Concurrency:** `maxConcurrency: 1` (sequential) to avoid DB contention on shared canon tables.
+
+### Rerank LangSmith evaluators (standalone)
+
+`src/eval/evaluators/rerankEvaluators.ts` exports:
+
+- `rerankSelectionPrecision`
+- `rerankSelectionRecall`
+- `rerankRejectionAccuracy`
+- `rerankContextModeAccuracy`
+- `rerankCompositeScore`
+
+These read `outputs.retrieval.rerank` and example `metadata.expected_selected_ids` / `expected_rejected_ids` / `expected_final_context_mode`. Register them in `runLangSmithExperiment.ts` when you push rerank-labeled examples.
 
 ## Interpreting Results
 
 ### In the terminal
 
 - `all_assertions_pass=true` — all assertions for that scenario passed.
-- `all_assertions_pass=false` with a comment — which assertion failed and why.
+- `all_assertions_pass=false` — see the comment for the first failing assertion.
 
 ### In LangSmith UI
 
-1. Go to your project (`LANGSMITH_PROJECT`).
-2. Find the experiment under the **Experiments** tab.
+1. Open project `LANGSMITH_PROJECT`.
+2. Find the experiment under **Experiments**.
 3. Each row shows:
-   - **Input** — the scenario data fed to the eval.
-   - **Output** — `AgentEvalOutput` includes `reply`, `retrieval`, `validation`, `memoryWrite`, `usage`, `latencyMs`, `cleanup`.
-   - **Feedback** — assertion scores.
-4. Click into a run to see:
-   - **Trace** — the full LangSmith trace with all spans (retrieval, generation, validation, post-turn).
-   - **Metadata** — `scenarioId`, `evalSessionId`, `evalMode`, `configOverrides`, git SHA, environment.
-   - **Tags** — `eval:true`, `environment:development`, `character:zuo_ran`, `subsystem:*`.
+   - **Input** — scenario fields (`scenario_id`, `session`, `messages`, etc.)
+   - **Output** — `AgentEvalOutput` for agent turns, or validator/retrieval payloads
+   - **Feedback** — assertion scores
+4. Click a run for:
+   - **Trace** — full span tree (`llm.memory_rerank`, generation, validation, post-turn)
+   - **Metadata** — `scenarioId`, `evalSessionId`, `evalMode`, git SHA, environment
+   - **Tags** — `eval:true`, `environment:*`, `character:*`, `subsystem:*`
 
-### Key metrics in AgentEvalOutput
+### Key fields in AgentEvalOutput
 
 ```json
 {
   "scenarioId": "memory_recall_coffee",
+  "mode": "agent_turn",
   "success": true,
-  "reply": "You love black coffee! Dark roasts, no sugar, no milk...",
+  "reply": "You love black coffee! Dark roasts, no sugar…",
   "latencyMs": 2340,
   "retrieval": {
-    "retrieved": { "interactive_memory": ["mem_1"], "canon": ["scene_42"] },
-    "injected": { "interactive_memory": ["mem_1"], "canon": ["scene_42"] },
-    "dropped": { "duplicate": 0, "lowScore": 1, "correctionConflict": 0, "sourceBudget": 0, "other": 0 }
+    "retrieved": { "interactive_memory": ["mem_1"], "canon": [] },
+    "injected": { "interactive_memory": ["mem_1"], "canon": [] },
+    "dropped": { "duplicate": 0, "lowScore": 0, "correctionConflict": 0, "sourceBudget": 0, "other": 0 },
+    "rerank": {
+      "enabled": true,
+      "selected": [
+        { "source": "interactive_memory", "id": "mem_1", "relevance": "required", "usageInstruction": "must_use" }
+      ],
+      "rejectedCount": 12,
+      "finalContextMode": "selected_memory",
+      "needsEvidenceFallback": false,
+      "fallbackUsed": false
+    }
   },
   "validation": {
-    "attempts": [{ "attempt": 1, "needsRewrite": false, "inCharacter": true, "issues": [] }],
+    "attempts": [{ "attempt": 1, "needsRewrite": false, "issues": [] }],
     "finalNeedsRewrite": false,
     "wasRewritten": false,
     "wasDeflected": false
@@ -380,7 +497,6 @@ Experiment: zuoran-chatbot-phase1-abc123
   "usage": {
     "totalInputTokens": 1234,
     "totalOutputTokens": 89,
-    "totalTokens": 1323,
     "estimatedCostUsd": 0.0032,
     "llmSpans": [
       { "spanName": "llm.response_generation", "inputTokens": 1000, "outputTokens": 80, "estimatedCostUsd": 0.003 }
@@ -390,44 +506,42 @@ Experiment: zuoran-chatbot-phase1-abc123
 }
 ```
 
+When `retrieval.rerank.fallbackUsed` is `true`, the deterministic selector ran instead of the rerank LLM (timeout, parse failure, or empty selection guard).
+
 ### Diagnosing failures
 
 | Symptom | Likely cause | Check |
-|---------|-------------|-------|
-| `success: false` with error | Turn threw an exception | `error` field; check DB connectivity, model API keys |
-| Expected memory not in `injected` | Memory wasn't retrieved or was dropped | `dropped` counts (lowScore? duplicate? sourceBudget?) |
-| `wasDeflected: true` | Validator deflected the response | `deflectionReason`; check session mode, seed context |
-| `finalNeedsRewrite: true` | Response failed validation twice | `attempts[].issues` for what went wrong |
-| `memoryWrite.status: "failed"` | Post-turn job failed | `memoryWrite.error`; check in LangSmith trace for job spans |
-| `cleanup.completed: false` | Seeded data wasn't fully deleted | Run manually: check for `eval_%` rows in DB |
-| `estimatedCostUsd: null` | Unknown model pricing | `llmSpans[].pricingKnown: false` |
+| --- | --- | --- |
+| `success: false` with error | Turn threw | `error` field; DB connectivity, API keys |
+| Expected memory not in `injected` | Not retrieved, rerank rejected, or dropped | `retrieval.rerank.selected`, `dropped` counts |
+| `rerank.fallbackUsed: true` | Rerank LLM failed or timed out | `MEMORY_RERANK_TIMEOUT_MS`; LangSmith `llm.memory_rerank` span |
+| `wasDeflected: true` | Validator deflected | `validation.deflectionReason`; seed context |
+| `finalNeedsRewrite: true` | Validation failed twice | `validation.attempts[].issues` |
+| `memoryWrite.status: "not_run"` | Non-roleplay route or no post-turn job | Turn route; `writeback_policy` |
+| `memoryWrite.status: "failed"` | Post-turn job failed | `memoryWrite.error`; post-turn trace spans |
+| `cleanup.completed: false` | Incomplete cleanup | SQL for `eval_%` rows |
+| `mode: "skipped"` | Missing `input_draft` on non-agent row | Add draft or set `eval_mode` |
+| `estimatedCostUsd: null` | Unknown model pricing | `llmSpans[].pricingKnown` |
 
 ## Running Subset-Specific Eval
 
-### Run only agent_turn scenarios
-
-Filter scenarios before pushing, or temporarily edit `LANGSMITH_EVAL_DATASET` to use a dataset with only agent-turn examples.
-
-### Run a single scenario
-
-Use the existing eval scripts directly with `tsx`:
+### Filter local scenarios
 
 ```bash
-# Run retrieval eval for a single scenario
-npx tsx src/eval/runRetrievalEvalCli.ts --scenario memory_recall_coffee
-
-# Run the full LangSmith experiment (reads all from dataset)
-npm run eval:langsmith
+npx tsx src/eval/runEval.ts --scenario tier3_scene_query
+npx tsx src/eval/runRetrievalEvalCli.ts --scenario tier3_scene_query
 ```
 
-### Run eval with different config
+### Run with different config
 
 ```bash
 CANON_RETRIEVAL_PIPELINE=tier1 npm run eval:langsmith
 STRUCTMEM_ENABLED=false npm run eval:langsmith
+VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval:langsmith
+MEMORY_RERANK_MAX_SELECTED=4 npm run eval:langsmith
 ```
 
-Config overrides in the scenario's `configOverrides` field take precedence over env vars.
+Scenario `configOverrides` take precedence when wired through agent-turn input normalization.
 
 ## Debugging
 
@@ -443,29 +557,29 @@ UNION ALL
 SELECT 'consolidations', count(*) FROM structmem_consolidations WHERE session_id LIKE 'eval_%';
 ```
 
-### Run with verbose logging
-
-The eval runner prints per-scenario results to stdout. For deeper debugging, add `console.log` statements or set `NODE_ENV=development` to see more trace output.
-
 ### View a specific eval trace in LangSmith
 
-Traces from eval runs have tag `eval:true` and metadata `scenarioId`. Filter in the LangSmith UI by:
-- Tags: `eval`
-- Metadata: `scenarioId = memory_recall_coffee`
+Filter by tag `eval:true` or metadata `scenarioId = no_ai_claim`.
 
-### Re-run a failed scenario locally
-
-Copy the inputs from the LangSmith example, create a minimal reproduction script:
+### Re-run a failed agent-turn scenario locally
 
 ```ts
 import { runAgentEval } from "./src/eval/langsmith/runAgentEval";
 
 const result = await runAgentEval({
   scenario_id: "my_test",
-  userMessage: "What's my favorite drink?",
-  session: { mode: "canonical_live", continuity_scope: "main", continuity_family: "main_world" },
+  eval_mode: "agent_turn",
+  session: {
+    mode: "canonical_live",
+    continuity_scope: "main_relationship",
+    continuity_family: "main_world",
+    writeback_policy: "no_writeback",
+  },
   durableMemories: [{ summary: "Player loves coffee", importanceScore: 0.9 }],
-  messages: [{ role: "user", content: "Hi", turn_index: 1 }],
+  messages: [
+    { role: "user", content: "Hi", turn_index: 1 },
+    { role: "user", content: "What's my favorite drink?", turn_index: 2 },
+  ],
 });
 
 console.log(JSON.stringify(result, null, 2));
@@ -474,17 +588,24 @@ console.log(JSON.stringify(result, null, 2));
 ## Related Files
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `src/eval/evalSnapshots.ts` | Snapshot capture system |
-| `src/eval/langsmith/evalTypes.ts` | Eval type definitions |
+| `src/eval/evalAssertions.ts` | Deterministic assertion checks (incl. rerank) |
+| `src/eval/evalTypes.ts` | Scenario and assertion types |
+| `src/eval/loadEvalScenarios.ts` | Load `scenarios.json`, `scenarioToEvalInputs()` |
+| `src/eval/scenarios.json` | Primary regression scenarios (v2.1) |
+| `src/eval/datasets/rerankScenarios.ts` | Rerank scenario library (not in default push) |
+| `src/eval/evaluators/rerankEvaluators.ts` | LangSmith rerank metric evaluators |
+| `src/eval/langsmith/evalTypes.ts` | Agent eval seed types |
 | `src/eval/langsmith/seedEvalSession.ts` | Isolated session seeding |
 | `src/eval/langsmith/cleanupEvalSession.ts` | Session cleanup |
 | `src/eval/langsmith/runAgentEval.ts` | Full-turn eval runner |
 | `src/eval/runLangSmithExperiment.ts` | LangSmith experiment entry point |
-| `src/eval/scenarios.json` | Eval scenario definitions |
-| `src/eval/evalTypes.ts` | Scenario/assertion types |
-| `src/eval/evalAssertions.ts` | Deterministic assertion checks |
-| `src/observability/langsmithTracing.ts` | Tracing + usage capture integration |
-| `src/observability/traceMetadata.ts` | Trace metadata construction |
-| `src/observability/traceTags.ts` | Standardized tag generation |
+| `src/eval/pushLangSmithDataset.ts` | Dataset upload |
+| `src/eval/runEval.ts` | Local validator/retrieval CLI |
+| `src/eval/runRetrievalEvalCli.ts` | Retrieval-only CLI |
+| `src/eval/retrievalEvalRunner.ts` | Tier-3 retrieval eval helper |
+| `src/orchestration/context/resolveContext.ts` | Records retrieval + rerank snapshots |
+| `src/orchestration/retrieval/memoryRerank.ts` | Memory rerank LLM stage |
+| `src/observability/langsmithTracing.ts` | Tracing + usage capture |
 | `documents/langsmith_eval_system_implementation_plan.md` | Full implementation plan (Milestones 1–9) |

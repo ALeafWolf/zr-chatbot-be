@@ -19,45 +19,47 @@ The main API path is:
 4. `runCharacterTurnStream(...)` loads `chat_sessions`, rejects missing or
    deleted sessions, and classifies the user message into a turn route:
    `roleplay_turn`, `app_command`, or `unsupported`. Credential disclosure
-   requests are intercepted and routed to `unsupported`.
-5. For `roleplay_turn`: loads character defaults and the persona overlay.
-6. `resolveContext(...)` rewrites the user query, detects **motif signals**
-   (deterministic repeated-relationship-gesture detection), builds an enhanced
-   **retrieval plan** with `contextNeed` flags, creates batched embeddings
-   (traced as `embedding.query_batch`, now including optional motif queries),
-   retrieves memory/canon/recent state, retrieves active memory corrections,
-   retrieves older session recall (skipped in hybrid_lazy when not needed),
-   optionally runs a **motif probe** retrieval, selects prompt memory context,
-   and emits retrieval diagnostics.
-7. `buildPromptContext(...)` turns selected results into priority-ordered prompt
-   blocks plus recent conversation history, traced as `prompt.build_context`
-   with block-level token estimates. In `hybrid_lazy` mode, heavy blocks
-   (CANON NARRATIVE, STRUCTURED EVENT MEMORY, STRUCTURED MEMORY SYNTHESIS,
-   INTERACTIVE MEMORY, RELEVANT SESSION RECALL) are gated on `contextNeed`
-   flags. A compact `AVAILABLE CONTEXT SOURCES` block is added to guide the
-   model's tool use. When a motif probe finds strong matches, a
-   `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block is injected.
-8. A recall thought may be generated in parallel with draft generation when
-   the selected context (after rerank or fallback selection) is non-empty,
-   traced as `llm.recall_thought`.
-9. `generateAndValidateStream(...)` drafts with tools enabled (filtered by
-   `allowedToolNames` derived from context need), validates the draft
-   (including a narrow `canon_unsupported_claim` deterministic guard),
-   optionally rewrites once (with targeted `canon_lookup` forcing for canon-evidence
-   issues), validates again, and may fall back to the character safe deflection.
-   In `hybrid_lazy` mode, the tool loop uses `forceFinalOnExhaustion` instead of
-   throwing a hard error, and `maxToolSteps` is capped by `GENERATION_LOOKUP_MAX_STEPS`.
-10. `persistCompletedTurn(...)` runs a DB transaction that inserts the user and
-    assistant messages, updates `session_state`, updates `chat_sessions`, and
-    inserts one `post_turn_jobs` row — now including `route` and trace metadata
-    with token usage and cost.
-11. `postTurnRunner.wake()` is called, then SSE receives replayed final deltas
-    and a `done` event. Non-streaming receives the final JSON response.
-    Both now include `route` in the output.
-12. `postTurnRunner` claims the durable job from `post_turn_jobs`, builds a
+   requests are intercepted and routed to `unsupported`. The classified route
+   is emitted early as an SSE `route` event (streaming only).
+5. For `app_command`: `executeAppCommand(...)` parses intent deterministically
+   and returns structured export/status/help payloads — no LLM generation.
+6. For `unsupported`: persists `characterDefaults.safe_deflection` — no LLM
+   generation, validation, or retrieval.
+7. For `roleplay_turn`: loads character defaults and the persona overlay.
+8. `resolveContext(...)` runs `planContext(...)` (query rewrite + structured
+   enrichment), detects **motif signals** (deterministic
+   repeated-relationship-gesture detection), builds a **retrieval plan** with
+   `contextNeed` flags, creates batched embeddings (traced as
+   `embedding.query_batch`, including optional motif queries), retrieves
+   memory/canon/recent state, retrieves older session recall, optionally runs
+   a **motif probe** retrieval, builds a candidate shortlist, runs
+   **`llm.memory_rerank`** to select injectable context (falls back to the
+   deterministic selector on failure), expands selected StructMem entries, and
+   emits retrieval diagnostics.
+9. `buildPromptContext(...)` turns rerank-selected results into
+   priority-ordered prompt blocks plus recent conversation history, traced as
+   `prompt.build_context` with block-level token estimates. When a motif probe
+   finds strong matches, a `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF`
+   block is injected.
+10. A recall thought may be generated in parallel with draft generation when
+    the rerank-selected (or fallback-selected) context is non-empty, traced as
+    `llm.recall_thought`.
+11. `generateAndValidateStream(...)` drafts with `web_search` as the only
+    registered tool, validates the draft (including a narrow
+    `canon_unsupported_claim` deterministic guard), optionally rewrites once,
+    validates again, and may fall back to the character safe deflection.
+12. `persistCompletedTurn(...)` runs a DB transaction that inserts the user and
+    assistant messages (with `route`), updates `session_state`, updates
+    `chat_sessions`, and — for `roleplay_turn` only — inserts one
+    `post_turn_jobs` row with trace metadata including token usage and cost.
+13. For roleplay turns, `postTurnRunner.wake()` is called, then SSE receives
+    replayed final deltas and a `done` event. App-command streams emit a single
+    `done` with an `app_command` payload (no deltas). Non-streaming receives
+    the final JSON response. All completion paths include `route`.
+14. `postTurnRunner` claims the durable job from `post_turn_jobs`, builds a
     post-turn write plan from session/env/signals (traced as
     `post_turn.write_plan`), and performs retryable memory steps.
-13. If enabled, StructMem consolidation may enqueue a separate
+15. If enabled, StructMem consolidation may enqueue a separate
     `structmem_consolidation_jobs` job handled by `structmemConsolidationRunner`.
 
 Important timing point: the assistant reply and `post_turn_jobs` row are
@@ -85,9 +87,14 @@ Streaming behavior:
 - hijacks the raw response and writes `text/event-stream`
 - emits heartbeat comments every 15 seconds
 - aborts orchestration when the connection closes before completion
-- forwards `thought`, `tool_call`, `tool_result`, `delta`, `done`, and `error`
-  events
-- `done` includes `route` (`roleplay_turn` | `app_command` | `unsupported`)
+- forwards `route`, `thought`, `tool_call`, `tool_result`, `delta`, `done`,
+  and `error` events
+- `route` is emitted immediately after classification so the frontend can adapt
+  (for example, suppress the character streaming bubble for app commands)
+- `done` includes `route` (`roleplay_turn` | `app_command` | `unsupported`),
+  `thoughts`, and optional `app_command` (structured payload for app commands)
+- roleplay and unsupported turns replay final assistant prose as `delta` slices
+  after persistence; app-command turns skip deltas and emit `done` only
 - `TurnOutput` (non-streaming) also includes `route`
 
 ## LangSmith Tracing Setup
@@ -223,17 +230,17 @@ auto-disables remote tracing. The code path and return values are unchanged.
 
 | Trace span | Source | LLM? | Main DB behavior |
 | --- | --- | --- | --- |
-| `orchestration.run_character_turn` | `orchestration/runCharacterTurn.ts` | Indirect | Non-streaming wrapper around the stream generator. Root span — carries `TraceBaseMetadata`. |
-| `orchestration.run_character_turn_stream` | `orchestration/runCharacterTurn.ts` | Indirect | Reads session, classifies route, dispatches to roleplay/app/unsupported, persists the completed turn. |
-| `orchestration.load_session` | `orchestration/runCharacterTurn.ts` | No | Reads `chat_sessions`. |
-| `llm.classify_turn_route` | `orchestration/classifyTurnRoute.ts` | Yes | No DB. Extractor model classifies the user message into `roleplay_turn`, `app_command`, or `unsupported`. Credential disclosure requests are force-routed to `unsupported`. Fail-open on parse errors or exceptions. |
-| `orchestration.route_switch` | `orchestration/runCharacterTurn.ts` | No | No DB. Records classified route, confidence, persisted route, and fallback reason. |
-| `orchestration.roleplay_turn` | `orchestration/runCharacterTurn.ts` | No | No DB. Marker span for roleplay turn execution. |
-| `orchestration.app_command` | `orchestration/runCharacterTurn.ts` | No | No DB. Marker span for app command execution (safe deflection reply, not yet implemented). |
-| `orchestration.unsupported_turn` | `orchestration/runCharacterTurn.ts` | No | No DB. Marker span for unsupported / safe-deflection execution. |
-| `retrieval.query_rewrite` | `retrieval/query/rewriteQuery.ts` | Yes | No DB. |
+| `orchestration.run_character_turn` | `orchestration/turn/runCharacterTurn.ts` | Indirect | Non-streaming wrapper around the stream generator. Root span — carries `TraceBaseMetadata`. |
+| `orchestration.run_character_turn_stream` | `orchestration/turn/runCharacterTurn.ts` | Indirect | Reads session, classifies route, dispatches to roleplay/app/unsupported, persists the completed turn. |
+| `orchestration.load_session` | `orchestration/turn/runCharacterTurn.ts` | No | Reads `chat_sessions`. |
+| `llm.classify_turn_route` | `orchestration/turn/classifyTurnRoute.ts` | Yes | No DB. Extractor model classifies the user message into `roleplay_turn`, `app_command`, or `unsupported`. Credential disclosure requests are force-routed to `unsupported`. Fail-open on parse errors or exceptions. |
+| `orchestration.route_switch` | `orchestration/turn/runCharacterTurn.ts` | No | No DB. Records classified route, confidence, persisted route, and fallback reason. |
+| `orchestration.roleplay_turn` | `orchestration/turn/runCharacterTurn.ts` | No | No DB. Marker span for roleplay turn execution. |
+| `orchestration.app_command` | `orchestration/turn/runCharacterTurn.ts` | No | Reads `chat_messages` for export/status commands. Executes via `features/appCommands/appCommandExecutor.ts`. |
+| `orchestration.unsupported_turn` | `orchestration/turn/runCharacterTurn.ts` | No | No DB. Marker span for unsupported / safe-deflection execution. |
+| `retrieval.query_rewrite` | `retrieval/query/rewriteQuery.ts` | Yes | No DB. Called inside `planContext(...)`. |
 | `retrieval.query_rewrite.phase_b` | `retrieval/query/rewriteQuery.ts` | Yes | No DB. |
-| `embedding.query_batch` | `orchestration/retrievalEmbeddingBatch.ts` | Embedding | No DB. Batches memory, canon, raw-memory, HyDE, and optional motif embeddings in parallel. Traces query kinds, model, char counts, estimated tokens, and duration. |
+| `embedding.query_batch` | `orchestration/retrieval/retrievalEmbeddingBatch.ts` | Embedding | No DB. Batches memory, canon, raw-memory, HyDE, and optional motif embeddings in parallel. Traces query kinds, model, char counts, estimated tokens, and duration. |
 | `retrieval.interactive_memories` | `retrieval/memory/retrieveInteractiveMemories.ts` | No | Reads `interactive_memory_events`; best-effort access update. Filters to `status = 'active'`. |
 | `retrieval.canon` | `retrieval/canon/retrieveCanonTier3Pipeline.ts` | No | Reads canon tables. |
 | `retrieval.canon.scene_summary_search` | `retrieval/canon/searchSceneSummaries.ts` | No | Reads scene/chapter/arc/episode rows. |
@@ -250,18 +257,14 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | `retrieval.structmem_entry_context_expansions` | `retrieval/memory/retrieveStructMemEntryContextExpansions.ts` | No | Expands selected StructMem entries through linked event messages. |
 | `retrieval.structmem_consolidations` | `retrieval/memory/retrieveStructMemConsolidations.ts` | No | Reads current-session and cross-session `structmem_consolidations`. |
 | `retrieval.open_threads` | `retrieval/memory/retrieveOpenThreads.ts` | No | Reads active StructMem open threads and session-summary open threads. Filters StructMem rows to `status = 'active'` and `entry_type = 'open_thread'`; filters summary threads to `open` or `paused`. |
-| `retrieval.prompt_context_selector` | `orchestration/promptMemoryContextSelector.ts` | No | Applies source budgets, score thresholds, dedup, correction drops, and correction-supersession drops. Tracks `droppedBudgetCount`. |
-| `retrieval.context_diagnostics` | `orchestration/retrievalDiagnostics.ts` | No | Emits planning, selection, timing, injection/drop diagnostics including `droppedBudgetCount`. |
-| `prompt.build_context` | `orchestration/buildPromptContext.ts` | No | No DB. Builds system prompt blocks. Traces prompt version, hash, block presence, per-block token estimates, and total estimated tokens. |
-| `llm.recall_thought` | `orchestration/runCharacterTurn.ts` | Yes | No DB. Traces selected-context count, selection mode, source breakdown, output length, and timeout-before-final-replay flag. |
-| `llm.response_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Output carries token usage and cost via `attachTraceLlmMetadata`. Traces `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`, and prompt stats. |
-| `llm.response_rewrite_generation` | `orchestration/generateAndValidate.ts` | Yes | No DB; may call tools. Same trace inputs as response_generation. |
-| `tool.canon_lookup` | `llm/tools/canonLookupTool.ts` | Embedding | Embeds tool query and retrieves compact canon context. |
-| `tool.lookup_structmem` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves StructMem entries before the recent window. |
-| `tool.lookup_structmem_consolidation` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves StructMem consolidation summaries. |
-| `tool.lookup_older_session_memory` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves older session memory chunks. |
-| `tool.lookup_interactive_memory` | `llm/tools/memoryLookupTools.ts` | Embedding | Embeds tool query and retrieves durable interactive memory events. |
-| `llm.run_response_validator` | `llm/validation/runResponseValidator.ts` | Yes | No DB; optional attribution judge can run inside. Output carries token usage and cost. Traces `wasCanonInjected`, `wasCanonLookupCalled`, and draft chars. |
+| `retrieval.prompt_context_selector` | `orchestration/context/promptMemoryContextSelector.ts` | No | Fallback selector when memory rerank fails. Applies source budgets, score thresholds, dedup, correction drops, and correction-supersession drops. |
+| `llm.memory_rerank` | `orchestration/retrieval/memoryRerank.ts` | Yes | No DB. LLM judges which retrieved candidates to inject. Falls back to deterministic selector on failure or timeout. |
+| `retrieval.context_diagnostics` | `orchestration/retrieval/retrievalDiagnostics.ts` | No | Emits planning, selection, rerank, timing, injection/drop diagnostics. |
+| `prompt.build_context` | `orchestration/prompt/buildPromptContext.ts` | No | No DB. Builds system prompt blocks. Traces prompt version, hash, block presence, per-block token estimates, and total estimated tokens. |
+| `llm.recall_thought` | `orchestration/turn/runCharacterTurn.ts` | Yes | No DB. Traces selected-context count, selection mode, source breakdown, output length, and timeout-before-final-replay flag. |
+| `llm.response_generation` | `orchestration/generation/generateAndValidate.ts` | Yes | No DB; may call `web_search`. Output carries token usage and cost via `attachTraceLlmMetadata`. |
+| `llm.response_rewrite_generation` | `orchestration/generation/generateAndValidate.ts` | Yes | No DB; may call `web_search`. Same trace inputs as response_generation. |
+| `llm.run_response_validator` | `llm/validation/runResponseValidator.ts` | Yes | No DB; optional attribution judge can run inside. Output carries token usage and cost. Traces `wasCanonInjected` and draft chars. |
 | `llm.run_attribution_judge` | `llm/validation/runAttributionJudge.ts` | Yes | No DB. Output carries token usage and cost. |
 | `llm.run_memory_dedup_judge` | `llm/validation/runMemoryDedupJudge.ts` | Yes | No DB. Output carries token usage and cost. |
 | `llm.extract_post_turn_signals` | `llm/extraction/extractPostTurnSignals.ts` | Yes | No direct DB; creates embeddings for extracted candidates. Output carries token usage and cost. |
@@ -282,27 +285,27 @@ auto-disables remote tracing. The code path and return values are unchanged.
 | --- | --- | --- |
 | API entry | `orchestration.run_character_turn_stream` or `orchestration.run_character_turn` | Top-level root span with `TraceBaseMetadata` (pipeline config, model bindings, hashed player ID, git SHA). Wraps the full stream/non-stream orchestration path after the route handler. |
 | Session load | `orchestration.load_session` | Session lookup span; emits `sessionId`, `characterId`, and `mode`. |
-| Turn route classification | `llm.classify_turn_route`, `orchestration.route_switch` | Extractor model classifies into `roleplay_turn` / `app_command` / `unsupported`. Credential disclosure requests are force-routed to `unsupported`. Fail-open on low confidence / parse error. Route switch span records classified route and persisted route. |
-| Routing dispatch | `orchestration.roleplay_turn` or `orchestration.app_command` or `orchestration.unsupported_turn` | Marker spans for the executed route. App command and unsupported routes use cheap safe-deflection replies without LLM generation. |
+| Turn route classification | `llm.classify_turn_route`, `orchestration.route_switch` | Extractor model classifies into `roleplay_turn` / `app_command` / `unsupported`. Credential disclosure requests are force-routed to `unsupported`. Fail-open on low confidence / parse error. Route switch span records classified route and persisted route. Streaming emits an early `route` SSE event. |
+| Routing dispatch | `orchestration.roleplay_turn` or `orchestration.app_command` or `orchestration.unsupported_turn` | Marker spans for the executed route. App command runs deterministic command handlers; unsupported uses cheap safe-deflection reply. Neither runs LLM generation or validation. |
 | Context resolution shell | `orchestration.run_character_turn_stream` | Character/default loading, context resolution call, prompt build, persistence, and final SSE replay are inside the parent span. |
 | Query rewrite | `retrieval.query_rewrite`, `retrieval.query_rewrite.phase_b` | Rewrite input/output, model confidence, parse/fallback behavior, and phase-B LLM call. |
 | Motif signal detection | (inside `orchestration.run_character_turn_stream`) | Deterministic — no LLM span. Detects repeated relationship gestures from lexicons. When active, may add motif queries to the embedding batch. |
 | Embedding batch | `embedding.query_batch` | Batched memory, canon, raw-memory, HyDE, and optional motif embeddings as a first-class span. Traces query kinds, embedding model, input char counts, estimated tokens, request count, failed count, and duration. |
-| Main retrieval fan-out | `retrieval.interactive_memories`, `retrieval.canon` or `retrieval.canon_narrative`, `retrieval.recent_turns`, `retrieval.session_summary`, `retrieval.session_state` | DB retrieval branches and canon pipeline children. Main fan-out duration is also summarized in diagnostics. In hybrid_lazy mode, canon retrieval is skipped when `needsCanon=false`. |
+| Main retrieval fan-out | `retrieval.interactive_memories`, `retrieval.canon` or `retrieval.canon_narrative`, `retrieval.recent_turns`, `retrieval.session_summary`, `retrieval.session_state` | DB retrieval branches and canon pipeline children. Main fan-out duration is also summarized in diagnostics. Canon mode (`full` vs `compact`) comes from the retrieval plan intent. |
 | Tier-3 canon internals | `retrieval.canon.scene_summary_search`, `retrieval.canon.facts_search`, `retrieval.canon.unit_search`, `retrieval.canon.lexical_unit_search`, `retrieval.canon.anchor_fusion`, `retrieval.canon.fine_expansion` | Coarse searches, rank fusion, and fine scene expansion as child retrieval stages. |
-| Older recall | `retrieval.session_memory_chunks`, `retrieval.structmem_entries`, `retrieval.structmem_consolidations` | Older session chunks, StructMem entries, and StructMem synthesis retrieval. Older-recall timing is also in diagnostics. In hybrid_lazy mode, skipped entirely when none of needsOlderSessionRecall/needsStructMem/needsStructMemConsolidation. |
+| Older recall | `retrieval.session_memory_chunks`, `retrieval.structmem_entries`, `retrieval.structmem_consolidations` | Older session chunks, StructMem entries, and StructMem synthesis retrieval. Older-recall timing is also in diagnostics. |
 | Motif probe retrieval | `retrieval.structmem_entries`, `retrieval.structmem_consolidations` (reused) | When motif detection finds a strong signal, a separate StructMem probe runs using the motif query embeddings. Zero new LLM calls — reuses existing retrievers with smaller k. |
 | Active open threads | `retrieval.open_threads` | Counts and source split for open threads from StructMem and session summaries. |
-| Prompt memory selection | `retrieval.prompt_context_selector` | Compact selected/dropped diagnostics: source caps, injected counts, duplicate drops, low-score drops, correction drops, correction-supersession drops, budget drops, and top sources. |
+| Prompt memory selection | `llm.memory_rerank`, `retrieval.prompt_context_selector` (fallback) | Reranker selects injectable candidates with relevance and usage instructions; on failure the deterministic selector applies source caps, duplicate/correction drops, and budget limits. |
 | StructMem parent expansion | `retrieval.structmem_entry_context_expansions` | Selected expansion count and budget-drop count for parent message context. |
-| Retrieval diagnostics | `retrieval.context_diagnostics` | Final per-turn diagnostic payload: intent, plan, query mode, rewrite confidence, retrieved/injected counts, dropped counts (including `droppedBudgetCount`), open-thread count, top sources, expansion diagnostics, and timing buckets. |
-| Prompt build | `prompt.build_context` | System prompt construction with block-level stats: prompt version, hash, block presence, per-block token estimates, conversation message count, and total estimated tokens. In hybrid_lazy mode, traces `injectedTokensBySource`. |
+| Retrieval diagnostics | `retrieval.context_diagnostics` | Final per-turn diagnostic payload: intent, plan, query mode, rewrite confidence, retrieved/injected counts, dropped counts, rerank/fallback status, open-thread count, top sources, expansion diagnostics, and timing buckets. |
+| Prompt build | `prompt.build_context` | System prompt construction with block-level stats: prompt version, hash, block presence, per-block token estimates, conversation message count, and total estimated tokens. Canon blocks are filtered to rerank-selected canon IDs when rerank succeeds. |
 | Recall thought | `llm.recall_thought` | First-class LLM span for recall summary generation. Traces memory/canon context presence, output length, and timeout-before-final-replay. Token usage and cost attached. |
-| Draft generation | `llm.response_generation` | Streaming LLM span for draft generation, including native reasoning deltas and tool-loop events. Traces `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`, `enableTools`, and prompt stats (chars/message count/preview). Token usage and cost attached from accumulated stream data. |
-| Tool calls | `llm.response_generation`, tool-specific spans (`tool.canon_lookup`, `tool.lookup_structmem`, `tool.lookup_structmem_consolidation`, `tool.lookup_older_session_memory`, `tool.lookup_interactive_memory`) | Tool decision/result thoughts are emitted in the parent generation stream; tool internals add their own spans. |
-| Validation | `llm.run_response_validator`, optional `llm.run_attribution_judge` | Validator result, rewrite decision, issues, and optional attribution judge checks. Traces `wasCanonInjected`, `wasCanonLookupCalled`, and draft chars. Token usage and cost attached to both spans. |
-| Rewrite generation | `llm.response_rewrite_generation` | Streaming LLM span for one rewrite pass when validation reports actionable issues. Token usage and cost attached. When canon-evidence issues are present, forces `canon_lookup` in allowed tools. |
-| Turn persistence | parent `orchestration.run_character_turn_stream` | Persists user/assistant messages, session state, chat session update, and post-turn job in one transaction. Now includes `route` (persisted route for roleplay results) and trace metadata with token usage totals on the parent span. |
+| Draft generation | `llm.response_generation` | Streaming LLM span for draft generation, including native reasoning deltas and optional `web_search` tool-loop events. Token usage and cost attached from accumulated stream data. |
+| Tool calls | `llm.response_generation` (via `web_search` tool dispatch) | Tool decision/result thoughts are emitted in the parent generation stream. |
+| Validation | `llm.run_response_validator`, optional `llm.run_attribution_judge` | Validator result, rewrite decision, issues, and optional attribution judge checks. Traces `wasCanonInjected` and draft chars. Token usage and cost attached to both spans. |
+| Rewrite generation | `llm.response_rewrite_generation` | Streaming LLM span for one rewrite pass when validation reports actionable issues. Token usage and cost attached. |
+| Turn persistence | parent `orchestration.run_character_turn_stream` | Persists user/assistant messages (with `route`), session state, chat session update, and — for `roleplay_turn` only — a post-turn job in one transaction. Roleplay assistant rows include generation usage in `validator_result.usage`. |
 | Post-turn extraction | `llm.extract_post_turn_signals` | Background extraction LLM call and candidate counts through output payload. |
 | Post-turn write plan | `post_turn.write_plan` | Session/env gates, memory fact counts, native StructMem count, and skipped reasons for write paths. |
 | Raw/session chunk writes | `memory.write_session_chunk` | Raw turn-pair chunk write and embedding work. Extractor chunk writes currently run inside the post-turn runner without a distinct per-candidate span. |
@@ -391,18 +394,48 @@ language (Chinese or English). If detected, the message is force-routed to
   `roleplay_turn` with `fallbackReason: "low_confidence_roleplay_fail_open"`
 
 The classified route is then recorded by `tracedRouteSwitch`
-(`orchestration.route_switch`) with confidence and any fallback reason. The
-stream dispatches to the appropriate handler:
+(`orchestration.route_switch`) with confidence and any fallback reason. Streaming
+turns emit `{ event: "route", data: { route } }` before dispatch so the client
+can branch early. The stream dispatches to the appropriate handler:
 
 | Route | Handler | Behavior |
 | --- | --- | --- |
-| `roleplay_turn` | `runRoleplayTurnStream` | Full retrieval → prompt → generation → validation pipeline. |
-| `app_command` | `runAppCommandTurnStream` | Persists a safe stub reply; command execution is not yet implemented. |
+| `roleplay_turn` | `runRoleplayTurnStream` | Full retrieval → rerank → prompt → generation → validation pipeline. |
+| `app_command` | `runAppCommandTurnStream` | Deterministic command execution via `executeAppCommand(...)`; persists structured result; no LLM generation. |
 | `unsupported` | `runUnsupportedTurnStream` | Persists `characterDefaults.safe_deflection` as the reply. |
 
 The `app_command` and `unsupported` routes skip all LLM generation, validation,
-and retrieval — they only persist a cheap response. The `route` value is carried
-through persistence and emitted in the `done` SSE event / `TurnOutput`.
+and retrieval. App commands still read `chat_messages` when building export or
+status artifacts. The `route` value is stored on both message rows and emitted
+in the `done` SSE event / `TurnOutput`.
+
+#### 2.6 App Command Execution
+
+When the classifier routes to `app_command`, `runAppCommandTurnStream` calls
+`executeAppCommand(userMessage, session)` in
+`features/appCommands/appCommandExecutor.ts`.
+
+Intent parsing is **deterministic** via `parseAppCommandIntent(...)` in
+`features/appCommands/appCommandIntent.ts` — no LLM call. Pattern priority:
+
+1. Export help questions (`show_export_help`) — e.g. "how do I export", "导出帮助"
+2. Export requests (`export_session_raw_turns`) — e.g. "export", "download", "导出"
+3. Session status (`show_session_status`) — e.g. "status", "stats", "会话状态"
+4. Unknown → unsupported command payload listing available commands
+
+Supported commands:
+
+| Command | Result kind | Notes |
+| --- | --- | --- |
+| `export_session_raw_turns` | `file_export` | Reads all session messages; builds md/json/txt artifact via `exportSessionRawTurns.ts`. Options parsed from user text: format, turn-type filter (`roleplay`/`app_command`/`unsupported`), `include_thoughts`, `include_native_thoughts` (debug-only). |
+| `show_session_status` | `session_status` | Aggregates session metadata, turn counts by route, and token/cost usage from roleplay assistant `validator_result.usage`. |
+| `show_export_help` | `command_help` | Localized help sections (en/zh) via `exportHelp.ts`. |
+
+The assistant reply text comes from `app_command.message`. The full structured
+payload is stored in `chat_messages.validator_result` under `app_command` and
+returned in the streaming `done.app_command` field.
+
+Post-turn jobs are **not** enqueued for app-command turns.
 
 For `roleplay_turn`, the pipeline continues below. Character defaults and
 persona overlays are loaded from local YAML/config. The overlay id defaults to
@@ -410,7 +443,8 @@ the session continuity scope when `persona_overlay_id` is null.
 
 ### 3. Resolve Context
 
-`resolveContext(...)` prepares all retrieval context for prompt construction.
+`resolveContext(...)` in `orchestration/context/resolveContext.ts` prepares all
+retrieval context for prompt construction.
 
 #### 3.1 Continuity Scope
 
@@ -420,14 +454,25 @@ continuity.
 
 DB interaction: none.
 
-#### 3.2 Query Rewrite
+#### 3.2 Context Planner and Query Rewrite
 
-`rewriteQuery(userMessage)` lives in `retrieval/query/rewriteQuery.ts`.
+`planContext(userMessage)` in `orchestration/context/contextPlanner.ts` wraps
+`rewriteQuery(userMessage)` from `retrieval/query/rewriteQuery.ts` and adds
+structured enrichment without an extra LLM call.
 
-The rewrite path:
+The planner output includes:
+
+- `queryRewrite` — same fields as the rewrite step (segments, entities, intent,
+  confidence, HyDE text, `combined_for_embedding`)
+- `structuredUserQuery` — lane-mapped user speech/action/thought/reply direction
+- `intent` — planner intent (`scene_continuation`, `explicit_recall`,
+  `canon_question`, etc.)
+- `retrievalHints` — source priority and query-variant hints (used by rerank)
+
+The rewrite path inside `rewriteQuery`:
 
 1. Parses structural spans from the raw roleplay-style user message.
-2. Calls the extractor model in phase B.
+2. Calls the extractor model in phase B (traced as `retrieval.query_rewrite`).
 3. Labels spans such as user thought, action, speech, and reply direction.
 4. Returns entities, intent, confidence, and optional HyDE text.
 5. Produces `combined_for_embedding` for retrieval.
@@ -435,7 +480,7 @@ The rewrite path:
 Fail-open behavior: malformed parse/model output falls back to the raw user
 message or heuristic annotations.
 
-#### 3.2.5 Motif Signal Detection (Phase 1 — Hybrid Lazy)
+#### 3.2.5 Motif Signal Detection
 
 When `STRUCTMEM_MOTIF_PROBE_ENABLED=true`, `detectMotifSignal()` runs after
 query rewrite but **before** the retrieval plan is built. This is a purely
@@ -527,7 +572,9 @@ personal recall, emotional response, plan/promise, relationship progression, and
 general turns. Low-confidence or unknown intent keeps the broad fail-open
 retrieval plan.
 
-The retrieval plan now includes an `EnhancedContextNeed` with per-source flags:
+The retrieval plan includes a `EnhancedContextNeed` with per-source flags
+(used for tracing, diagnostics, and conflict rules — not for skipping DB
+retrieval):
 
 ```ts
 interface EnhancedContextNeed {
@@ -540,18 +587,14 @@ interface EnhancedContextNeed {
   needsWeb: boolean;
   structMemReason?: string;
   injectionMode: RetrievalInjectionMode; // "full" | "compact" | "skip"
-  expectedToolUse: string[];              // e.g. ["canon_lookup", "lookup_structmem"]
   reason: string;
 }
 ```
 
-**Hybrid lazy retrieval-skipping:** When `CONTEXT_RETRIEVAL_MODE=hybrid_lazy`:
-
-- If `contextNeed.needsCanon` is false, `canonMode` is overridden to `"skip"` and
-  canon retrieval is skipped entirely.
-- If none of `needsOlderSessionRecall`/`needsStructMem`/`needsStructMemConsolidation`
-  are true, older recall is skipped entirely.
-- HyDE embedding is suppressed when canon retrieval is skipped.
+Canon retrieval mode (`canonMode`: `"full"` | `"compact"`) is set by retrieval
+intent — for example `scene_continuation` uses compact anchors, `canon_fact`
+uses full retrieval. Older recall always runs when StructMem/session-chunk
+retrieval is enabled; the reranker decides what actually gets injected.
 
 #### 4.1 Durable Interactive Memories
 
@@ -593,14 +636,15 @@ When `CANON_RETRIEVAL_PIPELINE === "tier1"`, the backend uses
 `retrieveCanonNarrativeLegacy(...)`, a legacy unit-level vector/lexical search
 with same-scene expansion.
 
-In `hybrid_lazy` mode when `canonMode === "skip"`, both paths return empty arrays
-and are not awaited.
+When `retrievalPlan.canonMode === "skip"`, both paths return empty arrays
+(not used by the current plan builder, which always sets `full` or `compact`).
 
 #### 4.3 Recent Turns
 
-`getRecentConversationWindow(...)` reads recent `chat_messages`, orders them
-chronologically in memory, and supplies the raw recent history used by the
-generation prompt.
+`getRecentConversationWindow(...)` reads recent `chat_messages` where
+`route = 'roleplay_turn'`, orders them chronologically in memory, and supplies
+the raw recent history used by the generation prompt. App-command and
+unsupported turns are excluded from the roleplay recent window.
 
 #### 4.4 Session Summary
 
@@ -633,11 +677,7 @@ before the recent-window boundary, then runs these in parallel:
    retrieval is enabled
 
 The overlap intentionally makes boundary-adjacent older memories eligible; the
-prompt selector removes duplicates already covered by recent chat.
-
-In `hybrid_lazy` mode, the entire older recall step is **skipped** when none of
-`needsOlderSessionRecall`/`needsStructMem`/`needsStructMemConsolidation` are set
-on the context need. Empty arrays are returned.
+reranker and prompt selector remove duplicates already covered by recent chat.
 
 #### 5.1 Session Memory Chunks
 
@@ -669,7 +709,7 @@ Retrieval can include:
 Current-session rows receive a recency boost. Cross-session rows are ranked by
 similarity only.
 
-#### 5.4 Motif Probe Retrieval (Phase 1 — Hybrid Lazy)
+#### 5.4 Motif Probe Retrieval
 
 When motif detection was triggered and motif query embeddings were produced, a
 separate **motif probe** retrieval runs after the main older recall. This step:
@@ -707,7 +747,8 @@ prompt block before broad summary and semantic recall.
 
 #### Memory Corrections
 
-`retrieveActiveCorrections(sessionSummary)` in `orchestration/memoryCorrections.ts`
+`retrieveActiveCorrections(sessionSummary)` in
+`orchestration/context/memoryCorrections.ts`
 extracts `summary_json.contradictionsOrCorrections` from the session summary.
 Each entry must have both `oldClaim` and `correctedClaim`. Corrections are
 sorted by `sourceTurnIndex` descending and capped at 5.
@@ -752,16 +793,51 @@ Before returning context, `resolveContext(...)` emits
 - top injected sources and active open-thread count
 - boundary-overlap and latest-turn-delta metadata
 - timing buckets for query rewrite, embeddings, main retrieval fan-out, older
-  recall, open threads, prompt selection, and total context resolution
+  recall, open threads, shortlist build, rerank, selector fallback, and total
+  context resolution
+- rerank status: selected/rejected counts, fallback reason when rerank failed,
+  `finalContextMode`, `needsEvidenceFallback` (diagnostic-only)
 - StructMem entry expansion counts and budget drops
+
+### 8.5 Memory Rerank and Context Selection
+
+After open threads and memory corrections are resolved, `resolveContext(...)`
+builds a candidate shortlist via `buildPromptContextCandidates(...)` (up to
+`MEMORY_RERANK_MAX_CANDIDATES`, default 24) from all retrieved sources.
+
+It then calls `rerankCandidates(...)` (`llm.memory_rerank`), which:
+
+1. Builds a compact prompt from the current user message, planner intent/hints,
+   recent chat digest, and candidate summaries.
+2. Calls the rerank model binding (`MEMORY_RERANK_MODEL`, default
+   `EXTRACTOR_MODEL`) via non-streaming `chatJson`.
+3. Parses selected/rejected items with relevance, usage instructions
+   (`must_use`, `use_subtly`, `do_not_mention_explicitly`, `tone_only`), and
+   reason codes.
+4. Caps selection at `MEMORY_RERANK_MAX_SELECTED` (default 8).
+5. Applies an empty-selection guard when the model returns no selected items.
+
+On success, `applyCandidateSelection(...)` filters injectable sources to
+rerank-selected IDs; `filterCanonBySelection(...)` filters canon similarly.
+Critical control context (session summary, latest turn delta, memory
+corrections) is preserved regardless of rerank selection.
+
+On failure or timeout (`MEMORY_RERANK_TIMEOUT_MS`, default 30000), the pipeline
+falls back to `selectPromptMemoryContext(...)` — the deterministic selector.
+
+`buildRecallThoughtContext(...)` uses rerank-selected items when available;
+selection mode is `"rerank"` or `"fallback"`. If rerank succeeds with
+`selected: []`, no recall thought is started.
 
 ### 9. Prompt Context Build
 
-`buildPromptContextTraced(...)` in `orchestration/buildPromptContext.ts` creates:
+`buildPromptContextTraced(...)` in `orchestration/prompt/buildPromptContext.ts`
+creates:
 
 - a single system prompt with named context blocks
 - conversation history from recent turns
 - `retrievedCanonNarrative` for validator attribution checks
+- `selectedMemorySources` from rerank output for validator plumbing
 
 The function is traced as `prompt.build_context` with a `PromptTracePayload`:
 
@@ -773,33 +849,15 @@ The function is traced as `prompt.build_context` with a `PromptTracePayload`:
 - `blockPresence` — per-block boolean map
 - `estimatedTokensByBlock` — per-block token estimate (chars / 4)
 - `selectedSourceCounts` — injected counts per source
-- `injectedTokensBySource` — per-source token estimates for the 8 injectable blocks
+- `injectedTokensBySource` — per-source token estimates for injectable blocks
 
-Block analysis uses `analyzePromptBlocks()` from `tracePayloads.ts`, which
-splits the system prompt on `[BLOCK NAME]\n` headers and estimates tokens for
-each block body.
+Block analysis uses `analyzePromptBlocks()` from `observability/tracePayloads.ts`,
+which splits the system prompt on `[BLOCK NAME]\n` headers and estimates tokens
+for each block body.
 
-#### Prompt Block Gating (Hybrid Lazy Mode)
-
-When `contextRetrievalMode === "hybrid_lazy"`, five heavy blocks are
-**conditionally included** based on the `EnhancedContextNeed` flags:
-
-| Block | Gate |
-| --- | --- |
-| RELEVANT SESSION RECALL | `contextNeed.needsOlderSessionRecall` |
-| STRUCTURED EVENT MEMORY | `contextNeed.needsStructMem` |
-| STRUCTURED MEMORY SYNTHESIS | `contextNeed.needsStructMemConsolidation` |
-| INTERACTIVE MEMORY | `contextNeed.needsDurableMemory` |
-| CANON NARRATIVE | `contextNeed.needsCanon` |
-
-Always-included blocks: SYSTEM, BASE PERSONA, CONTINUITY OVERLAY, RELATIONSHIP
-EXPRESSION, CHARACTER DEFAULTS, SESSION STATE, DERIVED STATE, ACTIVE OPEN
-THREADS, MEMORY CORRECTIONS, LATEST TURN DELTA, SESSION SUMMARY, STRUCTURED
-USER QUERY, USER MESSAGE ANNOTATIONS.
-
-In hybrid_lazy mode, a compact `AVAILABLE CONTEXT SOURCES` block is also added
-(after CHARACTER DEFAULTS), listing the lookup tools the model can invoke at
-generation time.
+When rerank succeeds, canon scenes/chunks are filtered to rerank-selected canon
+IDs before formatting. Memory blocks use rerank-selected (or fallback-selected)
+items only.
 
 When `STRUCTMEM_MOTIF_PROBE_ENABLED` and a probe found `hasStrongMatch`, a
 `RELEVANT STRUCTURED MEMORY — RELATIONSHIP MOTIF` block is injected (placed
@@ -814,16 +872,13 @@ derived state, active open threads, memory corrections, the latest turn delta,
 summary, session recall, StructMem entries and expansions, StructMem synthesis,
 relationship motif (when present), interactive memory, and canon narrative.
 
-The SYSTEM block now includes tool descriptions for all available lookup tools
-(`web_search`, `canon_lookup`, `lookup_structmem`, `lookup_structmem_consolidation`,
-`lookup_older_session_memory`, `lookup_interactive_memory`) so the generation
-model understands their purpose. The actual tool calling is handled via native
-API tool schemas, not system prompt text.
+The SYSTEM block documents `web_search` for public real-time lookups (weather,
+news, etc.). The actual tool calling uses provider-native tool schemas from
+`llm/tools/toolRegistry.ts` (currently only `web_search` is registered).
 
-Before this step, `selectPromptMemoryContext(...)` applies source caps, minimum
-scores, same-turn precedence, recent-chat dedup, cross-source dedup, correction
-conflict drops, and correction-supersession drops. Selection diagnostics record
-retrieved, injected, and dropped counts including `droppedBudgetCount`.
+Before prompt build, rerank (or the fallback selector) determines which retrieved
+candidates become injectable blocks. Selection diagnostics record retrieved,
+injected, and dropped counts including `droppedBudgetCount` on the fallback path.
 
 ### 10. Optional Recall Thought
 
@@ -873,71 +928,33 @@ The thought is stored in `thoughtsAcc` and eventually persisted on the assistant
 
 ### 11. Generate with Tools
 
-`generateAndValidateStream(...)` calls `generateWithToolsStream(...)`, traced as
-`llm.response_generation`.
+`generateAndValidateStream(...)` in `orchestration/generation/generateAndValidate.ts`
+calls `generateWithToolsStream(...)`, traced as `llm.response_generation`.
 
-The generation call site now passes several hybrid-lazy parameters:
+Generation uses `ALLOWED_GENERATION_TOOLS = ["web_search"]` — the only tool
+registered in `llm/tools/toolRegistry.ts`. `TAVILY_API_KEY` must be set for
+web search to return results; otherwise the tool fails gracefully.
 
-- **`allowedToolNames`** — computed by `buildAllowedToolNames(contextNeed)`.
-  Filters `getOpenAISchemas()` to only matching tools. The model can only call
-  tools in this list. Always includes `web_search`. Includes `canon_lookup`
-  when `HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP=true` (default) or
-  `needsCanon=true`. Includes the 4 lookup tools based on corresponding
-  context-need flags.
-- **`expectedToolUse`** — from `contextNeed.expectedToolUse`, for tracing
-  only. Not enforced.
-- **`forceFinalOnExhaustion`** — when `true` (hybrid_lazy mode), instead of
-  throwing `ToolLoopExceededError` after exhausting `maxToolSteps`, the loop
-  runs a final non-tool generation to produce a best-effort reply.
-- **`maxToolSteps`** — capped at `GENERATION_LOOKUP_MAX_STEPS` (default 1)
-  in hybrid_lazy mode.
+Draft generation passes:
 
-The generation trace span (`llm.response_generation`) now includes via its
-custom `processInputs`:
+- `enableTools: true`
+- `allowedToolNames: ["web_search"]`
+- `maxToolSteps` defaults to `MAX_TOOL_STEPS = 4` in `generateWithTools.ts`
+- `GENERATION_MAX_TOKENS` (default 8192) as the per-completion output budget
 
-- `contextRetrievalMode`, `hybridLazyEmergencyCanon`, `generationLookupToolsEnabled`
-- `allowedToolNames`, `expectedToolUse`, `maxToolSteps`, `forceFinalOnExhaustion`
-- `enableTools`, `systemPromptChars`, `conversationMessageCount`, `userMessageChars`,
+The generation trace span includes via its custom `processInputs`:
+
+- `allowedToolNames`, `enableTools`
+- `systemPromptChars`, `conversationMessageCount`, `userMessageChars`,
   `userMessagePreview`
 
 Tool behavior:
 
-- tools are enabled for draft generation
 - `getOpenAISchemas()` exposes provider-native tool schemas (filtered by
   `allowedToolNames`)
 - the provider chooses tools automatically from the available set
 - the loop dispatches the first tool call returned by a model step
 - default maximum assistant completion rounds is `MAX_TOOL_STEPS = 4`
-  (overridden by `GENERATION_LOOKUP_MAX_STEPS` in hybrid_lazy)
-
-Available tool dispatch comes from `llm/tools`.
-
-**Core tools (always available when tool flag enabled):**
-
-- `canon_lookup`: embeds the lookup query and retrieves canon context
-- `web_search`: uses the configured external search provider when available
-
-**Generation-time lookup tools (available when `GENERATION_LOOKUP_TOOLS_ENABLED=true`):**
-
-| Tool | Retrieval function | Description |
-| --- | --- | --- |
-| `lookup_structmem` | `retrieveStructMemEntriesTraced` | Retrieves structured event memory entries (decisions, promises, emotional shifts) from this session before the recent window. Supports optional `entryTypes` filter and `motifMode`. |
-| `lookup_structmem_consolidation` | `retrieveStructMemConsolidationsTraced` | Retrieves synthesized memory summaries (current-session and cross-session). |
-| `lookup_older_session_memory` | `retrieveSessionMemoryChunksTraced` | Retrieves older conversation chunks from this session that fell out of the recent raw window. |
-| `lookup_interactive_memory` | `retrieveInteractiveMemories` | Retrieves durable cross-session interactive memory events (facts, preferences, relationship patterns). Scoped by `memoryNamespace` from `ToolCtx`. |
-
-Each lookup tool follows the same pattern as `canon_lookup`:
-
-1. Zod schema for parameter validation (`query`, `k`, and tool-specific params)
-2. Embeds the query text
-3. Computes the recent-window boundary
-4. Calls the corresponding traced retrieval function
-5. Formats results using the existing prompt formatters
-6. Returns `{ digest, itemCount, error? }`
-7. Traced via `traceStageWithIO` as `tool.lookup_<name>`
-
-The `ToolCtx` passed to tool dispatch now includes `memoryNamespace` alongside
-`sessionId`, `characterId`, `continuityScope`, `continuityFamily`, and `signal`.
 
 During draft generation, normal assistant prose deltas are withheld from the
 client until validation and persistence complete. Native provider reasoning
@@ -947,19 +964,22 @@ results are streamed as events.
 **DeepSeek thinking mode compatibility:** When the generation provider is
 DeepSeek in thinking mode, assistant messages with tool calls must include
 `reasoning_content` — the accumulated native reasoning from the stream.
-`generateWithToolsStream` now accumulates reasoning deltas and includes
+`generateWithToolsStream` accumulates reasoning deltas and includes
 `reasoning_content` on assistant messages in the tool-call message chain.
+
+Tool-loop exhaustion during draft or rewrite throws `ToolLoopExceededError`,
+which triggers safe deflection.
 
 ### 12. Validate, Rewrite, or Deflect
 
 `runResponseValidator(...)` validates the generated draft against character,
 continuity, canon attribution, safety, and recent context.
 
-The validator now receives three additional inputs:
+The validator receives:
 
 - `wasCanonInjected` — whether canon narrative was present in the prompt (length > 30)
-- `wasCanonLookupCalled` — whether the draft generation called `canon_lookup`
 - `retrievedCanonNarrative` — the canon narrative string (for length tracking)
+- `selectedMemorySources` — rerank-selected memory sources with usage instructions
 
 #### Deterministic Guards
 
@@ -972,11 +992,10 @@ four rule-based guard kinds:
    scope.
 3. **`nsfw_bounds`** — explicit sexual content when the scope is `none` or
    `low`.
-4. **`canon_unsupported_claim`** (NEW) — when the response asserts canon-attribution
+4. **`canon_unsupported_claim`** — when the response asserts canon-attribution
    facts (matching `CANON_ATTRIBUTION_CUES`: 提议, 安排, 第一次, 在.*章, 原作, etc.)
-   but **no canon was injected** AND **no canon_lookup was called**. This guard
-   flags unsupported canon claims in hybrid_lazy mode where canon retrieval was
-   skipped.
+   but **no canon was injected** in the prompt. Flags unsupported canon claims
+   when the reranker did not select canon context.
 
 If validation passes:
 
@@ -987,25 +1006,17 @@ If validation requests a rewrite:
 - system/transport-only issues are filtered out
 - if no drafter-facing issues remain, the original draft is kept
 - otherwise a `rewrite` thought is emitted
-- `llm.response_rewrite_generation` runs with tools enabled and
-  `maxToolSteps: 2`
+- `llm.response_rewrite_generation` runs with tools enabled (`web_search` only)
+  and `maxToolSteps: 2`
 - the rewrite is validated once more
-
-**Targeted rewrite for canon-evidence issues:** If the validation issues include
-canon-attribution failures (issues starting with "Attribution claim" or
-containing "canon_unsupported_claim"), the rewrite is run with
-`allowedToolNames=["canon_lookup", "web_search"]` to **force** the model to
-look up canon before asserting. An attribution rewrite hint is prepended to
-the rewrite system prompt.
 
 If the second validation still has actionable issues:
 
 - a `deflect` thought is emitted
 - the final reply becomes `characterDefaults.safe_deflection`
 
-Tool-loop exhaustion during draft or rewrite produces a safe deflection
-(in hybrid_lazy mode, the tool loop uses `forceFinalOnExhaustion` instead of
-throwing, so exhaustion should not occur).
+Tool-loop exhaustion during draft or rewrite produces a safe deflection via
+`ToolLoopExceededError`.
 
 ### 13. Persist Completed Turn
 
@@ -1025,14 +1036,22 @@ Inside the transaction:
 7. Upserts `session_state` with derived state, a cheap latest-turn delta in
    `temporary_assumptions`, and assistant turn index.
 8. Updates `chat_sessions.updated_at`.
-9. Inserts one `post_turn_jobs` row with payload snapshot and pending step
-   status.
+9. Inserts one `post_turn_jobs` row **only when `route === roleplay_turn`**
+   and `derivedState` is present.
 
 The `route` stored on both messages reflects the persisted route:
 
 - Roleplay turns: `persistedRouteForRoleplayResult(...)` maps deflected results
   to `unsupported`, otherwise `roleplay_turn`.
 - App command / unsupported turns: stored directly as the classified route.
+
+For roleplay assistant rows, generation `usage` (input/output tokens and
+estimated cost) is merged into `validator_result.usage` so session-status
+aggregation can sum tracked costs.
+
+App-command and unsupported turns still insert messages and update
+`last_turn_index`, but skip derived-state upsert details and post-turn job
+enqueueing.
 
 The persistence result carries a `BuildCompletedTurnPersistenceTracePayload`
 with message IDs, turn indexes, session metadata, and total token usage from the
@@ -1047,10 +1066,10 @@ after it expires.
 
 ### 14. Final Response
 
-After persistence, `runCharacterTurnStream(...)` calls `postTurnRunner.wake()`.
+After persistence, roleplay turns call `postTurnRunner.wake()`.
 
-Streaming then replays the final reply in fixed-size slices and emits `done`
-with:
+Streaming then replays the final reply in fixed-size slices (96 chars) and
+emits `done` with:
 
 - `message_id`
 - `content`
@@ -1058,7 +1077,11 @@ with:
 - `was_rewritten`
 - `was_deflected`
 - `route` — the persisted turn route
-- accumulated thoughts
+- `thoughts` — accumulated thought chain
+- `app_command` — optional structured payload (app-command turns only)
+
+App-command streaming skips delta replay and emits a single `done` event.
+Unsupported turns replay safe-deflection prose as deltas, then `done`.
 
 Non-streaming drains the same stream and returns a `TurnOutput`:
 
@@ -1284,7 +1307,7 @@ the traced `embedding.query_batch` span.
 These run together:
 
 - durable interactive memories
-- canon retrieval (skipped in hybrid_lazy when `canonMode === "skip"`)
+- canon retrieval (mode `full` or `compact` from retrieval plan intent)
 - recent raw turns
 - session summary
 - session state
@@ -1300,14 +1323,16 @@ These now run together after the recent-window boundary is known:
 - StructMem entries
 - StructMem consolidations
 
-In hybrid_lazy mode, the entire step is skipped when corresponding context-need
-flags are all false.
-
 ### Motif Probe
 
 When triggered, runs after older recall using the motif query embedding.
-Reuses existing StructMem retrievers with smaller k. Runs in parallel for
-entries + consolidations.
+Reuses existing StructMem retrievers with smaller k.
+
+### Memory Rerank
+
+After the candidate shortlist is built, `llm.memory_rerank` selects injectable
+context. On failure, the deterministic selector runs instead. This step is
+sequential after retrieval fan-out and open-thread fetch.
 
 ### Generation and Validation
 
@@ -1326,22 +1351,22 @@ StructMem consolidation is a separate durable job queue.
 | Step | Model kind | Required every turn? |
 | --- | --- | --- |
 | Turn route classification | Extractor chat JSON | Yes, fail-open (defaults to `roleplay_turn`). |
-| Query rewrite phase B | Extractor chat JSON stream | Yes, fail-open. |
-| Query embeddings | Embedding model (batched) | Yes for retrieval; memory + canon always, raw-memory + HyDE + motif conditional. |
-| Recall thought | Extractor chat | Only when selected context after rerank/fallback is non-empty. Now first-class `llm.recall_thought` span. |
+| Query rewrite phase B | Extractor chat JSON stream | Yes for roleplay; fail-open. Wrapped by `planContext`. |
+| Query embeddings | Embedding model (batched) | Yes for roleplay retrieval; memory + canon always, raw-memory + HyDE + motif conditional. |
+| Memory rerank | Rerank model (`MEMORY_RERANK_MODEL`) | Yes for roleplay; falls back to deterministic selector on failure/timeout. |
+| Recall thought | Extractor chat | Only when rerank/fallback selected context is non-empty. Traced as `llm.recall_thought`. |
 | Draft reply | Generation streaming chat | Yes; only for `roleplay_turn`. |
-| Tool thought summaries | Chat LLM | Only when tools are called. |
-| Tool query embeddings (canon_lookup) | Embedding model | Only for tools such as `canon_lookup`. |
-| Tool query embeddings (lookup_structmem, etc.) | Embedding model | Only when generation-time lookup tools are called (hybrid_lazy mode). |
+| Tool thought summaries | Chat LLM | Only when `web_search` is called. |
 | Response validator | Validator chat JSON stream | Yes after first draft; only for `roleplay_turn`. |
 | Attribution judge | Validator/judge chat | Only when strict attribution path applies. |
 | Rewrite reply | Generation streaming chat | Only when validator requests actionable rewrite. |
 | Second validator | Validator chat JSON stream | Only after rewrite. |
-| Post-turn extraction | Extractor chat JSON | Background job step. |
+| Post-turn extraction | Extractor chat JSON | Background job step (roleplay turns only). |
 | Raw chunk embedding | Embedding model | Background job step. |
 | StructMem consolidation synthesis | Extractor/chat model | Only when consolidation job runs. |
 | Cross-session StructMem distillation | Extractor/chat model | Only when phase-4 write is enabled. |
 | Summary merger | Extractor chat JSON | Only when compaction threshold is met. |
+| App command handling | None | Deterministic parsing and DB reads only. |
 
 ## Database Interaction Summary
 
@@ -1485,48 +1510,26 @@ Startup validation warns for suspicious combinations, such as consolidation
 without `STRUCTMEM_ENABLED`, cross-session write with no read or promotion path,
 or cross-session retrieval without consolidation enabled.
 
-### Hybrid Lazy Retrieval
-
-The hybrid lazy retrieval system reduces prompt token usage by deferring
-heavyweight memory/canon retrieval behind generation-time lookup tools for
-simple turns (e.g., immediate actions, scene continuations).
-
-**Feature flags:**
+### Generation and Memory Rerank
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `CONTEXT_RETRIEVAL_MODE` | `"eager"` | `"eager"` = current behavior (all sources always retrieved). `"hybrid_lazy"` = conditional prompt blocks, retrieval skipping, generation-time lookup tools. |
-| `HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP` | `true` | Always include `canon_lookup` in allowed tools even when canon not planned. |
-| `GENERATION_LOOKUP_TOOLS_ENABLED` | `false` | Register the 4 lookup tools (`lookup_structmem`, etc.) as native tool schemas. |
-| `GENERATION_LOOKUP_MAX_STEPS` | `1` | Max tool-calling rounds in hybrid_lazy mode before forced-final generation. |
+| `GENERATION_MAX_TOKENS` | `8192` | Foreground draft/rewrite output-token budget (clamped 8192–16384). |
+| `MEMORY_RERANK_MODEL` | `EXTRACTOR_MODEL` | LLM binding for context selection rerank. |
+| `MEMORY_RERANK_MAX_CANDIDATES` | `24` | Max candidates passed to the reranker. |
+| `MEMORY_RERANK_MAX_SELECTED` | `8` | Max items the reranker may select for injection. |
+| `MEMORY_RERANK_TIMEOUT_MS` | `30000` | Rerank call timeout before fallback to deterministic selector. |
+
+### StructMem Motif Probe
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
 | `STRUCTMEM_MOTIF_PROBE_ENABLED` | `false` | Enable deterministic motif detection + StructMem probe retrieval. |
 | `STRUCTMEM_MOTIF_PROBE_TOP_K` | `3` | Max entries per motif probe query. |
 | `STRUCTMEM_MOTIF_PROBE_MIN_SCORE` | `0.5` | Minimum cosine similarity for motif probe matches. |
 | `STRUCTMEM_MOTIF_INJECT_MODE` | `"synthesis_only"` | `"synthesis_only"` or `"entries_and_synthesis"`. Controls which probe results are injected. |
 
-**Recommended starting config (Phase 1 only):**
-
-```env
-CONTEXT_RETRIEVAL_MODE=eager
-STRUCTMEM_MOTIF_PROBE_ENABLED=true
-STRUCTMEM_MOTIF_INJECT_MODE=synthesis_only
-GENERATION_LOOKUP_TOOLS_ENABLED=false
-GENERATION_LOOKUP_MAX_STEPS=1
-```
-
-**Recommended long-term config (after eval):**
-
-```env
-CONTEXT_RETRIEVAL_MODE=hybrid_lazy
-STRUCTMEM_MOTIF_PROBE_ENABLED=true
-STRUCTMEM_MOTIF_INJECT_MODE=compact_when_matched
-GENERATION_LOOKUP_TOOLS_ENABLED=true
-GENERATION_LOOKUP_MAX_STEPS=1
-HYBRID_LAZY_ALLOW_EMERGENCY_CANON_LOOKUP=true
-```
-
-**Rollback:** Setting `CONTEXT_RETRIEVAL_MODE=eager` restores the original
-behavior. All hybrid_lazy code paths are gated behind this flag.
+Optional: `TAVILY_API_KEY` enables the `web_search` tool during generation.
 
 ## End-to-End Timeline
 
@@ -1547,21 +1550,22 @@ sequenceDiagram
   Orch->>DB: SELECT chat_sessions (loadSession)
   Orch->>Class: classifyTurnRoute(session, userMessage)
   Class->>LLM: extractor classify (roleplay/app/unsupported)
+  Orch-->>Client: SSE route event (streaming)
   alt roleplay_turn
     Orch->>Orch: tracedRoleplayTurn
     Orch->>Ctx: resolveContext(session, userMessage)
-    Ctx->>LLM: query rewrite
+    Ctx->>LLM: planContext / query rewrite
     Ctx->>Ctx: detectMotifSignal (deterministic)
-    Ctx->>Ctx: buildRetrievalPlan (enhanced with contextNeed)
+    Ctx->>Ctx: buildRetrievalPlan (contextNeed)
     Ctx->>LLM: embedding.query_batch (memory/canon/raw/hyde/motif)
     par Main retrieval fan-out
       Ctx->>DB: SELECT/UPDATE interactive_memory_events
-      Ctx->>DB: SELECT canon tables (skipped in hybrid_lazy if !needsCanon)
+      Ctx->>DB: SELECT canon tables
       Ctx->>DB: SELECT chat_messages recent turns
       Ctx->>DB: SELECT session_summaries
       Ctx->>DB: SELECT session_state
     end
-    par Older recall (skipped in hybrid_lazy if not needed)
+    par Older recall
       Ctx->>DB: SELECT session_memory_chunks
       Ctx->>DB: SELECT structmem_entries
       Ctx->>DB: SELECT structmem_consolidations
@@ -1572,18 +1576,18 @@ sequenceDiagram
     end
     Ctx->>DB: SELECT active open threads
     Ctx->>DB: retrieve active memory corrections
-    Ctx->>Ctx: select prompt memory context (with correction drops)
+    Ctx->>LLM: llm.memory_rerank (or fallback selector)
     Ctx->>DB: expand selected StructMem entries
     Ctx->>Ctx: emit retrieval diagnostics
     Ctx-->>Orch: context inputs
-    Orch->>LLM: prompt.build_context (conditional blocks in hybrid_lazy)
+    Orch->>LLM: prompt.build_context
     par Nonblocking thought and draft
       Orch->>LLM: llm.recall_thought
-      Orch->>LLM: llm.response_generation (filtered tools, forced-final)
+      Orch->>LLM: llm.response_generation (web_search optional)
     end
-    Orch->>LLM: validate draft (with canon_unsupported_claim guard)
+    Orch->>LLM: validate draft (canon_unsupported_claim guard)
     opt validation needs rewrite
-      Orch->>LLM: rewrite draft (targeted canon_lookup forcing)
+      Orch->>LLM: rewrite draft
       Orch->>LLM: validate rewrite
     end
     Orch->>Orch: tracedRouteSwitch
@@ -1593,10 +1597,15 @@ sequenceDiagram
     Orch->>DB: TX insert post_turn_jobs
     Orch->>Post: wake
     Orch-->>API: final reply events/result (with route)
+    API-->>Client: SSE deltas + done or JSON
+  else app_command
+    Orch->>DB: SELECT chat_messages (export/status)
+    Orch->>DB: TX insert chat_messages (structured app_command result)
+    Orch-->>API: done with app_command payload
     API-->>Client: SSE done or JSON
-  else app_command / unsupported
-    Orch->>DB: persist safe reply (no LLM generation)
-    Orch-->>API: done with route
+  else unsupported
+    Orch->>DB: TX insert chat_messages (safe deflection)
+    Orch-->>API: deltas + done with route
     API-->>Client: SSE done or JSON
   end
 
@@ -1629,26 +1638,36 @@ sequenceDiagram
 
 - `chatbot/backend/src/http/routes/chatRoutes.ts`
 - `chatbot/backend/src/features/chat/chatHandlers.ts`
-- `chatbot/backend/src/orchestration/runCharacterTurn.ts`
-- `chatbot/backend/src/orchestration/classifyTurnRoute.ts`
-- `chatbot/backend/src/orchestration/turnRoutes.ts`
-- `chatbot/backend/src/orchestration/recallThoughtTask.ts`
-- `chatbot/backend/src/orchestration/resolveContext.ts`
-- `chatbot/backend/src/orchestration/buildPromptContext.ts`
-- `chatbot/backend/src/orchestration/promptMemoryContextSelector.ts`
-- `chatbot/backend/src/orchestration/retrievalDiagnostics.ts`
-- `chatbot/backend/src/orchestration/retrievalEmbeddingBatch.ts`
-- `chatbot/backend/src/orchestration/retrievalPlan.ts`
-- `chatbot/backend/src/orchestration/motifTypes.ts`
-- `chatbot/backend/src/orchestration/detectMotifSignal.ts`
-- `chatbot/backend/src/orchestration/memoryCorrections.ts`
-- `chatbot/backend/src/orchestration/generateAndValidate.ts`
-- `chatbot/backend/src/orchestration/generateWithTools.ts`
-- `chatbot/backend/src/orchestration/turnPersistence.ts`
-- `chatbot/backend/src/orchestration/turnDelta.ts`
-- `chatbot/backend/src/llm/tools/memoryLookupTools.ts`
-- `chatbot/backend/src/llm/tools/index.ts`
-- `chatbot/backend/src/llm/tools/types.ts`
+- `chatbot/backend/src/features/chat/sse.ts`
+- `chatbot/backend/src/orchestration/turn/runCharacterTurn.ts`
+- `chatbot/backend/src/orchestration/turn/classifyTurnRoute.ts`
+- `chatbot/backend/src/orchestration/turn/turnRoutes.ts`
+- `chatbot/backend/src/features/appCommands/appCommandExecutor.ts`
+- `chatbot/backend/src/features/appCommands/appCommandIntent.ts`
+- `chatbot/backend/src/features/appCommands/appCommandTypes.ts`
+- `chatbot/backend/src/features/appCommands/exportSessionRawTurns.ts`
+- `chatbot/backend/src/features/appCommands/sessionStatus.ts`
+- `chatbot/backend/src/orchestration/thought/recallThoughtTask.ts`
+- `chatbot/backend/src/orchestration/context/resolveContext.ts`
+- `chatbot/backend/src/orchestration/context/contextPlanner.ts`
+- `chatbot/backend/src/orchestration/context/contextCandidates.ts`
+- `chatbot/backend/src/orchestration/context/promptMemoryContextSelector.ts`
+- `chatbot/backend/src/orchestration/context/memoryCorrections.ts`
+- `chatbot/backend/src/orchestration/context/detectMotifSignal.ts`
+- `chatbot/backend/src/orchestration/context/motifTypes.ts`
+- `chatbot/backend/src/orchestration/context/recallThoughtContext.ts`
+- `chatbot/backend/src/orchestration/prompt/buildPromptContext.ts`
+- `chatbot/backend/src/orchestration/prompt/promptFormatters.ts`
+- `chatbot/backend/src/orchestration/retrieval/retrievalPlan.ts`
+- `chatbot/backend/src/orchestration/retrieval/retrievalDiagnostics.ts`
+- `chatbot/backend/src/orchestration/retrieval/retrievalEmbeddingBatch.ts`
+- `chatbot/backend/src/orchestration/retrieval/memoryRerank.ts`
+- `chatbot/backend/src/orchestration/generation/generateAndValidate.ts`
+- `chatbot/backend/src/orchestration/generation/generateWithTools.ts`
+- `chatbot/backend/src/orchestration/persistence/turnPersistence.ts`
+- `chatbot/backend/src/orchestration/turn/turnDelta.ts`
+- `chatbot/backend/src/llm/tools/toolRegistry.ts`
+- `chatbot/backend/src/llm/tools/webSearchTool.ts`
 - `chatbot/backend/src/llm/validation/runResponseValidator.ts`
 - `chatbot/backend/src/jobs/backgroundRunner.ts`
 - `chatbot/backend/src/jobs/postTurnRunner.ts`
@@ -1681,7 +1700,6 @@ sequenceDiagram
 - `chatbot/backend/src/db/schema/structmem.ts`
 - `chatbot/backend/src/db/schema/canon.ts`
 - `chatbot/backend/src/config/env.ts`
-- `chatbot/backend/src/eval/datasets/hybridLazyToolRouting.ts`
-- `chatbot/backend/src/eval/evaluators/hybridLazyEvaluators.ts`
+- `chatbot/backend/src/config/models.ts`
 - `chatbot/frontend/src/hooks/useStreamMessage.ts`
 - `chatbot/frontend/src/lib/thoughtDisplay.ts`
