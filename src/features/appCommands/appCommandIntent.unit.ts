@@ -195,6 +195,51 @@ describe("parseAppCommandIntent", () => {
     assert.equal(result.args.include_native_thoughts, true);
   });
 
+  // ---- native/debug prompts enable both flags ----
+  it('sets both flags for "include native thoughts"', () => {
+    const result = parseAppCommandIntent("export include native thoughts");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  it('sets both flags for "with native thoughts"', () => {
+    const result = parseAppCommandIntent("export with native thoughts");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  it('sets both flags for "debug thoughts"', () => {
+    const result = parseAppCommandIntent("export debug thoughts");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, true);
+  });
+
+  // ---- exclusion wins over native/debug prompts ----
+  it('excludes both flags when debug thoughts combined with "without thoughts"', () => {
+    const result = parseAppCommandIntent("export debug thoughts without thoughts");
+    assert.equal(result.args.include_thoughts, false);
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  // ---- generic phrases still do not enable native ----
+  it('does not enable native from "with thoughts" (both flags check)', () => {
+    const result = parseAppCommandIntent("export with thoughts");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('does not enable native from "with reasoning" (both flags check)', () => {
+    const result = parseAppCommandIntent("export with reasoning");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
+  it('does not enable native from "with thinking" (both flags check)', () => {
+    const result = parseAppCommandIntent("export with thinking");
+    assert.equal(result.args.include_thoughts, true);
+    assert.equal(result.args.include_native_thoughts, false);
+  });
+
   // ---- missing aliases (Review 010) ----
   it('parses "full" as all types', () => {
     const result = parseAppCommandIntent("export full history");

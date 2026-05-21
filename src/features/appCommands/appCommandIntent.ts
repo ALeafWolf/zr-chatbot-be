@@ -166,7 +166,8 @@ function parseIncludeThoughts(input: string): boolean {
     if (p.test(input)) return false;
   }
 
-  // Positive markers
+  // Positive markers (including native/debug prompts, which imply base
+  // thought inclusion as well)
   if (
     /\b(with|include|show)\s+thoughts?\b/i.test(input) ||
     /\bwith\s+reasoning\b/i.test(input) ||
@@ -175,7 +176,12 @@ function parseIncludeThoughts(input: string): boolean {
     /\bshow\s+thinking\b/i.test(input) ||
     /包含思考/i.test(input) ||
     /显示思考/i.test(input) ||
-    /包含推理/i.test(input)
+    /包含推理/i.test(input) ||
+    /\binclude\s+native\s+thoughts?\b/i.test(input) ||
+    /\bwith\s+native\s+thoughts?\b/i.test(input) ||
+    /\bdebug\s+(native\s+)?thoughts?\b/i.test(input) ||
+    /包含原生思考/i.test(input) ||
+    /调试.*(原生思考|思考)/i.test(input)
   ) {
     return true;
   }
@@ -186,6 +192,19 @@ function parseIncludeThoughts(input: string): boolean {
 // Native thought option parsing (explicit debug-only prompts)
 // ---------------------------------------------------------------------------
 function parseIncludeNativeThoughts(input: string): boolean {
+  // Exclusion takes precedence — same as parseIncludeThoughts.
+  const excludes = [
+    /\bwithout\s+thoughts?\b/i,
+    /\b(no|exclude)\s+thoughts?\b/i,
+    /\bwithout\s+reasoning\b/i,
+    /\b(no|exclude)\s+reasoning\b/i,
+    /不包含思考/i,
+    /排除思考/i,
+  ];
+  for (const p of excludes) {
+    if (p.test(input)) return false;
+  }
+
   // Only explicit native/debug phrases enable native thought export.
   // Generic phrases like "with thoughts" or "with reasoning" must NOT match.
   return (
