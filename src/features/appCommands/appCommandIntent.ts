@@ -40,13 +40,16 @@ function isExportHelp(input: string): boolean {
 // Export keyword patterns
 // ---------------------------------------------------------------------------
 const EXPORT_PATTERNS: RegExp[] = [
+  // Direct export/download verbs
   /export/i,
   /download/i,
   /导出/i,
   /下载/i,
+  // "raw turns" is specific enough to match standalone
   /raw turns/i,
-  /transcript/i,
-  /conversation/i,
+  // Composite patterns: require an action verb near a broad target word
+  /\b(get|save|show|view|fetch)\b.*\btranscript\b/i,
+  /\b(get|save|show|view|fetch)\b.*\bconversation\b/i,
 ];
 
 // ---------------------------------------------------------------------------

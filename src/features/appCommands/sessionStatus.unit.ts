@@ -208,6 +208,35 @@ describe("buildSessionStatus", () => {
     assert.equal(result.fields.usage.untracked_turn_count, 1);
   });
 
+  it("counts a row with only input_tokens as untracked", () => {
+    const messages: ChatMessage[] = [
+      makeMsg({ id: "m1", turnIndex: 0, role: "user" }),
+      makeMsg({
+        id: "m2", turnIndex: 1, role: "assistant",
+        validatorResult: {
+          in_character: true,
+          usage: {
+            input_tokens: 300,
+            estimated_cost_usd: 0.0009,
+          },
+        },
+      }),
+      makeMsg({ id: "m3", turnIndex: 2, role: "user" }),
+      makeMsg({ id: "m4", turnIndex: 3, role: "assistant", validatorResult: usageValidatorResult({ inputTokens: 500, outputTokens: 200, estimatedCostUsd: 0.0020 }) }),
+    ];
+
+    const result = buildSessionStatus({
+      session: makeSession(),
+      messages,
+    });
+
+    assert.equal(result.fields.usage.coverage, "partial");
+    assert.equal(result.fields.usage.input_tokens, 500);
+    assert.equal(result.fields.usage.output_tokens, 200);
+    assert.equal(result.fields.usage.total_tokens, 700);
+    assert.equal(result.fields.usage.untracked_turn_count, 1);
+  });
+
   // ---- usage: untracked ----
   it("reports untracked when no assistant roleplay turns have usage metadata", () => {
     const messages: ChatMessage[] = [

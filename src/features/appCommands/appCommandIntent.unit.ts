@@ -261,4 +261,52 @@ describe("parseAppCommandIntent", () => {
     const result = parseAppCommandIntent("");
     assert.equal(result.command, APP_COMMAND_UNKNOWN);
   });
+
+  // ---- negative export tests (broad words need a verb) ----
+  it('does not trigger export for standalone "conversation"', () => {
+    const result = parseAppCommandIntent("the conversation was fun");
+    assert.equal(result.command, APP_COMMAND_UNKNOWN);
+  });
+
+  it('does not trigger export for standalone "transcript"', () => {
+    const result = parseAppCommandIntent("transcript of the day");
+    assert.equal(result.command, APP_COMMAND_UNKNOWN);
+  });
+
+  it('does not trigger export for "conversation" with non-export verb', () => {
+    const result = parseAppCommandIntent("I like this conversation");
+    assert.equal(result.command, APP_COMMAND_UNKNOWN);
+  });
+
+  it('does not trigger export for "forget transcript" (get substring)', () => {
+    const result = parseAppCommandIntent("forget transcript");
+    assert.equal(result.command, APP_COMMAND_UNKNOWN);
+  });
+
+  it('does not trigger export for "target conversation" (get substring)', () => {
+    const result = parseAppCommandIntent("target conversation");
+    assert.equal(result.command, APP_COMMAND_UNKNOWN);
+  });
+
+  // ---- preserved positive export prompts ----
+  it('preserves "export as json" detection', () => {
+    const result = parseAppCommandIntent("export as json");
+    assert.equal(result.command, APP_COMMAND_EXPORT);
+    assert.equal(result.args.format, "json");
+  });
+
+  it('preserves "download the conversation" detection', () => {
+    const result = parseAppCommandIntent("download the conversation");
+    assert.equal(result.command, APP_COMMAND_EXPORT);
+  });
+
+  it('preserves "get transcript" detection', () => {
+    const result = parseAppCommandIntent("get transcript");
+    assert.equal(result.command, APP_COMMAND_EXPORT);
+  });
+
+  it('preserves "save conversation" detection', () => {
+    const result = parseAppCommandIntent("save conversation");
+    assert.equal(result.command, APP_COMMAND_EXPORT);
+  });
 });

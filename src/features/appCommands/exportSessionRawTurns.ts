@@ -71,6 +71,16 @@ function joinTextFragments(fragments: string[]): string {
   }, "");
 }
 
+/** Supported thought kinds eligible for export when include_thoughts is true. */
+const EXPORTABLE_THOUGHT_KINDS = new Set([
+  "native",
+  "recall",
+  "tool_decision",
+  "tool_result",
+  "rewrite",
+  "deflect",
+]);
+
 function normalizeThoughts(
   rawThoughts: unknown,
 ): NormalizedThought[] {
@@ -80,12 +90,10 @@ function normalizeThoughts(
 
   for (const t of rawThoughts) {
     if (!t || typeof t !== "object") continue;
-    const kind = typeof (t as Record<string, unknown>).kind === "string"
-      ? (t as Record<string, unknown>).kind as string
-      : "native";
-    const text = typeof (t as Record<string, unknown>).text === "string"
-      ? (t as Record<string, unknown>).text as string
-      : "";
+    const row = t as Record<string, unknown>;
+    const kind = row.kind;
+    if (typeof kind !== "string" || !EXPORTABLE_THOUGHT_KINDS.has(kind)) continue;
+    const text = typeof row.text === "string" ? row.text : "";
     if (text.trim().length === 0) continue;
 
     const arr = byKind.get(kind) ?? [];
@@ -98,9 +106,8 @@ function normalizeThoughts(
   const seen = new Set<string>();
   for (const t of rawThoughts) {
     if (!t || typeof t !== "object") continue;
-    const kind = typeof (t as Record<string, unknown>).kind === "string"
-      ? (t as Record<string, unknown>).kind as string
-      : "native";
+    const kind = (t as Record<string, unknown>).kind;
+    if (typeof kind !== "string" || !EXPORTABLE_THOUGHT_KINDS.has(kind)) continue;
     if (seen.has(kind)) continue;
     const fragments = byKind.get(kind);
     if (!fragments || fragments.length === 0) continue;

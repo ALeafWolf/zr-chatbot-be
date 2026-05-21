@@ -41,9 +41,9 @@ function aggregateUsage(
       | null
       | undefined;
 
-    if (usage && typeof usage.input_tokens === "number") {
+    if (usage && typeof usage.input_tokens === "number" && typeof usage.output_tokens === "number") {
       trackedInput += usage.input_tokens;
-      trackedOutput += typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+      trackedOutput += usage.output_tokens;
       trackedCount++;
 
       const cost = usage.estimated_cost_usd;

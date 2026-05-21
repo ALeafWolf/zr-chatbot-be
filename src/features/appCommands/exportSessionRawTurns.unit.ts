@@ -336,6 +336,77 @@ describe("buildExportArtifact", () => {
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.messages[0].thoughts[0].text, "OK 好的");
     });
+
+    it("excludes unknown thought kinds from export", () => {
+      const unknown: ChatMessage[] = [
+        makeMsg({
+          id: "u1", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "native", text: "visible", ts: 1 },
+            { kind: "internal_meta", text: "hidden", ts: 2 },
+            { kind: "debug_only", text: "also hidden", ts: 3 },
+            { kind: "recall", text: "also visible", ts: 4 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(unknown, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const parsed = JSON.parse(r.artifact.content);
+      assert.equal(parsed.messages[0].thoughts.length, 2);
+      assert.equal(parsed.messages[0].thoughts[0].kind, "native");
+      assert.equal(parsed.messages[0].thoughts[1].kind, "recall");
+    });
+
+    it("excludes a thought row with no string kind from JSON export", () => {
+      const noKind: ChatMessage[] = [
+        makeMsg({
+          id: "nk1", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "native", text: "visible", ts: 1 },
+            { text: "no kind here", ts: 2 },
+            { kind: "recall", text: "also visible", ts: 3 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(noKind, opts("json", { include_thoughts: true }), SESSION_ID, null);
+      const parsed = JSON.parse(r.artifact.content);
+      assert.equal(parsed.messages[0].thoughts.length, 2);
+      assert.equal(parsed.messages[0].thoughts[0].kind, "native");
+      assert.equal(parsed.messages[0].thoughts[1].kind, "recall");
+    });
+
+    it("excludes non-exportable kinds and keeps only supported kinds in MD export", () => {
+      const mixed: ChatMessage[] = [
+        makeMsg({
+          id: "u2", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "tool_decision", text: "decided to search", ts: 1 },
+            { kind: "internal_state", text: "should not appear", ts: 2 },
+            { kind: "rewrite", text: "rewritten content", ts: 3 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(mixed, opts("md", { include_thoughts: true }), SESSION_ID, null);
+      assert.match(r.artifact.content, /decided to search/);
+      assert.match(r.artifact.content, /rewritten content/);
+      assert.doesNotMatch(r.artifact.content, /should not appear/);
+    });
+
+    it("excludes non-exportable kinds from TXT export", () => {
+      const mixed: ChatMessage[] = [
+        makeMsg({
+          id: "u3", turnIndex: 0, role: "user", content: "hi",
+          thoughts: [
+            { kind: "native", text: "keep me", ts: 1 },
+            { kind: "debug_ts", text: "drop me", ts: 2 },
+            { kind: "deflect", text: "keep me too", ts: 3 },
+          ],
+        }),
+      ];
+      const r = buildExportArtifact(mixed, opts("txt", { include_thoughts: true }), SESSION_ID, null);
+      assert.match(r.artifact.content, /keep me/);
+      assert.match(r.artifact.content, /keep me too/);
+      assert.doesNotMatch(r.artifact.content, /drop me/);
+    });
   });
 
   // ---- app_command filtering (executor-level default behavior) ----
@@ -344,6 +415,7 @@ describe("buildExportArtifact", () => {
       ...twoTurnMessages,
       makeMsg({
         id: "m5", sessionId: SESSION_ID, turnIndex: 4, role: "user",
+        route: "app_command",
         content: "export this", createdAt: new Date("2025-06-01T10:02:00Z"),
       }),
       makeMsg({
@@ -357,7 +429,7 @@ describe("buildExportArtifact", () => {
     it("excludes app_command via turn_types default", () => {
       const r = buildExportArtifact(messagesWithAppCommands, opts("json"), SESSION_ID, null);
       const parsed = JSON.parse(r.artifact.content);
-      assert.equal(parsed.message_count, 5);
+      assert.equal(parsed.message_count, 4);
       for (const msg of parsed.messages) {
         assert.notEqual(msg.route, "app_command");
       }
@@ -372,7 +444,7 @@ describe("buildExportArtifact", () => {
       const parsed = JSON.parse(r.artifact.content);
       assert.equal(parsed.message_count, 6);
       const appMsgs = parsed.messages.filter((m: { route: string }) => m.route === "app_command");
-      assert.equal(appMsgs.length, 1);
+      assert.equal(appMsgs.length, 2);
     });
   });
 });

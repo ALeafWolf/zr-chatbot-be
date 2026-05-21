@@ -2,10 +2,12 @@ import { db } from "../../db/client";
 import { chatMessages } from "../../db/schema/chat";
 import { eq } from "drizzle-orm";
 import type { ChatSession } from "../../db/schema/chat";
-import type { AppCommandValidatorResult, ExportOptions } from "./appCommandTypes";
+import type { AppCommandValidatorResult } from "./appCommandTypes";
 import {
+  ExportOptionsSchema,
   APP_COMMAND_STATUS_OK,
   APP_COMMAND_STATUS_UNSUPPORTED,
+  APP_COMMAND_STATUS_ERROR,
 } from "./appCommandTypes";
 import { parseAppCommandIntent } from "./appCommandIntent";
 import { buildExportArtifact } from "./exportSessionRawTurns";
@@ -24,7 +26,25 @@ export async function executeAppCommand(
 
   switch (intent.command) {
     case "export_session_raw_turns": {
-      const options = intent.args as unknown as ExportOptions;
+      const parsed = ExportOptionsSchema.safeParse(intent.args);
+      if (!parsed.success) {
+        return {
+          route: "app_command",
+          status: APP_COMMAND_STATUS_ERROR,
+          command: "export_session_raw_turns",
+          app_command: {
+            kind: "unsupported",
+            command: "unknown",
+            message: `Invalid export options: ${parsed.error.message}`,
+            available_commands: [
+              "export_session_raw_turns",
+              "show_session_status",
+              "show_export_help",
+            ],
+          },
+        };
+      }
+      const options = parsed.data;
 
       const rows = await db
         .select()
