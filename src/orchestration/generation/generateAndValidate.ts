@@ -34,6 +34,7 @@ import {
 import { env } from "../../config/env";
 import {
   appendDeepSeekThinkingMarker,
+  stripDeepSeekThinkingMarkerPreview,
   type DeepSeekV4ThinkingMode,
   type DeepSeekV4ThinkingMarkerScope,
 } from "../../llm/generation/deepseekThinkingMode";
@@ -80,7 +81,9 @@ function traceInputsForGenerationToolLoop(
     systemPromptChars: systemContent.length,
     conversationMessageCount: input.messages.length,
     userMessageChars: lastUserMsg?.content?.length ?? 0,
-    userMessagePreview: (lastUserMsg?.content ?? "").slice(0, 200),
+    userMessagePreview: stripDeepSeekThinkingMarkerPreview(
+      lastUserMsg?.content ?? "",
+    ).slice(0, 200),
     ...(ext.deepseekThinkingMode !== undefined
       ? { deepseekThinkingMode: ext.deepseekThinkingMode }
       : {}),
@@ -557,6 +560,10 @@ export async function* generateAndValidateStream(input: {
 
   try {
     let completed = false;
+    // Rewrite generation intentionally reuses the same marker scope: the rewrite
+    // pass is still a provider-bound roleplay generation request, and the marker
+    // is a generation-only instruction that guides thinking behavior. Keeping the
+    // marker consistent between draft and rewrite avoids a behavioral shift.
     const builtRewriteMessages = buildRewriteToolMessages(
       promptContext,
       userMessage,

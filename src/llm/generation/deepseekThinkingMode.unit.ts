@@ -5,6 +5,7 @@ import {
   getDeepSeekThinkingMarker,
   hasDeepSeekThinkingMarker,
   isDeepSeekV4ProGenerationModel,
+  stripDeepSeekThinkingMarkerPreview,
   INNER_OS_MARKER,
   NO_INNER_OS_MARKER,
 } from "./deepseekThinkingMode";
@@ -67,6 +68,34 @@ describe("deepseek thinking mode helper", () => {
 
     it("returns false for plain content", () => {
       assert.equal(hasDeepSeekThinkingMarker("你好。"), false);
+    });
+  });
+
+  describe("stripDeepSeekThinkingMarkerPreview", () => {
+    it("strips inner_os marker from content", () => {
+      const result = stripDeepSeekThinkingMarkerPreview(
+        `你好。${INNER_OS_MARKER}`,
+      );
+      assert.equal(result, "你好。");
+      assert.ok(!result.includes("【角色沉浸要求】"));
+    });
+
+    it("strips no_inner_os marker from content", () => {
+      const result = stripDeepSeekThinkingMarkerPreview(
+        `你好。${NO_INNER_OS_MARKER}`,
+      );
+      assert.equal(result, "你好。");
+      assert.ok(!result.includes("【思维模式要求】"));
+    });
+
+    it("passes through plain content unchanged", () => {
+      const result = stripDeepSeekThinkingMarkerPreview("你好。");
+      assert.equal(result, "你好。");
+    });
+
+    it("handles empty string", () => {
+      const result = stripDeepSeekThinkingMarkerPreview("");
+      assert.equal(result, "");
     });
   });
 
@@ -252,7 +281,7 @@ describe("deepseek thinking mode helper", () => {
         assert.equal(result.reason, "already_present");
       });
 
-      it("omitting scope defaults to first_turn_only", () => {
+      it("omitting scope from function gates on isFirstUserTurn (env provides every_generation by default)", () => {
         const result = appendDeepSeekThinkingMarker({
           content: "你好。",
           mode: "inner_os",

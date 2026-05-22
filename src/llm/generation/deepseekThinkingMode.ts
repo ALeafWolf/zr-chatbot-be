@@ -35,6 +35,16 @@ export function getDeepSeekThinkingMarker(
   return "";
 }
 
+/**
+ * Strip the DeepSeek thinking marker from the end of content, if present.
+ * Used to sanitize trace previews so marker text is not exposed in LangSmith.
+ */
+export function stripDeepSeekThinkingMarkerPreview(content: string): string {
+  return content
+    .replace(/\n\n【角色沉浸要求】[\s\S]*$/u, "")
+    .replace(/\n\n【思维模式要求】[\s\S]*$/u, "");
+}
+
 export function hasDeepSeekThinkingMarker(content: string): boolean {
   return (
     content.includes("【角色沉浸要求】") ||

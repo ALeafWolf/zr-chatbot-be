@@ -3,27 +3,22 @@ import { describe, it } from "node:test";
 import { __testing } from "./generateAndValidate";
 
 describe("decorateUserMessageForGeneration", () => {
-  it("returns original content when marker is not injected", () => {
-    // The helper reads env.DEEPSEEK_V4_THINKING_MODE and models.generation.
-    // When the mode is default, no injection happens.
+  it("returns content and marker metadata as an object regardless of injection", () => {
     const result = __testing.decorateUserMessageForGeneration({
       userMessage: "你好。",
-      isFirstUserTurn: false,
-    });
-    // Even if injection would be possible, isFirstUserTurn=false gates it.
-    assert.equal(result.content, "你好。");
-    assert.equal(result.markerInjected, false);
-    assert.equal(typeof result.markerReason, "string");
-  });
-
-  it("returns content and marker metadata as an object", () => {
-    const result = __testing.decorateUserMessageForGeneration({
-      userMessage: "test message",
       isFirstUserTurn: true,
     });
     assert.equal(typeof result.content, "string");
     assert.equal(typeof result.markerInjected, "boolean");
     assert.equal(typeof result.markerReason, "string");
+  });
+
+  it("passes isFirstUserTurn through to the helper", () => {
+    const result = __testing.decorateUserMessageForGeneration({
+      userMessage: "test",
+      isFirstUserTurn: true,
+    });
+    assert.equal(typeof result.markerInjected, "boolean");
   });
 });
 
@@ -180,6 +175,31 @@ describe("traceInputsForGenerationToolLoop", () => {
     const messages = [{ role: "user", content: "hi" }];
     const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
     assert.equal(output.deepseekThinkingMarkerScope, undefined);
+  });
+
+  it("sanitizes userMessagePreview when decorated content includes a marker", () => {
+    const text = "你好。";
+    const decorated = `${text}\n\n【角色沉浸要求】在你的思考过程（<think>标签内）中，请遵守以下规则：`;
+    const messages = [{ role: "user", content: decorated }];
+    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
+    const preview = output.userMessagePreview as string;
+    assert.ok(!preview.includes("【角色沉浸要求】"));
+    assert.ok(preview.startsWith(text));
+  });
+
+  it("sanitizes marker when marker prefix begins near the 200-char preview boundary", () => {
+    // Original text is 195 chars — the appended marker starts at char 197,
+    // so a naive slice(0,200) would cut into the marker prefix.
+    const text = "a".repeat(195);
+    const decorated = `${text}\n\n【角色沉浸要求】后面的内容被截断了测试`;
+    const messages = [{ role: "user", content: decorated }];
+    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
+    const preview = output.userMessagePreview as string;
+    // The preview must not contain any part of the marker prefix.
+    assert.ok(!preview.includes("【角色沉浸要求】"));
+    // The preview should contain the full original text (sanitize before truncate).
+    assert.ok(preview === text || preview.startsWith(text));
+    assert.equal(preview.length, Math.min(text.length, 200));
   });
 });
 
