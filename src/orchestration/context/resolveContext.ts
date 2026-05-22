@@ -133,6 +133,8 @@ export interface ResolvedContext {
   motifProbe?: StructMemMotifProbeSummary;
   rerankOutput?: MemoryRerankOutput | null;
   recallThoughtContext: RecallThoughtContext;
+  /** True when there are no prior roleplay messages for this session. */
+  isFirstUserTurn: boolean;
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -420,6 +422,8 @@ export async function resolveContext(input: {
     latestFrontierTurn =
       recentTurns[recentTurns.length - 1]?.turnIndex ?? -1;
   }
+
+  const isFirstUserTurn = latestRoleplayTurnIndex === null;
 
   const recentWindowStartTurn = recentConversationWindowStartTurn(
     latestFrontierTurn,
@@ -911,6 +915,7 @@ export async function resolveContext(input: {
     motifSignal,
     motifProbe,
     rerankOutput,
+    isFirstUserTurn,
     recallThoughtContext: buildRecallThoughtContext({
       memories: selectedContext.memories,
       sessionRecall: selectedContext.sessionRecall,
