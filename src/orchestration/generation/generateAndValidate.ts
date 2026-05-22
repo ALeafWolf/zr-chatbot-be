@@ -31,6 +31,12 @@ import {
   recordValidationAttempt,
   recordValidationSnapshot,
 } from "../../eval/evalSnapshots";
+import { env } from "../../config/env";
+import {
+  appendDeepSeekThinkingMarker,
+  type DeepSeekV4ThinkingMode,
+  type DeepSeekV4ThinkingMarkerScope,
+} from "../../llm/generation/deepseekThinkingMode";
 
 /** System/transport issues from the validator are not actionable for the drafter. */
 export interface GenerateAndValidateResult {
@@ -66,6 +72,7 @@ function traceInputsForGenerationToolLoop(
   const userMsgs = input.messages.filter((m) => m.role === "user");
   const lastUserMsg = userMsgs[userMsgs.length - 1];
   const systemContent = systemMsg?.content ?? "";
+  const ext = input as Record<string, unknown>;
   return {
     messages: input.messages as unknown as Record<string, unknown>[],
     allowedToolNames: input.allowedToolNames ?? null,
@@ -74,6 +81,27 @@ function traceInputsForGenerationToolLoop(
     conversationMessageCount: input.messages.length,
     userMessageChars: lastUserMsg?.content?.length ?? 0,
     userMessagePreview: (lastUserMsg?.content ?? "").slice(0, 200),
+    ...(ext.deepseekThinkingMode !== undefined
+      ? { deepseekThinkingMode: ext.deepseekThinkingMode }
+      : {}),
+    ...(ext.deepseekThinkingMarkerInjected !== undefined
+      ? { deepseekThinkingMarkerInjected: ext.deepseekThinkingMarkerInjected }
+      : {}),
+    ...(ext.deepseekThinkingMarkerReason !== undefined
+      ? { deepseekThinkingMarkerReason: ext.deepseekThinkingMarkerReason }
+      : {}),
+    ...(ext.deepseekThinkingMarkerPlacement !== undefined
+      ? {
+          deepseekThinkingMarkerPlacement:
+            ext.deepseekThinkingMarkerPlacement,
+        }
+      : {}),
+    ...(ext.deepseekThinkingTargetModel !== undefined
+      ? { deepseekThinkingTargetModel: ext.deepseekThinkingTargetModel }
+      : {}),
+    ...(ext.deepseekThinkingMarkerScope !== undefined
+      ? { deepseekThinkingMarkerScope: ext.deepseekThinkingMarkerScope }
+      : {}),
   };
 }
 
@@ -136,30 +164,62 @@ const tracedResponseRewriteGeneration = traceStreamingLLM(
 function buildToolMessages(
   promptContext: PromptContext,
   userMessage: string,
-): ToolChatMessage[] {
-  return [
-    { role: "system", content: promptContext.systemPrompt },
-    ...promptContext.conversationHistory.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
-    { role: "user", content: userMessage },
-  ];
+  options?: {
+    isFirstUserTurn: boolean;
+  },
+): {
+  messages: ToolChatMessage[];
+  markerInjected: boolean;
+  markerReason: string;
+} {
+  const decorated = decorateUserMessageForGeneration({
+    userMessage,
+    isFirstUserTurn: options?.isFirstUserTurn ?? false,
+  });
+
+  return {
+    messages: [
+      { role: "system", content: promptContext.systemPrompt },
+      ...promptContext.conversationHistory.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      })),
+      { role: "user", content: decorated.content },
+    ],
+    markerInjected: decorated.markerInjected,
+    markerReason: decorated.markerReason,
+  };
 }
 
 function buildRewriteToolMessages(
   promptContext: PromptContext,
   userMessage: string,
   rewriteSystemPrompt: string,
-): ToolChatMessage[] {
-  return [
-    { role: "system", content: rewriteSystemPrompt },
-    ...promptContext.conversationHistory.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
-    { role: "user", content: userMessage },
-  ];
+  options?: {
+    isFirstUserTurn: boolean;
+  },
+): {
+  messages: ToolChatMessage[];
+  markerInjected: boolean;
+  markerReason: string;
+} {
+  const decorated = decorateUserMessageForGeneration({
+    userMessage,
+    isFirstUserTurn: options?.isFirstUserTurn ?? false,
+  });
+
+  return {
+    messages: [
+      { role: "system", content: rewriteSystemPrompt },
+      ...promptContext.conversationHistory.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      })),
+      { role: "user", content: decorated.content },
+    ],
+    markerInjected: decorated.markerInjected,
+    markerReason: decorated.markerReason,
+  };
 }
 
 function voiceHintsFrom(
@@ -174,6 +234,34 @@ function voiceHintsFrom(
 const ALLOWED_GENERATION_TOOLS: string[] = ["web_search"];
 
 /**
+ * Decorate the user message with the DeepSeek thinking marker when conditions are met.
+ * Marker is appended only for generation provider messages — the raw userMessage
+ * is preserved for validation, persistence, retrieval, memory, and StructMem.
+ */
+function decorateUserMessageForGeneration(input: {
+  userMessage: string;
+  isFirstUserTurn: boolean;
+}): {
+  content: string;
+  markerInjected: boolean;
+  markerReason: string;
+} {
+  const result = appendDeepSeekThinkingMarker({
+    content: input.userMessage,
+    mode: env.DEEPSEEK_V4_THINKING_MODE as DeepSeekV4ThinkingMode,
+    generationModel: models.generation,
+    isFirstUserTurn: input.isFirstUserTurn,
+    scope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE as DeepSeekV4ThinkingMarkerScope,
+  });
+
+  return {
+    content: result.content,
+    markerInjected: result.injected,
+    markerReason: result.reason,
+  };
+}
+
+/**
  * Draft, validate, rewrite once, validate again, then safe deflection ladder,
  * yielding orchestration events incrementally. Ends with a `_complete` sentinel.
  */
@@ -185,6 +273,7 @@ export async function* generateAndValidateStream(input: {
   signal?: AbortSignal;
   thoughtSummaryCache?: Map<string, string>;
   thoughtsOut?: Thought[];
+  isFirstUserTurn?: boolean;
 }): AsyncGenerator<GenerateAndValidateYield> {
   const {
     promptContext,
@@ -194,6 +283,7 @@ export async function* generateAndValidateStream(input: {
     signal,
     thoughtSummaryCache,
     thoughtsOut,
+    isFirstUserTurn = false,
   } = input;
 
   const characterDefaults = loadCharacterDefaults(session.characterId);
@@ -253,8 +343,11 @@ export async function* generateAndValidateStream(input: {
 
   try {
     let completed = false;
-    for await (const ev of tracedResponseGeneration({
-      messages: buildToolMessages(promptContext, userMessage),
+    const builtDraftMessages = buildToolMessages(promptContext, userMessage, {
+      isFirstUserTurn,
+    });
+    const generationInput: Parameters<typeof generateWithToolsStream>[0] = {
+      messages: builtDraftMessages.messages,
       ctx: toolCtx,
       signal,
       enableTools: true,
@@ -262,10 +355,19 @@ export async function* generateAndValidateStream(input: {
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
-    })) {
+    };
+    Object.assign(generationInput, {
+      deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
+      deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
+      deepseekThinkingMarkerInjected: builtDraftMessages.markerInjected,
+      deepseekThinkingMarkerReason: builtDraftMessages.markerReason,
+      deepseekThinkingMarkerPlacement: "current_user_message",
+      deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+    });
+    for await (const ev of tracedResponseGeneration(generationInput)) {
       if (ev.type === "delta") {
         // Draft prose is withheld from SSE until after validation; native reasoning streams as thoughts.
-        if (ev.reasoning) {
+        if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
           const thought: Thought = {
             kind: "native",
             text: ev.reasoning,
@@ -455,12 +557,14 @@ export async function* generateAndValidateStream(input: {
 
   try {
     let completed = false;
-    for await (const ev of tracedResponseRewriteGeneration({
-      messages: buildRewriteToolMessages(
-        promptContext,
-        userMessage,
-        rewriteSystemPrompt,
-      ),
+    const builtRewriteMessages = buildRewriteToolMessages(
+      promptContext,
+      userMessage,
+      rewriteSystemPrompt,
+      { isFirstUserTurn },
+    );
+    const rewriteInput: Parameters<typeof generateWithToolsStream>[0] = {
+      messages: builtRewriteMessages.messages,
       ctx: toolCtx,
       signal,
       enableTools: true,
@@ -468,12 +572,21 @@ export async function* generateAndValidateStream(input: {
       ...(openAICompatibleRequestExtensions !== undefined
         ? { openAICompatibleRequestExtensions }
         : {}),
-    })) {
+    };
+    Object.assign(rewriteInput, {
+      deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
+      deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
+      deepseekThinkingMarkerInjected: builtRewriteMessages.markerInjected,
+      deepseekThinkingMarkerReason: builtRewriteMessages.markerReason,
+      deepseekThinkingMarkerPlacement: "rewrite_current_user_message",
+      deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+    });
+    for await (const ev of tracedResponseRewriteGeneration(rewriteInput)) {
       if (ev.type === "delta") {
         if (ev.text) {
           yield { type: "delta", text: ev.text };
         }
-        if (ev.reasoning) {
+        if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
           const thought: Thought = {
             kind: "native",
             text: ev.reasoning,
@@ -685,4 +798,7 @@ export async function generateAndValidate(
 
 export const __testing = {
   traceInputsForGenerationToolLoop,
+  decorateUserMessageForGeneration,
+  buildToolMessages,
+  buildRewriteToolMessages,
 };

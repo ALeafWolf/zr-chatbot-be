@@ -56,6 +56,33 @@ const envSchema = z.object({
       if (n <= 4096) return 8192;
       return Math.min(16384, n);
     }),
+
+  // DeepSeek V4 Thinking Marker
+  // Optional generation-only thinking-mode marker for deepseek:deepseek-v4-pro.
+  // Allowed values: default, inner_os, no_inner_os.
+  DEEPSEEK_V4_THINKING_MODE: z
+    .string()
+    .default("default")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "inner_os" || s === "no_inner_os") return s;
+      return "default";
+    }),
+  SHOW_NATIVE_REASONING_EVENTS: z
+    .string()
+    .default("false")
+    .transform((v) => v.trim().toLowerCase() === "true" || v.trim() === "1"),
+
+  // DeepSeek V4 Thinking Marker Scope
+  // When to inject the thinking marker. Allowed values: first_turn_only, every_generation.
+  DEEPSEEK_V4_THINKING_MARKER_SCOPE: z
+    .string()
+    .default("every_generation")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      if (s === "first_turn_only") return s;
+      return "every_generation";
+    }),
   VALIDATOR_MODEL: z.string().default("anthropic:claude-haiku-4-5"),
   EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-v4-flash"),
   EMBEDDING_MODEL: z.string().default("openai:text-embedding-3-small"),
