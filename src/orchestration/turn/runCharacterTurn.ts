@@ -47,6 +47,11 @@ import {
   takeReadyRecallThought,
   waitForRecallThought,
 } from "../thought/recallThoughtTask";
+import { env } from "../../config/env";
+import { runRoleplayTurnStreamViaGraph } from "../graphs/roleplayGraphStreamAdapter";
+import type { RoleplayGraphStreamAdapterDeps } from "../graphs/roleplayGraphStreamAdapter";
+import { runRoleplayPreGenerationGraph } from "../graphs/roleplayPreGenerationGraph";
+import { defaultRoleplayGraphDeps } from "../graphs/roleplayGraph";
 
 type RecallThoughtTraceInput = {
   characterName: string;
@@ -242,6 +247,69 @@ const tracedUnsupportedTurn = traceStage(
   "orchestration.unsupported_turn",
   async (input: { sessionId: string; userMessageChars: number }) => input,
   { subsystem: "orchestration", turn: "foreground" },
+);
+
+// ---------------------------------------------------------------------------
+// Roleplay graph stream production dependency wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Production deps for runRoleplayTurnStreamViaGraph.
+ * Wires the same trace, generation, persistence, recall, and wake behavior as
+ * the existing runRoleplayTurnStream path.
+ */
+const productionGraphStreamDeps: RoleplayGraphStreamAdapterDeps = {
+  runPreGeneration: runRoleplayPreGenerationGraph,
+  preGenerationDeps: defaultRoleplayGraphDeps,
+  runGeneration: runRoleplayGenerationAdapter,
+  persistTurn: (input) =>
+    persistRoleplayTurn(input, {
+      traceRouteSwitch: tracedRouteSwitch,
+      estimateModelCost,
+      persistCompletedTurn,
+      wakePostTurnRunner: () => postTurnRunner.wake(),
+    }),
+  generationModelBinding: models.generation,
+  buildRecallThought: async (input) => {
+    const result = await tracedRecallThought(input);
+    return { text: result.text };
+  },
+  updateThoughts: updateAssistantMessageThoughts,
+  traceRoleplayTurn: (input) => tracedRoleplayTurn(input),
+};
+
+/**
+ * Roleplay stream function signature. Shared by the existing direct stream and
+ * the graph-backed adapter.
+ */
+type RoleplayStreamFn = (
+  input: Parameters<typeof runRoleplayTurnStream>[0],
+) => AsyncGenerator<CharacterTurnSseEvent>;
+
+/**
+ * Select the roleplay stream function based on the feature flag.
+ *
+ * When ROLEPLAY_GRAPH_STREAM_ENABLED is true the graph-backed adapter is used;
+ * otherwise the existing direct stream path runs. App-command and unsupported
+ * routes are not affected by this selector.
+ *
+ * @param deps - Optional deps override for the graph adapter (used in tests).
+ * @param existingStreamFn - Override for the existing stream path (used in tests).
+ */
+export function createRoleplayStreamFn(
+  graphStreamEnabled: boolean,
+  deps?: RoleplayGraphStreamAdapterDeps,
+  existingStreamFn?: RoleplayStreamFn,
+): RoleplayStreamFn {
+  if (graphStreamEnabled) {
+    return (input) => runRoleplayTurnStreamViaGraph(input, deps ?? productionGraphStreamDeps);
+  }
+  return existingStreamFn ?? runRoleplayTurnStream;
+}
+
+/** Roleplay stream function selected by the current feature flag. */
+const roleplayStreamFn = createRoleplayStreamFn(
+  env.ROLEPLAY_GRAPH_STREAM_ENABLED,
 );
 
 /**
@@ -456,7 +524,7 @@ async function* runAppCommandTurnStream(
 
   if (signal?.aborted) return;
 
-  // App commands emit a single done event with structured payload — no deltas.
+  // App commands emit a single done event with structured payload -- no deltas.
   yield {
     event: "done",
     data: {
@@ -532,13 +600,13 @@ export async function* runCharacterTurnStream(
       fallbackReason: routeIntent.fallbackReason,
     });
 
-    // Emit the route early so the frontend can adapt its UI — for example,
+    // Emit the route early so the frontend can adapt its UI -- for example,
     // suppress the character streaming bubble for app commands.
     yield { event: "route", data: { route: routeIntent.type } };
 
     switch (routeIntent.type) {
       case ROLEPLAY_TURN_ROUTE:
-        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        yield* roleplayStreamFn({ session, sessionId, userMessage, signal });
         return;
       case APP_COMMAND_ROUTE:
         yield* runAppCommandTurnStream({ session, sessionId, userMessage, signal });
@@ -547,7 +615,7 @@ export async function* runCharacterTurnStream(
         yield* runUnsupportedTurnStream({ session, sessionId, userMessage, signal });
         return;
       default:
-        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        yield* roleplayStreamFn({ session, sessionId, userMessage, signal });
         return;
     }
   } catch (err) {

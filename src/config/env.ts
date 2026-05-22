@@ -3,6 +3,15 @@ import { z } from "zod";
 
 dotenv.config();
 
+/**
+ * Shared flag parser used by ROLEPLAY_GRAPH_STREAM_ENABLED and available for
+ * unit tests to verify parsing logic against the same code path.
+ */
+export function parseEnabledFlag(value: string | undefined): boolean {
+  const s = (value ?? "false").trim().toLowerCase();
+  return s === "1" || s === "true";
+}
+
 const envSchema = z.object({
   // Database
   // Connection string for the chatbot backend database.
@@ -56,6 +65,16 @@ const envSchema = z.object({
       if (n <= 4096) return 8192;
       return Math.min(16384, n);
     }),
+
+  // Roleplay Graph Stream
+  // Disabled by default. When true, roleplay turns use the Phase A graph-backed
+  // stream adapter (runRoleplayTurnStreamViaGraph) instead of the existing
+  // direct stream path. The graph path preserves the same SSE event order,
+  // recall thought behavior, and persistence semantics.
+  ROLEPLAY_GRAPH_STREAM_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
 
   // DeepSeek V4 Thinking Marker
   // Optional generation-only thinking-mode marker for deepseek:deepseek-v4-pro.
