@@ -380,6 +380,7 @@ async function* runRoleplayTurnStream(
       signal,
       thoughtSummaryCache,
       thoughtsOut: thoughtsAcc,
+      isFirstUserTurn: context.isFirstUserTurn,
     })) {
       if (signal?.aborted) {
         return;
