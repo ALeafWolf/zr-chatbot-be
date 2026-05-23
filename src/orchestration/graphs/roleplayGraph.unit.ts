@@ -146,6 +146,11 @@ const fakePersistResult = {
 // Default test deps (fakes, no DB/LLM)
 // ---------------------------------------------------------------------------
 
+const fakePassValidation = {
+  in_character: true, canon_consistent: true, session_state_consistent: true,
+  nsfw_within_bounds: true, issues: [], needs_rewrite: false,
+};
+
 function defaultTestDeps(
   overrides?: Partial<RoleplayGraphDeps>,
 ): RoleplayGraphDeps {
@@ -157,25 +162,23 @@ function defaultTestDeps(
     runGeneration: async function* () {
       yield {
         event: "_complete" as const,
-        data: {
-          content: "I am well.",
-          validatorResult: {
-            in_character: true,
-            canon_consistent: true,
-            session_state_consistent: true,
-            nsfw_within_bounds: true,
-            issues: [],
-            needs_rewrite: false,
-          },
-          wasRewritten: false,
-          wasDeflected: false,
-          inputTokens: 100,
-          outputTokens: 50,
-        },
+        data: { content: "I am well.", validatorResult: fakePassValidation, wasRewritten: false, wasDeflected: false, inputTokens: 100, outputTokens: 50 },
       };
     },
     persistTurn: async () => fakePersistResult as any,
     generationModelBinding: { provider: "deepseek", model: "deepseek-chat" },
+    generateDraftFn: async function* () {
+      return { content: "I am well.", inputTokens: 100, outputTokens: 50 };
+    } as any,
+    validateDraftFn: async () => fakePassValidation,
+    rewriteDraftFn: async function* () {
+      return { content: "Rewritten.", inputTokens: 50, outputTokens: 25 };
+    } as any,
+    safeDeflectionFn: async function* () {
+      return { content: "I am not sure.", validatorResult: fakePassValidation, wasRewritten: false, wasDeflected: true, inputTokens: 0, outputTokens: 0 } as any;
+    } as any,
+    runLlmRerankFn: async () => ({ ok: true, rerankOutput: { selected: [] }, selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, canonChunks: [], canonScenes: [], filteredSessionSummary: null, filteredLatestTurnDelta: null, filteredMemoryCorrections: [], rerankMs: 0 }) as any,
+    deterministicSelectorFn: async () => ({ selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, selectorFallbackMs: 0 }) as any,
     ...overrides,
   };
 }
@@ -185,7 +188,7 @@ function defaultTestDeps(
 // ---------------------------------------------------------------------------
 
 describe("roleplayGraph", () => {
-  it("completes full graph progression with fakes", async () => {
+  it("completes full graph progression with fakes (generateDraft -> validateDraft -> buildResult -> persist)", async () => {
     const graph = createRoleplayGraph(defaultTestDeps());
     const state = await graph.invoke({
       sessionId: "sess_rp_test",
@@ -196,27 +199,21 @@ describe("roleplayGraph", () => {
     assert.ok(state.characterContext, "characterContext should be loaded");
     assert.ok(state.resolvedContext, "resolvedContext should be resolved");
     assert.ok(state.promptContext, "promptContext should be built");
-    assert.ok(state.generationResult, "generationResult should be captured");
-    assert.equal(
-      (state.generationResult as any).content,
-      "I am well.",
-    );
+    assert.ok(state.draft, "draft should be captured from generateDraftNode");
+    assert.ok(state.validation1Result, "validation1Result should be set");
+    assert.ok(state.generationResult, "generationResult should be captured from buildGenerationResultNode");
+    assert.equal((state.generationResult as any).content, "I am well.");
     assert.equal(state.persistedRoute, "roleplay_turn");
     assert.ok(state.persisted);
   });
 
   it("captures loadSession errors with stage 'loadSession'", async () => {
     const deps = defaultTestDeps({
-      loadSession: async () => {
-        throw new Error("DB unavailable");
-      },
+      loadSession: async () => { throw new Error("DB unavailable"); },
     });
 
     const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_nonexistent",
-      userMessage: "test",
-    });
+    const state = await graph.invoke({ sessionId: "sess_nonexistent", userMessage: "test" });
 
     assert.ok(state.errors);
     assert.strictEqual(state.errors.length, 1);
@@ -229,35 +226,27 @@ describe("roleplayGraph", () => {
 
   it("captures resolveContext errors with stage 'resolveContext'", async () => {
     const deps = defaultTestDeps({
-      resolveContext: async () => {
-        throw new Error("context resolution failed");
-      },
+      resolveContext: async () => { throw new Error("context resolution failed"); },
     });
 
     const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_rp_test",
-      userMessage: "test",
-    });
+    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
 
     assert.ok(state.errors);
     assert.strictEqual(state.errors[0].stage, "resolveContext");
     assert.strictEqual(state.errors[0].message, "context resolution failed");
-    // Prior nodes should still have produced output
     assert.ok(state.session);
     assert.ok(state.characterContext);
-    // Downstream nodes should not have run
     assert.strictEqual(state.promptContext, undefined);
     assert.strictEqual(state.generationResult, undefined);
   });
 
-  it("does not persist when generation does not complete", async () => {
+  it("captures generateDraft errors and routes through errorSink", async () => {
     let persistCalled = false;
     const deps = defaultTestDeps({
-      runGeneration: async function* () {
-        // Yield a non-_complete event then end — no generation result.
-        yield { event: "thought" as const, data: { kind: "drafting", text: "hmm", ts: 1 } };
-      },
+      generateDraftFn: async function* () {
+        throw new Error("generation crash");
+      } as any,
       persistTurn: async () => {
         persistCalled = true;
         return fakePersistResult as any;
@@ -265,80 +254,19 @@ describe("roleplayGraph", () => {
     });
 
     const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_rp_test",
-      userMessage: "test",
-    });
-
-    assert.ok(state.generationEvents);
-    assert.strictEqual(state.generationEvents.length, 1);
-    assert.strictEqual(state.generationResult, undefined);
-    assert.strictEqual(persistCalled, false);
-    // Error should be recorded for generation not completing
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].stage, "generateAndValidate");
-    assert.strictEqual(
-      state.errors[0].message,
-      "generation did not complete",
-    );
-  });
-
-  it("accumulates non-_complete generation events for trace inspection", async () => {
-    const deps = defaultTestDeps({
-      runGeneration: async function* () {
-        yield { event: "thought" as const, data: { kind: "drafting" as const, text: "thinking", ts: 1 } };
-        yield { event: "_complete" as const, data: { content: "Final.", validatorResult: { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }, wasRewritten: false, wasDeflected: false, inputTokens: 50, outputTokens: 25 } };
-      },
-    });
-
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_rp_test",
-      userMessage: "test",
-    });
-
-    // Non-_complete events are collected for trace inspection
-    assert.ok(state.generationEvents);
-    assert.strictEqual(state.generationEvents.length, 1);
-    assert.strictEqual(
-      (state.generationEvents[0] as any).event,
-      "thought",
-    );
-    // Generation result should still be captured
-    assert.ok(state.generationResult);
-    assert.strictEqual(
-      (state.generationResult as any).content,
-      "Final.",
-    );
-  });
-
-  it("captures generateAndValidate errors from thrown exceptions", async () => {
-    const deps = defaultTestDeps({
-      runGeneration: async function* () {
-        throw new Error("generation crash");
-      },
-    });
-
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_rp_test",
-      userMessage: "test",
-    });
+    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
 
     assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].stage, "generateAndValidate");
+    assert.strictEqual(state.errors[0].stage, "generateDraft");
     assert.strictEqual(state.errors[0].message, "generation crash");
     assert.strictEqual(state.generationResult, undefined);
+    assert.strictEqual(persistCalled, false);
   });
 
-  it("routes generation error to errorSink and does not persist", async () => {
+  it("routes characterContext error to errorSink and does not persist", async () => {
     let persistCalled = false;
-
-    // Simulate a scenario where the loadCharacterContext node returns an error
     const deps = defaultTestDeps({
-      loadCharacterContext: async () => {
-        throw new Error("character context unavailable");
-      },
+      loadCharacterContext: async () => { throw new Error("character context unavailable"); },
       persistTurn: async () => {
         persistCalled = true;
         return fakePersistResult as any;
@@ -346,17 +274,126 @@ describe("roleplayGraph", () => {
     });
 
     const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({
-      sessionId: "sess_rp_test",
-      userMessage: "test",
-    });
+    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
 
-    // Graph should have completed via errorSink, not persistTurn
     assert.strictEqual(persistCalled, false);
     assert.strictEqual(state.persisted, undefined);
-
-    // Error should be captured as characterContext error
     assert.ok(state.errors);
     assert.strictEqual(state.errors[0].stage, "loadCharacterContext");
+  });
+
+  it("draft tool loop deflection is persisted with correct reason", async () => {
+    let capturedReason: string | undefined;
+    let persistCalled = false;
+    const deps = defaultTestDeps({
+      generateDraftFn: async function* () {
+        throw Object.assign(new Error("Tool loop budget exceeded"), { name: "ToolLoopExceededError" });
+      } as any,
+      safeDeflectionFn: async function* (input: any) {
+        capturedReason = input.reason;
+        return { content: "I am not sure.", validatorResult: fakePassValidation, wasRewritten: false, wasDeflected: true, inputTokens: 0, outputTokens: 0 } as any;
+      } as any,
+      persistTurn: async () => {
+        persistCalled = true;
+        return fakePersistResult as any;
+      },
+    });
+
+    const state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.strictEqual(capturedReason, "tool_loop_exceeded");
+    assert.ok(persistCalled, "persistTurn should be called after safe deflection");
+    assert.ok(state.persisted, "state.persisted should be set");
+    assert.strictEqual(state.persistedRoute, "roleplay_turn");
+  });
+
+  it("rewrite tool loop deflection is persisted with correct reason", async () => {
+    let capturedReason: string | undefined;
+    let persistCalled = false;
+    const deps = defaultTestDeps({
+      generateDraftFn: async function* () {
+        return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
+      } as any,
+      validateDraftFn: async () => ({ ...fakePassValidation, needs_rewrite: true, issues: ["character inconsistency: spoke out of character"] }),
+      rewriteDraftFn: async function* () {
+        throw Object.assign(new Error("Rewrite tool loop exceeded"), { name: "ToolLoopExceededError" });
+      } as any,
+      safeDeflectionFn: async function* (input: any) {
+        capturedReason = input.reason;
+        return { content: "I am not sure.", validatorResult: fakePassValidation, wasRewritten: true, wasDeflected: true, inputTokens: 100, outputTokens: 50 } as any;
+      } as any,
+      persistTurn: async () => {
+        persistCalled = true;
+        return fakePersistResult as any;
+      },
+    });
+
+    const state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.strictEqual(capturedReason, "rewrite_tool_loop_exceeded");
+    assert.ok(persistCalled, "persistTurn should be called after rewrite safe deflection");
+    assert.ok(state.persisted, "state.persisted should be set");
+    assert.strictEqual(state.persistedRoute, "roleplay_turn");
+  });
+
+  it("uses validator_hard_fail deflection reason for second validation failure", async () => {
+    let capturedReason: string | undefined;
+    const deps = defaultTestDeps({
+      generateDraftFn: async function* () {
+        return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
+      } as any,
+      validateDraftFn: async (draft: string, input: any, attempt: number) => {
+        if (attempt === 1) return { ...fakePassValidation, needs_rewrite: true, issues: ["character inconsistency: spoke out of character"] };
+        return { ...fakePassValidation, needs_rewrite: true, issues: ["still out of character"] };
+      },
+      rewriteDraftFn: async function* () {
+        return { content: "Rewrite.", inputTokens: 50, outputTokens: 25 };
+      } as any,
+      safeDeflectionFn: async function* (input: any) {
+        capturedReason = input.reason;
+        return { content: "I am not sure.", validatorResult: fakePassValidation, wasRewritten: true, wasDeflected: true, inputTokens: 150, outputTokens: 75 } as any;
+      } as any,
+    });
+
+    await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.strictEqual(capturedReason, "validator_hard_fail");
+  });
+
+  it("normalizes meta-only validation failure on first pass", async () => {
+    const deps = defaultTestDeps({
+      generateDraftFn: async function* () {
+        return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
+      } as any,
+      validateDraftFn: async () => ({
+        ...fakePassValidation,
+        needs_rewrite: true,
+        issues: ["json parse failure: could not parse output"],
+      }),
+    });
+
+    const state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.ok(state.generationResult);
+    assert.strictEqual((state.generationResult as any).validatorResult.needs_rewrite, false);
+    assert.deepStrictEqual((state.generationResult as any).validatorResult.issues, []);
+    assert.strictEqual((state.generationResult as any).wasRewritten, false);
+  });
+
+  it("normalizes meta-only validation failure on second pass", async () => {
+    const deps = defaultTestDeps({
+      generateDraftFn: async function* () {
+        return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
+      } as any,
+      validateDraftFn: async (draft: string, input: any, attempt: number) => {
+        if (attempt === 1) return { ...fakePassValidation, needs_rewrite: true, issues: ["character inconsistency: spoke out of character"] };
+        return { ...fakePassValidation, needs_rewrite: true, issues: ["validator system failure: schema mismatch"] };
+      },
+      rewriteDraftFn: async function* () {
+        return { content: "Rewrite.", inputTokens: 50, outputTokens: 25 };
+      } as any,
+    });
+
+    const state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.ok(state.generationResult);
+    assert.strictEqual((state.generationResult as any).validatorResult.needs_rewrite, false);
+    assert.deepStrictEqual((state.generationResult as any).validatorResult.issues, []);
+    assert.strictEqual((state.generationResult as any).wasRewritten, true);
   });
 });

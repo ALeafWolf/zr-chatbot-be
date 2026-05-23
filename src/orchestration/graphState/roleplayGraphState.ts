@@ -17,13 +17,34 @@ export const RoleplayGraphStateSchema = z.object({
   /** Populated by loadCharacterContext node. */
   characterContext: z.any().optional(),
 
-  /** Populated by resolveContext node. */
+  /** Populated by resolveContext node (or by assembleResolvedContext via new graph nodes). */
   resolvedContext: z.any().optional(),
+
+  /** Populated by buildPreRerankContext node. */
+  preRerankContext: z.any().optional(),
+
+  /** Populated by rerankContext node. */
+  rerankResult: z.any().optional(),
+
+  /** Populated by rerank node when LLM rerank fails (contains fallbackReason and rerankMs). */
+  rerankLlmError: z.any().optional(),
 
   /** Populated by buildPrompt node. */
   promptContext: z.any().optional(),
 
-  /** Populated by generateAndValidate node (captured from _complete). */
+  /** Populated by generateDraft node. */
+  draft: z.any().optional(),
+
+  /** Populated by validateDraft node (attempt 1). */
+  validation1Result: z.any().optional(),
+
+  /** Populated by rewriteDraft node. */
+  rewriteDraft: z.any().optional(),
+
+  /** Populated by validateDraft node (attempt 2). */
+  validation2Result: z.any().optional(),
+
+  /** Populated by generateAndValidate node (captured from _complete) or buildGenerationResult/safeDeflection nodes. */
   generationResult: z.any().optional(),
 
   /** Non-delta generation events accumulated for trace/test inspection. */
@@ -32,6 +53,9 @@ export const RoleplayGraphStateSchema = z.object({
   /** Populated by persistTurn node. */
   persistedRoute: z.string().optional(),
   persisted: z.any().optional(),
+
+  /** Set before routing to safeDeflection to track the reason. */
+  deflectionReason: z.string().optional(),
 
   /** Error accumulator. */
   errors: z
@@ -42,6 +66,21 @@ export const RoleplayGraphStateSchema = z.object({
       }),
     )
     .optional(),
+
+  // ---------------------------------------------------------------------------
+  // Internal fields passed from the stream adapter into the generation subgraph
+  // ---------------------------------------------------------------------------
+
+  /** Abort signal forwarded from the stream adapter. */
+  _signal: z.any().optional(),
+  /** Thought summary cache shared with the stream adapter. */
+  _cache: z.any().optional(),
+  /** Thought accumulator shared with the stream adapter. */
+  _thoughtsAcc: z.any().optional(),
+  /** Whether this is the first user turn (shared with stream adapter). */
+  _isFirstUserTurn: z.boolean().optional(),
+  /** Voice hints string shared with the stream adapter. */
+  _voiceHints: z.string().optional(),
 });
 
 /** Inferred TypeScript type for the roleplay graph state. */

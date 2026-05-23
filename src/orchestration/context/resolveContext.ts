@@ -72,11 +72,13 @@ import { planContext, type ContextPlannerOutput } from "./contextPlanner";
 import {
   buildPromptContextCandidates,
   type ContextCandidate,
+  type CandidateShortlist,
   type ContextCandidateSource,
   applyCandidateSelection,
   filterCanonBySelection,
 } from "./contextCandidates";
 import { rerankCandidates, type MemoryRerankOutput } from "../retrieval/memoryRerank";
+import { rerankContext } from "./rerankContext";
 import {
   readFreshTurnDelta,
   formatTurnDelta,
@@ -135,6 +137,305 @@ export interface ResolvedContext {
   recallThoughtContext: RecallThoughtContext;
   /** True when there are no prior roleplay messages for this session. */
   isFirstUserTurn: boolean;
+}
+
+/**
+ * Pre-rerank retrieval context: everything built before the rerank/deterministic
+ * fallback decision. Captures all values needed by the rerank adapter AND the
+ * post-rerank assembly step.
+ */
+export interface PreRerankContext {
+  session: ChatSession;
+  userMessage: string;
+  characterDefaults: CharacterDefaults;
+  contextPlannerOutput: ContextPlannerOutput;
+  queryRewrite: QueryRewriteResult;
+  queryRewriteMs: number;
+  queryTextAnnotationFallback: boolean;
+  retrievalPlan: RetrievalPlan;
+  queryEmbedding: number[];
+  canonQueryEmbedding: number[];
+  hypotheticalQueryEmbedding: number[] | undefined;
+  motifQueryEmbeddings: number[][] | undefined;
+  memories: RetrievedMemory[];
+  canonChunks: RetrievedCanonChunk[];
+  canonScenes: RetrievedCanonScene[];
+  recentTurns: ConversationTurn[];
+  sessionSummary: SessionSummaryRecord;
+  sessionStateRow: Record<string, unknown> | null;
+  latestRoleplayTurnIndex: number | null;
+  isFirstUserTurn: boolean;
+  sessionRecall: RetrievedSessionMemoryChunk[];
+  structMemEntries: RetrievedStructMemEntry[];
+  structMemConsolidations: RetrievedStructMemConsolidation[];
+  openThreads: RetrievedOpenThread[];
+  motifSignal?: MotifSignal;
+  motifProbe?: StructMemMotifProbeSummary;
+  derivedState: DerivedState;
+  memoryCorrections: MemoryCorrectionContext[];
+  latestTurnDelta: LatestTurnDelta | null;
+  shortlist: CandidateShortlist;
+  shortlistMs: number;
+  latestTurnDeltaText: string | undefined;
+  motifProbeText: string | undefined;
+  startedAt: number;
+  embeddingsMs: number;
+  mainRetrievalMs: number;
+  olderRecallMs: number;
+  openThreadsMs: number;
+  olderRecallExclusiveFirst: number;
+  useFusedMemoryQuery: boolean;
+  latestFrontierTurn: number;
+}
+
+/**
+ * Assemble the final ResolvedContext from pre-rerank retrieval context and the
+ * rerank/deterministic-fallback result.
+ *
+ * Performs StructMem entry context expansion, retrieval diagnostics tracing,
+ * eval snapshot recording, recall thought context construction, and final
+ * ResolvedContext assembly.
+ *
+ * This is a cycle-free seam: it depends only on PreRerankContext and
+ * RerankContextOutput, not on resolveContext(...) itself.
+ */
+export async function assembleResolvedContext(
+  pre: PreRerankContext,
+  rerankResult: import("./rerankContext").RerankContextOutput,
+  deps?: {
+    traceRetrievalDiagnostics?: typeof tracedRetrievalDiagnostics;
+  },
+): Promise<ResolvedContext> {
+  const {
+    session,
+    userMessage,
+    characterDefaults,
+    queryRewrite,
+    retrievalPlan,
+    queryRewriteMs,
+    queryTextAnnotationFallback,
+    memories,
+    sessionRecall,
+    structMemEntries,
+    structMemConsolidations,
+    openThreads,
+    canonChunks: preCanonChunks,
+    canonScenes: preCanonScenes,
+    sessionSummary,
+    latestTurnDelta,
+    memoryCorrections,
+    motifSignal,
+    motifProbe,
+    queryEmbedding,
+    canonQueryEmbedding,
+    hypotheticalQueryEmbedding,
+    derivedState,
+    shortlistMs,
+    latestTurnDeltaText,
+    motifProbeText,
+    startedAt,
+    embeddingsMs,
+    mainRetrievalMs,
+    olderRecallMs,
+    openThreadsMs,
+    olderRecallExclusiveFirst,
+    useFusedMemoryQuery,
+    isFirstUserTurn,
+  } = pre;
+
+  const {
+    selectedContext,
+    rerankOutput,
+    rerankFallbackUsed,
+    rerankFallbackReason,
+    rerankMs,
+    selectorFallbackMs,
+    canonChunks: filteredCanonChunks,
+    canonScenes: filteredCanonScenes,
+    filteredSessionSummary,
+    filteredLatestTurnDelta,
+    filteredMemoryCorrections,
+  } = rerankResult;
+
+  const selectorMs = shortlistMs + rerankMs + (selectorFallbackMs ?? 0);
+  const totalMs = Date.now() - startedAt;
+
+  const doTrace = deps?.traceRetrievalDiagnostics ?? tracedRetrievalDiagnostics;
+
+  const structMemEntryExpansion =
+    selectedContext.structMemEntries.length > 0
+      ? await retrieveStructMemEntryContextExpansionsTraced({
+          sessionId: session.sessionId,
+          entries: selectedContext.structMemEntries,
+        })
+      : {
+          expansions: [] as StructMemEntryContextExpansion[],
+          diagnostics: {
+            eligibleCount: 0,
+            expandedCount: 0,
+            droppedByBudgetCount: 0,
+          },
+        };
+
+  await doTrace(
+    buildRetrievalDiagnosticsPayload({
+      retrievalPlan,
+      memoryQueryMode: useFusedMemoryQuery ? "fused" : "single",
+      rewriteConfidence: queryRewrite.confidence ?? null,
+      annotationFallback: queryTextAnnotationFallback,
+      boundaryOverlapTurns: OLDER_RECALL_RECENT_OVERLAP_TURNS,
+      olderRecallExclusiveFirstTurn: olderRecallExclusiveFirst,
+      latestTurnDeltaActive: latestTurnDelta !== null,
+      structMemEntryExpansion: structMemEntryExpansion.diagnostics,
+      timingsMs: {
+        queryRewriteMs,
+        embeddingsMs,
+        mainRetrievalMs,
+        olderRecallMs,
+        openThreadsMs,
+        selectorMs,
+        totalResolveContextMs: totalMs,
+        shortlistMs,
+        rerankMs,
+        selectorFallbackMs: selectorFallbackMs ?? 0,
+      },
+      selectionDiagnostics: selectedContext.diagnostics,
+      rerank: rerankOutput
+        ? {
+            selectedCount: rerankOutput.selected.length,
+            rejectedCount: rerankOutput.rejected.length,
+            finalContextMode: rerankOutput.finalContextMode,
+            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+            ...(rerankOutput.resolutionDiagnostics && {
+              resolution: rerankOutput.resolutionDiagnostics,
+            }),
+          }
+        : {
+            fallbackUsed: true,
+            fallbackReason: rerankFallbackReason ?? "unknown",
+          },
+    }),
+  );
+
+  const retrieved = createEmptyEvalSourceIds();
+  retrieved.interactive_memory = memories.map((m) => m.id);
+  retrieved.session_chunk = sessionRecall.map((c) => c.id);
+  retrieved.structmem_entry = structMemEntries.map((e) => e.id);
+  retrieved.structmem_consolidation = structMemConsolidations.map((c) => c.id);
+  retrieved.open_thread = openThreads.map((t) => t.id);
+  retrieved.canon =
+    filteredCanonScenes.length > 0
+      ? filteredCanonScenes.map((s) => s.sceneId)
+      : filteredCanonChunks.map((c) => c.sceneId ?? c.id);
+
+  const injected = createEmptyEvalSourceIds();
+  injected.interactive_memory = selectedContext.memories.map((m) => m.id);
+  injected.session_chunk = selectedContext.sessionRecall.map((c) => c.id);
+  injected.structmem_entry = selectedContext.structMemEntries.map((e) => e.id);
+  injected.structmem_consolidation =
+    selectedContext.structMemConsolidations.map((c) => c.id);
+  injected.open_thread = selectedContext.openThreads.map((t) => t.id);
+  injected.canon =
+    filteredCanonScenes.length > 0
+      ? filteredCanonScenes.map((s) => s.sceneId)
+      : filteredCanonChunks.map((c) => c.sceneId ?? c.id);
+
+  recordRetrievalSnapshot({
+    query: {
+      rawUserMessage: userMessage,
+      intent: queryRewrite.intent,
+      confidence: queryRewrite.confidence ?? null,
+      hydeUsed: Boolean(hypotheticalQueryEmbedding),
+      rawFusionUsed: useFusedMemoryQuery,
+    },
+    retrieved,
+    injected,
+    dropped: {
+      duplicate: selectedContext.diagnostics.droppedDuplicateCount,
+      lowScore: selectedContext.diagnostics.droppedLowScoreCount,
+      correctionConflict: selectedContext.diagnostics.droppedCorrectionCount,
+      sourceBudget: selectedContext.diagnostics.droppedBudgetCount,
+      other: 0,
+    },
+    topSources: selectedContext.diagnostics.topSources.map((source) => ({
+      source: source as EvalMemorySource,
+    })),
+    timingsMs: {
+      queryRewriteMs,
+      embeddingsMs,
+      mainRetrievalMs,
+      olderRecallMs,
+      openThreadsMs,
+      selectorMs,
+      totalResolveContextMs: totalMs,
+    },
+    ...(rerankOutput
+      ? {
+          rerank: {
+            enabled: true,
+            candidateIds: createEmptyEvalSourceIds(),
+            selected: rerankOutput.selected.map((s) => ({
+              source: s.source as EvalMemorySource | "canon" | "session_summary",
+              id: s.id,
+              relevance: s.relevance,
+              usageInstruction: s.usageInstruction,
+              reasonCode: s.reasonCode,
+            })),
+            rejectedCount: rerankOutput.rejected.length,
+            finalContextMode: rerankOutput.finalContextMode,
+            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+          },
+        }
+      : {
+          rerank: {
+            enabled: false,
+            candidateIds: createEmptyEvalSourceIds(),
+            selected: [],
+            rejectedCount: 0,
+            finalContextMode: "recent_only",
+            needsEvidenceFallback: false,
+            fallbackUsed: true,
+          },
+        }),
+  });
+
+  return {
+    memories: selectedContext.memories,
+    canonChunks: filteredCanonChunks,
+    canonScenes: filteredCanonScenes,
+    recentTurns: pre.recentTurns,
+    derivedState,
+    queryEmbedding,
+    canonQueryEmbedding,
+    sessionSummary: filteredSessionSummary,
+    sessionRecall: selectedContext.sessionRecall,
+    structMemEntries: selectedContext.structMemEntries,
+    structMemEntryContextExpansions: structMemEntryExpansion.expansions,
+    structMemConsolidations: selectedContext.structMemConsolidations,
+    openThreads: selectedContext.openThreads,
+    memoryCorrections: filteredMemoryCorrections,
+    latestTurnDelta: filteredLatestTurnDelta,
+    queryRewrite,
+    retrievalPlan,
+    turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
+    motifSignal,
+    motifProbe,
+    rerankOutput,
+    isFirstUserTurn,
+    recallThoughtContext: buildRecallThoughtContext({
+      memories: selectedContext.memories,
+      sessionRecall: selectedContext.sessionRecall,
+      structMemEntries: selectedContext.structMemEntries,
+      structMemConsolidations: selectedContext.structMemConsolidations,
+      openThreads: selectedContext.openThreads,
+      canonChunks: filteredCanonChunks,
+      canonScenes: filteredCanonScenes,
+      sessionSummary: filteredSessionSummary,
+      latestTurnDelta: filteredLatestTurnDelta,
+      memoryCorrections: filteredMemoryCorrections,
+      rerankOutput,
+    }),
+  };
 }
 
 const tracedRetrieveMemories = traceStage("retrieval.interactive_memories", retrieveInteractiveMemories);
@@ -243,13 +544,19 @@ function fuseStructMemConsolidations(
 }
 
 /**
- * Parallel retrieval + session summary + derived_state (§7).
+ * Build the pre-rerank retrieval context: query planning, embeddings, parallel
+ * retrieval, older recall fusion, motif probing, candidate shortlist, and all
+ * timing fields. Returns a PreRerankContext that can be passed to both
+ * `rerankContext(...)` and `assembleResolvedContext(...)`.
+ *
+ * Extracted from `resolveContext(...)` so this step can run as a standalone
+ * graph node in the pre-generation graph.
  */
-export async function resolveContext(input: {
+export async function buildPreRerankContext(input: {
   session: ChatSession;
   userMessage: string;
   characterDefaults: CharacterDefaults;
-}): Promise<ResolvedContext> {
+}): Promise<PreRerankContext> {
   const { session, userMessage, characterDefaults } = input;
   const startedAt = Date.now();
   let queryRewriteMs = 0;
@@ -257,7 +564,6 @@ export async function resolveContext(input: {
   let mainRetrievalMs = 0;
   let olderRecallMs = 0;
   let openThreadsMs = 0;
-  let selectorMs = 0;
 
   const scopeResolution = resolveContinuityScope(
     session.continuityScope,
@@ -281,7 +587,6 @@ export async function resolveContext(input: {
   });
 
   // Phase 1: Motif signal detection (deterministic, zero LLM calls)
-  // Runs before buildRetrievalPlan so the plan can consume motifSignal.
   let motifSignal: MotifSignal | undefined;
   let motifProbe: StructMemMotifProbeSummary | undefined;
   let motifQueries: string[] | undefined;
@@ -332,9 +637,7 @@ export async function resolveContext(input: {
     rawMemoryQueryEmbedding,
     hypotheticalQueryEmbedding,
     motifQueryEmbeddings,
-  } = await runRetrievalEmbeddingBatch({
-    requests: embeddingRequests,
-  }));
+  } = await runRetrievalEmbeddingBatch({ requests: embeddingRequests }));
   embeddingsMs = Date.now() - embeddingsStartedAt;
 
   const mainRetrievalStartedAt = Date.now();
@@ -346,200 +649,67 @@ export async function resolveContext(input: {
     sessionSummary,
     sessionStateRow,
     latestRoleplayTurnIndex,
-  ] =
-    await Promise.all([
-      useFusedMemoryQuery && rawMemoryQueryEmbedding
-        ? Promise.all([
-            tracedRetrieveMemories({
-              queryEmbedding,
-              memoryNamespace: session.memoryNamespace as MemoryNamespace,
-              characterId: session.characterId,
-              limit: retrievalPlan.durableMemoryTopK,
-            }),
-            tracedRetrieveMemories({
-              queryEmbedding: rawMemoryQueryEmbedding,
-              memoryNamespace: session.memoryNamespace as MemoryNamespace,
-              characterId: session.characterId,
-              limit: retrievalPlan.durableMemoryTopK,
-            }),
-          ]).then(([primary, secondary]) =>
-            fuseMemories(primary, secondary),
-          )
-        : tracedRetrieveMemories({
-            queryEmbedding,
-            memoryNamespace: session.memoryNamespace as MemoryNamespace,
-            characterId: session.characterId,
-            limit: retrievalPlan.durableMemoryTopK,
-          }),
-      env.CANON_RETRIEVAL_PIPELINE === "tier1" &&
-      retrievalPlan.canonMode !== "skip"
-        ? tracedRetrieveCanonLeg({
-            queryEmbedding: canonQueryEmbedding,
-            userMessage: queryTexts.canonText,
-            characterId: session.characterId,
-            arcKeys: scopeResolution.arcKeys,
-            anchorTopK: retrievalPlan.canonMode === "compact" ? 2 : undefined,
-          })
-        : Promise.resolve([] as RetrievedCanonChunk[]),
-      env.CANON_RETRIEVAL_PIPELINE === "tier3" &&
-      retrievalPlan.canonMode !== "skip"
-        ? retrieveCanonCoarseToFine({
-            canonQueryEmbedding,
-            hypotheticalQueryEmbedding,
-            userMessage: queryTexts.canonText,
-            characterId: session.characterId,
-            arcKeys: scopeResolution.arcKeys,
-            entities: queryRewrite.entities,
-            tier3Overrides:
-              retrievalPlan.canonMode === "compact"
-                ? {
-                    canonAnchorSceneTopK: 2,
-                    canonMaxTotalUnits: 40,
-                    canonMaxUnitsPerScene: 24,
-                  }
-                : undefined,
-          })
-        : Promise.resolve([] as RetrievedCanonScene[]),
-      tracedRetrieveTurns(session.sessionId, undefined, ROLEPLAY_TURN_ROUTE),
-      tracedSessionSummary(session.sessionId),
-      tracedSessionStateRow(session.sessionId),
-      getLatestConversationRouteTurnIndex(
-        session.sessionId,
-        ROLEPLAY_TURN_ROUTE,
-      ),
-    ]);
+  ] = await Promise.all([
+    useFusedMemoryQuery && rawMemoryQueryEmbedding
+      ? Promise.all([
+          tracedRetrieveMemories({ queryEmbedding, memoryNamespace: session.memoryNamespace as MemoryNamespace, characterId: session.characterId, limit: retrievalPlan.durableMemoryTopK }),
+          tracedRetrieveMemories({ queryEmbedding: rawMemoryQueryEmbedding, memoryNamespace: session.memoryNamespace as MemoryNamespace, characterId: session.characterId, limit: retrievalPlan.durableMemoryTopK }),
+        ]).then(([primary, secondary]) => fuseMemories(primary, secondary))
+      : tracedRetrieveMemories({ queryEmbedding, memoryNamespace: session.memoryNamespace as MemoryNamespace, characterId: session.characterId, limit: retrievalPlan.durableMemoryTopK }),
+    env.CANON_RETRIEVAL_PIPELINE === "tier1" && retrievalPlan.canonMode !== "skip"
+      ? tracedRetrieveCanonLeg({ queryEmbedding: canonQueryEmbedding, userMessage: queryTexts.canonText, characterId: session.characterId, arcKeys: scopeResolution.arcKeys, anchorTopK: retrievalPlan.canonMode === "compact" ? 2 : undefined })
+      : Promise.resolve([] as RetrievedCanonChunk[]),
+    env.CANON_RETRIEVAL_PIPELINE === "tier3" && retrievalPlan.canonMode !== "skip"
+      ? retrieveCanonCoarseToFine({ canonQueryEmbedding, hypotheticalQueryEmbedding, userMessage: queryTexts.canonText, characterId: session.characterId, arcKeys: scopeResolution.arcKeys, entities: queryRewrite.entities, tier3Overrides: retrievalPlan.canonMode === "compact" ? { canonAnchorSceneTopK: 2, canonMaxTotalUnits: 40, canonMaxUnitsPerScene: 24 } : undefined })
+      : Promise.resolve([] as RetrievedCanonScene[]),
+    tracedRetrieveTurns(session.sessionId, undefined, ROLEPLAY_TURN_ROUTE),
+    tracedSessionSummary(session.sessionId),
+    tracedSessionStateRow(session.sessionId),
+    getLatestConversationRouteTurnIndex(session.sessionId, ROLEPLAY_TURN_ROUTE),
+  ]);
   mainRetrievalMs = Date.now() - mainRetrievalStartedAt;
 
   let canonScenes: RetrievedCanonScene[] = canonScenesTier3;
   let canonChunks: RetrievedCanonChunk[] = canonChunksTier1;
-
   if (env.CANON_RETRIEVAL_PIPELINE === "tier3") {
     canonChunks = canonScenesToChunks(canonScenes);
   }
 
   let latestFrontierTurn = latestRoleplayTurnIndex ?? -1;
   if (latestFrontierTurn < 0 && recentTurns.length > 0) {
-    latestFrontierTurn =
-      recentTurns[recentTurns.length - 1]?.turnIndex ?? -1;
+    latestFrontierTurn = recentTurns[recentTurns.length - 1]?.turnIndex ?? -1;
   }
-
   const isFirstUserTurn = latestRoleplayTurnIndex === null;
-
-  const recentWindowStartTurn = recentConversationWindowStartTurn(
-    latestFrontierTurn,
-  );
-  const olderRecallExclusiveFirst = olderRecallExclusiveFirstTurn(
-    recentWindowStartTurn,
-  );
-
-  const shouldRetrieveConsolidations =
-    shouldRetrieveStructMemConsolidations({
-      structMemEnabled: env.STRUCTMEM_ENABLED,
-      structMemConsolidationEnabled: env.STRUCTMEM_CONSOLIDATION_ENABLED,
-      structMemCrossSessionRetrievalEnabled:
-        env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED,
-    });
+  const recentWindowStartTurn = recentConversationWindowStartTurn(latestFrontierTurn);
+  const olderRecallExclusiveFirst = olderRecallExclusiveFirstTurn(recentWindowStartTurn);
+  const shouldRetrieveConsolidations = shouldRetrieveStructMemConsolidations({
+    structMemEnabled: env.STRUCTMEM_ENABLED,
+    structMemConsolidationEnabled: env.STRUCTMEM_CONSOLIDATION_ENABLED,
+    structMemCrossSessionRetrievalEnabled: env.STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED,
+  });
 
   const olderRecallStartedAt = Date.now();
   const [primaryOlderRecall, secondaryOlderRecall] = await Promise.all([
-    retrieveOlderRecall(
-      {
-        queryEmbedding,
-        sessionId: session.sessionId,
-        characterId: session.characterId,
-        memoryNamespace: session.memoryNamespace,
-        exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
-        latestFrontierTurnIndex: latestFrontierTurn,
-        structMemEnabled: env.STRUCTMEM_ENABLED,
-        shouldRetrieveConsolidations,
-        sessionRecallLimit: retrievalPlan.sessionRecallTopK,
-        structMemEntryLimit: retrievalPlan.structMemEntryTopK,
-        structMemConsolidationLimit:
-          retrievalPlan.structMemConsolidationTopK,
-      },
-      {
-        sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
-        structMemEntries: retrieveStructMemEntriesTraced,
-        structMemConsolidations: retrieveStructMemConsolidationsTraced,
-      },
-    ),
+    retrieveOlderRecall({ queryEmbedding, sessionId: session.sessionId, characterId: session.characterId, memoryNamespace: session.memoryNamespace, exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst, latestFrontierTurnIndex: latestFrontierTurn, structMemEnabled: env.STRUCTMEM_ENABLED, shouldRetrieveConsolidations, sessionRecallLimit: retrievalPlan.sessionRecallTopK, structMemEntryLimit: retrievalPlan.structMemEntryTopK, structMemConsolidationLimit: retrievalPlan.structMemConsolidationTopK }, { sessionMemoryChunks: retrieveSessionMemoryChunksTraced, structMemEntries: retrieveStructMemEntriesTraced, structMemConsolidations: retrieveStructMemConsolidationsTraced }),
     useFusedMemoryQuery && rawMemoryQueryEmbedding
-      ? retrieveOlderRecall(
-          {
-            queryEmbedding: rawMemoryQueryEmbedding,
-            sessionId: session.sessionId,
-            characterId: session.characterId,
-            memoryNamespace: session.memoryNamespace,
-            exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
-            latestFrontierTurnIndex: latestFrontierTurn,
-            structMemEnabled: env.STRUCTMEM_ENABLED,
-            shouldRetrieveConsolidations,
-            sessionRecallLimit: retrievalPlan.sessionRecallTopK,
-            structMemEntryLimit: retrievalPlan.structMemEntryTopK,
-            structMemConsolidationLimit:
-              retrievalPlan.structMemConsolidationTopK,
-          },
-          {
-            sessionMemoryChunks: retrieveSessionMemoryChunksTraced,
-            structMemEntries: retrieveStructMemEntriesTraced,
-            structMemConsolidations: retrieveStructMemConsolidationsTraced,
-          },
-        )
+      ? retrieveOlderRecall({ queryEmbedding: rawMemoryQueryEmbedding, sessionId: session.sessionId, characterId: session.characterId, memoryNamespace: session.memoryNamespace, exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst, latestFrontierTurnIndex: latestFrontierTurn, structMemEnabled: env.STRUCTMEM_ENABLED, shouldRetrieveConsolidations, sessionRecallLimit: retrievalPlan.sessionRecallTopK, structMemEntryLimit: retrievalPlan.structMemEntryTopK, structMemConsolidationLimit: retrievalPlan.structMemConsolidationTopK }, { sessionMemoryChunks: retrieveSessionMemoryChunksTraced, structMemEntries: retrieveStructMemEntriesTraced, structMemConsolidations: retrieveStructMemConsolidationsTraced })
       : Promise.resolve(undefined),
   ]);
   olderRecallMs = Date.now() - olderRecallStartedAt;
 
-  const sessionRecall = secondaryOlderRecall
-    ? fuseSessionRecall(
-        primaryOlderRecall.sessionRecall,
-        secondaryOlderRecall.sessionRecall,
-      )
-    : primaryOlderRecall.sessionRecall;
-  const structMemEntries = secondaryOlderRecall
-    ? fuseStructMemEntries(
-        primaryOlderRecall.structMemEntries,
-        secondaryOlderRecall.structMemEntries,
-      )
-    : primaryOlderRecall.structMemEntries;
-  const structMemConsolidations = secondaryOlderRecall
-    ? fuseStructMemConsolidations(
-        primaryOlderRecall.structMemConsolidations,
-        secondaryOlderRecall.structMemConsolidations,
-      )
-    : primaryOlderRecall.structMemConsolidations;
+  const sessionRecall = secondaryOlderRecall ? fuseSessionRecall(primaryOlderRecall.sessionRecall, secondaryOlderRecall.sessionRecall) : primaryOlderRecall.sessionRecall;
+  const structMemEntries = secondaryOlderRecall ? fuseStructMemEntries(primaryOlderRecall.structMemEntries, secondaryOlderRecall.structMemEntries) : primaryOlderRecall.structMemEntries;
+  const structMemConsolidations = secondaryOlderRecall ? fuseStructMemConsolidations(primaryOlderRecall.structMemConsolidations, secondaryOlderRecall.structMemConsolidations) : primaryOlderRecall.structMemConsolidations;
 
-  // Phase 1: Motif probe retrieval (reuses existing retrievers, zero new LLM calls)
-  if (
-    motifSignal &&
-    shouldProbeStructMemMotif(motifSignal) &&
-    motifQueryEmbeddings?.length
-  ) {
+  // Motif probe retrieval
+  if (motifSignal && shouldProbeStructMemMotif(motifSignal) && motifQueryEmbeddings?.length) {
     const probeTopK = env.STRUCTMEM_MOTIF_PROBE_TOP_K;
     const probeMinScore = env.STRUCTMEM_MOTIF_PROBE_MIN_SCORE;
     const probeEmbedding = motifQueryEmbeddings[0]!;
-
     const [probeEntries, probeConsolidations] = await Promise.all([
-      retrieveStructMemEntriesTraced({
-        queryEmbedding: probeEmbedding,
-        sessionId: session.sessionId,
-        characterId: session.characterId,
-        exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
-        latestFrontierTurnIndex: latestFrontierTurn,
-        limit: probeTopK * 2,
-      }),
-      shouldRetrieveConsolidations
-        ? retrieveStructMemConsolidationsTraced({
-            queryEmbedding: probeEmbedding,
-            sessionId: session.sessionId,
-            characterId: session.characterId,
-            memoryNamespace: session.memoryNamespace,
-            exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst,
-            latestFrontierTurnIndex: latestFrontierTurn,
-            limit: probeTopK,
-          })
-        : Promise.resolve([]),
+      retrieveStructMemEntriesTraced({ queryEmbedding: probeEmbedding, sessionId: session.sessionId, characterId: session.characterId, exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst, latestFrontierTurnIndex: latestFrontierTurn, limit: probeTopK * 2 }),
+      shouldRetrieveConsolidations ? retrieveStructMemConsolidationsTraced({ queryEmbedding: probeEmbedding, sessionId: session.sessionId, characterId: session.characterId, memoryNamespace: session.memoryNamespace, exclusiveRecentWindowFirstTurn: olderRecallExclusiveFirst, latestFrontierTurnIndex: latestFrontierTurn, limit: probeTopK }) : Promise.resolve([]),
     ]);
-
     const allMotifTerms = [
       ...motifSignal.bodyOrObjectTerms,
       ...motifSignal.actionTerms,
@@ -589,373 +759,77 @@ export async function resolveContext(input: {
   }
 
   const openThreadsStartedAt = Date.now();
-  const openThreads =
-    latestFrontierTurn >= 0
-      ? await retrieveOpenThreadsTraced({
-          sessionId: session.sessionId,
-          characterId: session.characterId,
-          sessionSummary,
-          structMemEnabled: env.STRUCTMEM_ENABLED,
-          exclusiveRecentWindowFirstTurn: recentWindowStartTurn,
-          latestFrontierTurnIndex: latestFrontierTurn,
-          limit: retrievalPlan.openThreadTopK,
-        })
-      : [];
+  const openThreads = latestFrontierTurn >= 0
+    ? await retrieveOpenThreadsTraced({ sessionId: session.sessionId, characterId: session.characterId, sessionSummary, structMemEnabled: env.STRUCTMEM_ENABLED, exclusiveRecentWindowFirstTurn: recentWindowStartTurn, latestFrontierTurnIndex: latestFrontierTurn, limit: retrievalPlan.openThreadTopK })
+    : [];
   openThreadsMs = Date.now() - openThreadsStartedAt;
 
-  const derivedState = computeDerivedState(
-    recentTurns.length,
-    userMessage,
-    characterDefaults,
-  );
+  const derivedState = computeDerivedState(recentTurns.length, userMessage, characterDefaults);
   const memoryCorrections = retrieveActiveCorrections(sessionSummary);
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
-  // Build candidate shortlist from all retrieved sources
+  const motifProbeText = motifProbe ? motifProbe.matchingEntries.slice(0, 3).map((e) => e.text).join(" | ") : undefined;
+  const latestTurnDeltaText = latestTurnDelta ? formatTurnDelta(latestTurnDelta) : undefined;
   const selectorStartedAt = Date.now();
-  let shortlistMs = 0;
-  let rerankMs = 0;
-  let selectorFallbackMs = 0;
-  const motifProbeText = motifProbe
-    ? motifProbe.matchingEntries
-        .slice(0, 3)
-        .map((e) => e.text)
-        .join(" | ")
-    : undefined;
-  const latestTurnDeltaText = latestTurnDelta
-    ? formatTurnDelta(latestTurnDelta)
-    : undefined;
   const shortlist = buildPromptContextCandidates({
-    memories,
-    sessionRecall,
-    structMemEntries,
-    structMemConsolidations,
-    openThreads,
-    canonChunks,
-    recentTurns,
-    sessionSummaryText: sessionSummary?.summaryText ?? undefined,
-    latestTurnDeltaText,
-    memoryCorrections,
-    motifProbeText,
-    openThreadTopK: retrievalPlan.openThreadTopK,
-    maxCandidates: env.MEMORY_RERANK_MAX_CANDIDATES,
-  });
-  shortlistMs = Date.now() - selectorStartedAt;
-
-  // Run reranker; fall back to deterministic selector on failure
-  let selectedContext: ReturnType<typeof selectPromptMemoryContextStatic>;
-  let rerankOutput: MemoryRerankOutput | null = null;
-  let rerankFallbackUsed = false;
-  let rerankFallbackReason: string | null = null;
-  let filteredSessionSummary: SessionSummaryRecord = sessionSummary;
-  let filteredLatestTurnDelta: LatestTurnDelta | null = latestTurnDelta;
-  let filteredMemoryCorrections: MemoryCorrectionContext[] = memoryCorrections;
-
-  try {
-    const rerankResult = await rerankCandidates({
-      currentUserMessage: userMessage,
-      structuredUserQuery: contextPlannerOutput.structuredUserQuery,
-      plannerIntent: contextPlannerOutput.intent,
-      plannerHints: contextPlannerOutput.retrievalHints,
-      recentChatDigest: recentTurns
-        .slice(-4)
-        .map((t) => `${t.role}: ${t.content}`)
-        .join("\n"),
-      latestTurnDelta: latestTurnDeltaText,
-      relationshipState: session.continuityScope,
-      continuityScope: session.continuityScope,
-      candidates: shortlist.candidates,
-    });
-    rerankMs = rerankResult.timingMs;
-
-    if (!rerankResult.ok) {
-      throw new Error(rerankResult.fallbackReason);
-    }
-    rerankOutput = rerankResult.output;
-
-    const selected = applyCandidateSelection({
-      shortlist: shortlist.candidates,
-      selectedIds: rerankOutput.selected.map((s) => s.id),
-      memories,
-      sessionRecall,
-      structMemEntries,
-      structMemConsolidations,
-      openThreads,
-    });
-
-    // Preserve deterministic control/continuity context regardless
-    // of reranker selection.
-    ({ filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
-      preserveCriticalContext(sessionSummary, latestTurnDelta, memoryCorrections));
-
-    // Apply reranker selection to canon
-    const filteredCanon = filterCanonBySelection(
-      canonChunks,
-      canonScenes,
-      rerankOutput.selected
-        .filter((s) => s.source === "canon_chunk")
-        .map((s) => s.id),
-    );
-    canonChunks = filteredCanon.canonChunks;
-    canonScenes = filteredCanon.canonScenes;
-
-    // Build a PromptMemoryContextSelection-compatible result with proper
-    // diagnostics shape (not shortlist.diagnostics which has a different type).
-    selectedContext = {
-      memories: selected.memories,
-      sessionRecall: selected.sessionRecall,
-      structMemEntries: selected.structMemEntries,
-      structMemConsolidations: selected.structMemConsolidations,
-      openThreads: selected.openThreads,
-      diagnostics: {
-        retrievedCounts: {
-          interactive_memory: memories.length,
-          session_chunk: sessionRecall.length,
-          structmem_entry: structMemEntries.length,
-          structmem_consolidation: structMemConsolidations.length,
-          open_thread: openThreads.length,
-        },
-        injectedCounts: {
-          interactive_memory: selected.memories.length,
-          session_chunk: selected.sessionRecall.length,
-          structmem_entry: selected.structMemEntries.length,
-          structmem_consolidation: selected.structMemConsolidations.length,
-          open_thread: selected.openThreads.length,
-        },
-        droppedDuplicateCount: 0,
-        droppedLowScoreCount: 0,
-        droppedCorrectionCount: 0,
-        droppedBudgetCount: 0,
-        topSources: [],
-        averageInjectedScore: null,
-      },
-    };
-  } catch (e) {
-    // Reranker call failed — preserve specific reason from rerankCandidates
-    rerankFallbackUsed = true;
-    rerankFallbackReason = e instanceof Error ? e.message : "reranker_call_failed";
-    rerankOutput = null;
-    const fallbackStartedAt = Date.now();
-    selectedContext = selectPromptMemoryContextStatic({
-      memories,
-      sessionRecall,
-      structMemEntries,
-      structMemConsolidations,
-      openThreads,
-      recentTurns,
-      retrievalPlan,
-      memoryCorrections,
-    });
-    selectorFallbackMs = Date.now() - fallbackStartedAt;
-    // Fallback keeps original unfiltered singleton sources (initial values)
-  }
-
-  selectorMs = Date.now() - selectorStartedAt;
-
-  const structMemEntryExpansion =
-    selectedContext.structMemEntries.length > 0
-      ? await retrieveStructMemEntryContextExpansionsTraced({
-          sessionId: session.sessionId,
-          entries: selectedContext.structMemEntries,
-        })
-      : {
-          expansions: [] as StructMemEntryContextExpansion[],
-          diagnostics: {
-            eligibleCount: 0,
-            expandedCount: 0,
-            droppedByBudgetCount: 0,
-          },
-        };
-
-  await tracedRetrievalDiagnostics(
-    buildRetrievalDiagnosticsPayload({
-      retrievalPlan,
-      memoryQueryMode: useFusedMemoryQuery ? "fused" : "single",
-      rewriteConfidence: queryRewrite.confidence ?? null,
-      annotationFallback: queryTextAnnotationFallback,
-      boundaryOverlapTurns: OLDER_RECALL_RECENT_OVERLAP_TURNS,
-      olderRecallExclusiveFirstTurn: olderRecallExclusiveFirst,
-      latestTurnDeltaActive: latestTurnDelta !== null,
-      structMemEntryExpansion: structMemEntryExpansion.diagnostics,
-      timingsMs: {
-        queryRewriteMs,
-        embeddingsMs,
-        mainRetrievalMs,
-        olderRecallMs,
-        openThreadsMs,
-        selectorMs,
-        totalResolveContextMs: Date.now() - startedAt,
-        shortlistMs,
-        rerankMs,
-        selectorFallbackMs,
-      },
-      selectionDiagnostics: selectedContext.diagnostics,
-      // finalContextMode, needsEvidenceFallback, and missingEvidence are
-      // @diagnostic — emitted to traces but no behavior is driven by them yet.
-      rerank: rerankOutput
-        ? {
-            selectedCount: rerankOutput.selected.length,
-            rejectedCount: rerankOutput.rejected.length,
-            finalContextMode: rerankOutput.finalContextMode,
-            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
-            ...(rerankOutput.resolutionDiagnostics && {
-              resolution: rerankOutput.resolutionDiagnostics,
-            }),
-          }
-        : {
-            fallbackUsed: true,
-            fallbackReason: rerankFallbackReason ?? "unknown",
-          },
-    }),
-  );
-
-  const retrieved = createEmptyEvalSourceIds();
-  retrieved.interactive_memory = memories.map((m) => m.id);
-  retrieved.session_chunk = sessionRecall.map((c) => c.id);
-  retrieved.structmem_entry = structMemEntries.map((e) => e.id);
-  retrieved.structmem_consolidation = structMemConsolidations.map((c) => c.id);
-  retrieved.open_thread = openThreads.map((t) => t.id);
-  retrieved.canon =
-    canonScenes.length > 0
-      ? canonScenes.map((s) => s.sceneId)
-      : canonChunks.map((c) => c.sceneId ?? c.id);
-
-  const injected = createEmptyEvalSourceIds();
-  injected.interactive_memory = selectedContext.memories.map((m) => m.id);
-  injected.session_chunk = selectedContext.sessionRecall.map((c) => c.id);
-  injected.structmem_entry = selectedContext.structMemEntries.map((e) => e.id);
-  injected.structmem_consolidation =
-    selectedContext.structMemConsolidations.map((c) => c.id);
-  injected.open_thread = selectedContext.openThreads.map((t) => t.id);
-  injected.canon =
-    canonScenes.length > 0
-      ? canonScenes.map((s) => s.sceneId)
-      : canonChunks.map((c) => c.sceneId ?? c.id);
-
-  recordRetrievalSnapshot({
-    query: {
-      rawUserMessage: userMessage,
-      intent: queryRewrite.intent,
-      confidence: queryRewrite.confidence ?? null,
-      hydeUsed: Boolean(hypotheticalQueryEmbedding),
-      rawFusionUsed: useFusedMemoryQuery,
-    },
-    retrieved,
-    injected,
-    dropped: {
-      duplicate: selectedContext.diagnostics.droppedDuplicateCount,
-      lowScore: selectedContext.diagnostics.droppedLowScoreCount,
-      correctionConflict: selectedContext.diagnostics.droppedCorrectionCount,
-      sourceBudget: selectedContext.diagnostics.droppedBudgetCount,
-      other: 0,
-    },
-    topSources: selectedContext.diagnostics.topSources.map((source) => ({
-      source: source as EvalMemorySource,
-    })),
-    timingsMs: {
-      queryRewriteMs,
-      embeddingsMs,
-      mainRetrievalMs,
-      olderRecallMs,
-      openThreadsMs,
-      selectorMs,
-      totalResolveContextMs: Date.now() - startedAt,
-    },
-    ...(rerankOutput
-      ? {
-          rerank: {
-            enabled: true,
-            candidateIds: createEmptyEvalSourceIds(),
-            selected: rerankOutput.selected.map((s) => ({
-              source: s.source as EvalMemorySource | "canon" | "session_summary",
-              id: s.id,
-              relevance: s.relevance,
-              usageInstruction: s.usageInstruction,
-              reasonCode: s.reasonCode,
-            })),
-            rejectedCount: rerankOutput.rejected.length,
-            // @diagnostic — finalContextMode and needsEvidenceFallback are
-            // emitted to traces but no behavior is driven by them yet.
-            finalContextMode: rerankOutput.finalContextMode,
-            needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
-          },
-        }
-      : {
-          rerank: {
-            enabled: false,
-            candidateIds: createEmptyEvalSourceIds(),
-            selected: [],
-            rejectedCount: 0,
-            // @diagnostic — diagnostic-only default for the fallback path.
-            finalContextMode: "recent_only",
-            needsEvidenceFallback: false,
-            fallbackUsed: true,
-          },
-        }),
+    memories, sessionRecall, structMemEntries, structMemConsolidations, openThreads, canonChunks, recentTurns,
+    sessionSummaryText: sessionSummary?.summaryText ?? undefined, latestTurnDeltaText, memoryCorrections, motifProbeText,
+    openThreadTopK: retrievalPlan.openThreadTopK, maxCandidates: env.MEMORY_RERANK_MAX_CANDIDATES,
   });
 
   return {
-    memories: selectedContext.memories,
-    canonChunks,
-    canonScenes,
-    recentTurns,
-    derivedState,
-    queryEmbedding,
-    canonQueryEmbedding,
-    sessionSummary: filteredSessionSummary,
-    sessionRecall: selectedContext.sessionRecall,
-    structMemEntries: selectedContext.structMemEntries,
-    structMemEntryContextExpansions: structMemEntryExpansion.expansions,
-    structMemConsolidations: selectedContext.structMemConsolidations,
-    openThreads: selectedContext.openThreads,
-    memoryCorrections: filteredMemoryCorrections,
-    latestTurnDelta: filteredLatestTurnDelta,
-    queryRewrite,
-    retrievalPlan,
-    turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
-    motifSignal,
-    motifProbe,
-    rerankOutput,
-    isFirstUserTurn,
-    recallThoughtContext: buildRecallThoughtContext({
-      memories: selectedContext.memories,
-      sessionRecall: selectedContext.sessionRecall,
-      structMemEntries: selectedContext.structMemEntries,
-      structMemConsolidations: selectedContext.structMemConsolidations,
-      openThreads: selectedContext.openThreads,
-      canonChunks,
-      canonScenes,
-      sessionSummary: filteredSessionSummary,
-      latestTurnDelta: filteredLatestTurnDelta,
-      memoryCorrections: filteredMemoryCorrections,
-      rerankOutput,
-    }),
+    session, userMessage, characterDefaults, contextPlannerOutput, queryRewrite, queryRewriteMs,
+    queryTextAnnotationFallback, retrievalPlan, queryEmbedding, canonQueryEmbedding,
+    hypotheticalQueryEmbedding, motifQueryEmbeddings, memories, canonChunks, canonScenes,
+    recentTurns, sessionSummary, sessionStateRow, latestRoleplayTurnIndex, isFirstUserTurn,
+    sessionRecall, structMemEntries, structMemConsolidations, openThreads, motifSignal, motifProbe,
+    derivedState, memoryCorrections, latestTurnDelta, shortlist, shortlistMs: Date.now() - selectorStartedAt,
+    latestTurnDeltaText, motifProbeText, startedAt, embeddingsMs, mainRetrievalMs, olderRecallMs,
+    openThreadsMs, olderRecallExclusiveFirst, useFusedMemoryQuery, latestFrontierTurn,
   };
 }
 
 /**
- * Apply the deterministic critical-context preservation policy.
+ * Parallel retrieval + session summary + derived_state.
  *
- * Memory corrections, session summary, and latest turn delta are
- * always preserved after a successful rerank, regardless of reranker
- * selection. They are deterministic control/continuity context, not
- * optional retrieved memories.
- *
- * Exported for unit testing. Using this function explicitly in the
- * rerank-success path ensures that reverting to selective filtering
- * will cause a test failure.
+ * Compatibility wrapper that delegates to buildPreRerankContext + rerankContext +
+ * assembleResolvedContext. The public signature is unchanged.
  */
-export function preserveCriticalContext(
-  sessionSummary: SessionSummaryRecord | null,
-  latestTurnDelta: LatestTurnDelta | null,
-  memoryCorrections: MemoryCorrectionContext[],
-): {
-  filteredSessionSummary: SessionSummaryRecord | null;
-  filteredLatestTurnDelta: LatestTurnDelta | null;
-  filteredMemoryCorrections: MemoryCorrectionContext[];
-} {
-  return {
-    filteredSessionSummary: sessionSummary,
-    filteredLatestTurnDelta: latestTurnDelta,
-    filteredMemoryCorrections: memoryCorrections,
-  };
+export async function resolveContext(input: {
+  session: ChatSession;
+  userMessage: string;
+  characterDefaults: CharacterDefaults;
+}): Promise<ResolvedContext> {
+  const pre = await buildPreRerankContext(input);
+  const rerankResult = await rerankContext({
+    userMessage: pre.userMessage,
+    structuredUserQuery: pre.contextPlannerOutput.structuredUserQuery,
+    plannerIntent: pre.contextPlannerOutput.intent,
+    plannerHints: pre.contextPlannerOutput.retrievalHints,
+    recentTurns: pre.recentTurns,
+    latestTurnDeltaText: pre.latestTurnDeltaText,
+    continuityScope: pre.session.continuityScope,
+    candidates: pre.shortlist.candidates,
+    memories: pre.memories,
+    sessionRecall: pre.sessionRecall,
+    structMemEntries: pre.structMemEntries,
+    structMemConsolidations: pre.structMemConsolidations,
+    openThreads: pre.openThreads,
+    canonChunks: pre.canonChunks,
+    canonScenes: pre.canonScenes,
+    sessionSummary: pre.sessionSummary,
+    latestTurnDelta: pre.latestTurnDelta,
+    memoryCorrections: pre.memoryCorrections,
+    retrievalPlan: pre.retrievalPlan,
+  });
+  return assembleResolvedContext(pre, rerankResult);
 }
+
+/**
+ * Re-exported from `rerankContext` to break the circular dependency between
+ * `rerankContext` (adapter) and `resolveContext` (orchestrator).
+ *
+ * The function was moved to `rerankContext.ts` so that both modules can
+ * import it from the same cycle-free location. Existing unit tests that
+ * import from `./resolveContext` continue to work via this re-export.
+ */
+export { preserveCriticalContext } from "./rerankContext";

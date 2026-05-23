@@ -677,4 +677,287 @@ describe("roleplayGraphStreamAdapter", () => {
     );
     assert.strictEqual(persistCalled, false);
   });
+
+  it("preserves thought/tool events and persistence through generationGraphDeps path", async () => {
+    let persistCalled = false;
+    let persistInput: PersistRoleplayTurnInput | undefined;
+    const responseContent = "Hello from gen graph.";
+
+    const deps = makeAdapterDeps({
+      generationGraphDeps: {
+        loadSession: async () => fakeSession(),
+        loadCharacterContext: async () => ({}) as any,
+        resolveContext: async () => ({}) as any,
+        buildPromptContext: async () => ({}) as any,
+        runGeneration: async function* () {},
+        persistTurn: async () => ({}) as any,
+        generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+        generateDraftFn: async function* () {
+          yield { type: "thought" as const, thought: { kind: "drafting" as const, text: "thinking...", ts: 1 } as Thought };
+          yield { type: "tool_call" as const, id: "tc-1", name: "search", args: { q: "test" } };
+          yield { type: "tool_result" as const, id: "tc-1", name: "search", summary: "found 0" };
+          return { content: responseContent, inputTokens: 100, outputTokens: 50 };
+        } as any,
+        validateDraftFn: async () => ({ in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }),
+        rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+        safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+      } as any,
+      persistTurn: async (input: PersistRoleplayTurnInput) => {
+        persistCalled = true;
+        persistInput = input;
+        return fakePersistOutput;
+      },
+      buildRecallThought: async () => ({ text: "" }),
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    // Should have thought and tool_call/tool_result events
+    const thoughtEvents = events.filter((e) => e.event === "thought");
+    const toolCallEvents = events.filter((e) => e.event === "tool_call");
+    const toolResultEvents = events.filter((e) => e.event === "tool_result");
+    assert.ok(thoughtEvents.length > 0, "should have thought events from gen graph");
+    assert.ok(toolCallEvents.length > 0, "should have tool_call event from gen graph");
+    assert.ok(toolResultEvents.length > 0, "should have tool_result event from gen graph");
+
+    // Should have delta and done
+    const deltaEvents = events.filter((e) => e.event === "delta");
+    assert.ok(deltaEvents.length > 0, "should have delta events from gen graph");
+
+    const doneEvent = events.find((e) => e.event === "done") as any;
+    assert.ok(doneEvent, "should have done event from gen graph");
+    assert.strictEqual(doneEvent.data.content, responseContent);
+
+    // Persistence should be called
+    assert.ok(persistCalled, "persistTurn should be called");
+    assert.ok(persistInput, "persistTurn should have input");
+
+    // No error
+    assert.strictEqual(events.find((e) => e.event === "error"), undefined);
+  });
+
+  it("interleaves ready recall thought before tool events on graph path", async () => {
+    const deps = makeAdapterDeps({
+      runPreGeneration: async () =>
+        fakePreGenerationResult({
+          resolvedContext: {
+            derivedState: { inferredMood: "calm", inferredActivity: "conversing", conversationalStance: "neutral" },
+            memories: [],
+            isFirstUserTurn: false,
+            recallThoughtContext: {
+              items: [{ source: "memory", text: "previous conversation context" }],
+              countsBySource: { memory: 1 },
+              selectionMode: "rerank",
+            },
+          },
+        }),
+      buildRecallThought: async () => ({ text: "recall thought summary" }),
+      generationGraphDeps: {
+        loadSession: async () => fakeSession(),
+        loadCharacterContext: async () => ({}) as any,
+        resolveContext: async () => ({}) as any,
+        buildPromptContext: async () => ({}) as any,
+        runGeneration: async function* () {},
+        persistTurn: async () => ({}) as any,
+        generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+        generateDraftFn: async function* () {
+          // Yield a tool_call — the recall thought starts settling during the
+          // async gap of genGraph.invoke, so it should be ready when the poll
+          // loop discovers this event and calls queueReadyRecallThought.
+          yield { type: "tool_call" as const, id: "tc-1", name: "search", args: { q: "test" } };
+          yield { type: "tool_result" as const, id: "tc-1", name: "search", summary: "found 0" };
+          return { content: "response", inputTokens: 100, outputTokens: 50 };
+        } as any,
+        validateDraftFn: async () => ({ in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }),
+        rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+        safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+      } as any,
+      persistTurn: async () => fakePersistOutput,
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    // Should have a recall thought before the first tool_call
+    const recallThoughts = events.filter(
+      (e) => e.event === "thought" && (e.data as Thought).kind === "recall",
+    );
+    assert.ok(recallThoughts.length > 0, "should have a recall thought on graph path");
+
+    const firstRecallIdx = events.indexOf(recallThoughts[0]);
+    const firstToolCallIdx = events.findIndex((e) => e.event === "tool_call");
+    assert.ok(firstToolCallIdx >= 0, "should have a tool_call event");
+
+    assert.ok(
+      firstRecallIdx < firstToolCallIdx,
+      "recall thought should appear before first tool_call on graph path",
+    );
+  });
+
+  it("does not duplicate generator-pushed thoughts in done.thoughts on graph path", async () => {
+    let persistInput: PersistRoleplayTurnInput | undefined;
+
+    const deps = makeAdapterDeps({
+      generationGraphDeps: {
+        loadSession: async () => fakeSession(),
+        loadCharacterContext: async () => ({}) as any,
+        resolveContext: async () => ({}) as any,
+        buildPromptContext: async () => ({}) as any,
+        runGeneration: async function* () {},
+        persistTurn: async () => ({}) as any,
+        generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+        generateDraftFn: async function* (input: any) {
+          // Push to thoughtsAcc before yielding the thought event — just like
+          // the real helpers do via emitThought(). If drainGenerator also pushes
+          // the thought, it will appear twice in the final thoughtsAcc.
+          const ta = input.thoughtsAcc as Thought[];
+          ta.push({ kind: "drafting", text: "thinking...", ts: 1 });
+          yield { type: "thought" as const, thought: { kind: "drafting" as const, text: "thinking...", ts: 1 } as Thought };
+          return { content: "response", inputTokens: 100, outputTokens: 50 };
+        } as any,
+        validateDraftFn: async () => ({ in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }),
+        rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+        safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+      } as any,
+      persistTurn: async (input: PersistRoleplayTurnInput) => {
+        persistInput = input;
+        return fakePersistOutput;
+      },
+      buildRecallThought: async () => ({ text: "" }),
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    // Verify the thought event was yielded exactly once
+    const draftingThoughtEvents = events.filter(
+      (e) => e.event === "thought" && (e.data as Thought).kind === "drafting",
+    );
+    assert.strictEqual(
+      draftingThoughtEvents.length, 1,
+      "drafting thought event should be yielded exactly once",
+    );
+
+    // Verify the thought appears exactly once in done.thoughts
+    const doneEvent = events.find((e) => e.event === "done") as any;
+    assert.ok(doneEvent, "should have done event");
+    const draftingThoughts = (doneEvent.data.thoughts as Thought[]).filter(
+      (t) => t.kind === "drafting",
+    );
+    assert.strictEqual(
+      draftingThoughts.length, 1,
+      "drafting thought should appear exactly once in done.thoughts",
+    );
+
+    // Same check on persisted thoughts
+    assert.ok(persistInput, "persistTurn should have input");
+    const persistedDrafting = (persistInput!.thoughts as Thought[]).filter(
+      (t) => t.kind === "drafting",
+    );
+    assert.strictEqual(
+      persistedDrafting.length, 1,
+      "drafting thought should appear exactly once in persisted thoughts",
+    );
+  });
+
+  it("yields error event and does not persist on non-tool-loop generateDraftFn failure in graph path", async () => {
+    let persistCalled = false;
+
+    const deps = makeAdapterDeps({
+      generationGraphDeps: {
+        loadSession: async () => fakeSession(),
+        loadCharacterContext: async () => ({}) as any,
+        resolveContext: async () => ({}) as any,
+        buildPromptContext: async () => ({}) as any,
+        runGeneration: async function* () {},
+        persistTurn: async () => ({}) as any,
+        generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+        generateDraftFn: async function* () {
+          throw new Error("LLM call failed");
+        } as any,
+        validateDraftFn: async () => ({ in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }),
+        rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+        safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+      } as any,
+      persistTurn: async () => {
+        persistCalled = true;
+        return fakePersistOutput;
+      },
+      buildRecallThought: async () => ({ text: "" }),
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    assert.strictEqual(events.length, 1, "should emit exactly one event (error)");
+    assert.strictEqual((events[0] as any).event, "error", "should emit error event");
+    assert.match(
+      (events[0] as any).data.message,
+      /LLM call failed/,
+      "error message should propagate",
+    );
+    assert.strictEqual(persistCalled, false, "persistTurn should not be called");
+  });
+
+  it("yields error event and does not persist on validateDraftFn failure in graph path", async () => {
+    let persistCalled = false;
+
+    const deps = makeAdapterDeps({
+      generationGraphDeps: {
+        loadSession: async () => fakeSession(),
+        loadCharacterContext: async () => ({}) as any,
+        resolveContext: async () => ({}) as any,
+        buildPromptContext: async () => ({}) as any,
+        runGeneration: async function* () {},
+        persistTurn: async () => ({}) as any,
+        generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+        generateDraftFn: async function* () {
+          return { content: "test draft", inputTokens: 100, outputTokens: 50 };
+        } as any,
+        validateDraftFn: async () => {
+          throw new Error("Validator API error");
+        },
+        rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+        safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+      } as any,
+      persistTurn: async () => {
+        persistCalled = true;
+        return fakePersistOutput;
+      },
+      buildRecallThought: async () => ({ text: "" }),
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    assert.strictEqual(events.length, 1, "should emit exactly one event (error)");
+    assert.strictEqual((events[0] as any).event, "error", "should emit error event");
+    assert.match(
+      (events[0] as any).data.message,
+      /Validator API error/,
+      "error message should propagate",
+    );
+    assert.strictEqual(persistCalled, false, "persistTurn should not be called");
+  });
 });

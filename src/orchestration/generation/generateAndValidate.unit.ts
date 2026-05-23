@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { __testing } from "./generateAndValidate";
+import { __testing, generateDraft, validateDraft, rewriteDraft, safeDeflection } from "./generateAndValidate";
 
 describe("decorateUserMessageForGeneration", () => {
   it("returns content and marker metadata as an object regardless of injection", () => {
@@ -200,6 +200,77 @@ describe("traceInputsForGenerationToolLoop", () => {
     // The preview should contain the full original text (sanitize before truncate).
     assert.ok(preview === text || preview.startsWith(text));
     assert.equal(preview.length, Math.min(text.length, 200));
+  });
+});
+
+describe("generateDraft", () => {
+  it("is an exported async generator function with correct return shape", async () => {
+    const thoughtsAcc: import("../thought/thoughtTypes").Thought[] = [];
+    const gen = generateDraft({
+      promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] } as any,
+      userMessage: "hello",
+      session: { sessionId: "sess_test", characterId: "zuo_ran", thinking: true } as any,
+      characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran" } as any,
+      toolCtx: { sessionId: "sess_test", characterId: "zuo_ran", memoryNamespace: "main", continuityScope: "main", continuityFamily: "main_world", signal: new AbortController().signal } as any,
+      thoughtSummaryCache: new Map(),
+      thoughtsAcc,
+      isFirstUserTurn: false,
+      voiceHints: "formal, restrained",
+      openAICompatibleRequestExtensions: undefined,
+      buildMessages: () => ({ messages: [{ role: "system", content: "sys" }, { role: "user", content: "hi" }], markerInjected: false, markerReason: "" }),
+    });
+    assert.ok(gen, "generateDraft should return an async generator");
+    assert.equal(typeof gen[Symbol.asyncIterator], "function");
+    // The generator integrates with the real tracedResponseGeneration which needs
+    // provider keys. Full integration requires provider credentials.
+    // This test verifies the function is callable and returns the correct shape.
+  });
+});
+
+describe("validateDraft", () => {
+  it("is an exported async function with 3 parameters", () => {
+    assert.equal(typeof validateDraft, "function");
+    assert.equal(validateDraft.length, 3);
+  });
+});
+
+describe("rewriteDraft", () => {
+  it("is an exported async generator function", () => {
+    assert.equal(typeof rewriteDraft, "function");
+    // rewriteDraft is an async generator — verify it returns an async iterable
+    const gen = rewriteDraft({
+      promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] } as any,
+      userMessage: "hello",
+      session: { sessionId: "sess_test", characterId: "zuo_ran", thinking: true } as any,
+      characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran" } as any,
+      toolCtx: { signal: new AbortController().signal } as any,
+      thoughtSummaryCache: new Map(),
+      thoughtsAcc: [],
+      isFirstUserTurn: false,
+      voiceHints: "formal, restrained",
+      openAICompatibleRequestExtensions: undefined,
+      issues: ["issue 1"],
+      rewriteIntro: "rewriting...",
+      buildRewriteMessages: () => ({ messages: [{ role: "system", content: "rewrite" }, { role: "user", content: "fix" }], markerInjected: false, markerReason: "" }),
+    });
+    assert.ok(gen);
+    assert.equal(typeof gen[Symbol.asyncIterator], "function");
+  });
+});
+
+describe("safeDeflection", () => {
+  it("is an exported async generator function", () => {
+    assert.equal(typeof safeDeflection, "function");
+    const gen = safeDeflection({
+      characterName: "Zuo Ran",
+      safeDeflectionText: "I am not sure.",
+      reason: "tool_loop_exceeded",
+      thoughtSummaryCache: new Map(),
+      thoughtsAcc: [],
+      voiceHints: "formal, restrained",
+    });
+    assert.ok(gen);
+    assert.equal(typeof gen[Symbol.asyncIterator], "function");
   });
 });
 

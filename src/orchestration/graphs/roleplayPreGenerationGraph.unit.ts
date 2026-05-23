@@ -144,6 +144,32 @@ const fakePromptContext = {
 // Default test deps (fakes, no DB/LLM)
 // ---------------------------------------------------------------------------
 
+const fakeResolvedContextPrebuilt = {
+  memories: [],
+  canonChunks: [],
+  canonScenes: [],
+  recentTurns: [],
+  derivedState: { inferredMood: "calm", inferredActivity: "conversing", conversationalStance: "neutral" },
+  queryEmbedding: [0.1, 0.2],
+  canonQueryEmbedding: [0.1, 0.2],
+  sessionSummary: null,
+  sessionRecall: [],
+  structMemEntries: [],
+  structMemEntryContextExpansions: [],
+  structMemConsolidations: [],
+  openThreads: [],
+  memoryCorrections: [],
+  latestTurnDelta: null,
+  queryRewrite: { intent: "general", confidence: 0.9, segments: [], combined_for_embedding: "chat", entities: [], parseOk: true, structuralParseOk: true, labelOk: true },
+  retrievalPlan: fakeResolvedContext.retrievalPlan,
+  turnType: "general_roleplay" as const,
+  motifSignal: undefined,
+  motifProbe: undefined,
+  rerankOutput: null,
+  isFirstUserTurn: false,
+  recallThoughtContext: { items: [], countsBySource: {}, selectionMode: "fallback" },
+};
+
 function defaultTestDeps(
   overrides?: Partial<RoleplayGraphDeps>,
 ): RoleplayGraphDeps {
@@ -152,6 +178,44 @@ function defaultTestDeps(
     loadCharacterContext: async () => fakeCharacterContext as any,
     resolveContext: async () => fakeResolvedContext as any,
     buildPromptContext: async () => fakePromptContext as any,
+    buildPreRerankContext: async () => {
+      const ctx: any = {
+        session: fakeSession(),
+        userMessage: "hello",
+        characterDefaults: fakeCharacterDefaults as any,
+        contextPlannerOutput: { queryRewrite: {} as any, structuredUserQuery: {}, intent: "scene_continuation", entities: [], retrievalHints: {} as any, confidence: 0.9, reason: "" },
+        queryRewrite: { intent: "general", confidence: 0.9, segments: [], combined_for_embedding: "chat", entities: [], parseOk: true, structuralParseOk: true, labelOk: true },
+        queryRewriteMs: 0, queryTextAnnotationFallback: false,
+        retrievalPlan: fakeResolvedContext.retrievalPlan,
+      queryEmbedding: [0.1, 0.2], canonQueryEmbedding: [0.1, 0.2],
+      hypotheticalQueryEmbedding: undefined, motifQueryEmbeddings: undefined,
+      memories: [], canonChunks: [], canonScenes: [], recentTurns: [],
+      sessionSummary: null, sessionStateRow: null, latestRoleplayTurnIndex: null, isFirstUserTurn: false,
+      sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [],
+      motifSignal: undefined, motifProbe: undefined,
+      derivedState: { inferredMood: "calm", inferredActivity: "conversing", conversationalStance: "neutral" },
+      memoryCorrections: [], latestTurnDelta: null,
+      shortlist: { candidates: [], diagnostics: { totalRetrieved: 0, totalShortlisted: 0, countsBySource: {}, truncatedByTotalCap: 0 } },
+      shortlistMs: 0, latestTurnDeltaText: undefined, motifProbeText: undefined,
+      startedAt: 0, embeddingsMs: 0, mainRetrievalMs: 0, olderRecallMs: 0, openThreadsMs: 0,
+      olderRecallExclusiveFirst: 0, useFusedMemoryQuery: false, latestFrontierTurn: -1,
+    };
+    return ctx;
+    },
+    runLlmRerankFn: async () => ({
+      ok: true,
+      rerankOutput: { selected: [], rejected: [], finalContextMode: "selected_memory", needsEvidenceFallback: false },
+      selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any,
+      canonChunks: [], canonScenes: [],
+      filteredSessionSummary: null, filteredLatestTurnDelta: null, filteredMemoryCorrections: [],
+      rerankMs: 0,
+    }) as any,
+    deterministicSelectorFn: async () => ({
+      selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any,
+      selectorFallbackMs: 0,
+    }) as any,
+    rerankContextFn: async () => ({}) as any,
+    assembleResolvedContext: async () => fakeResolvedContextPrebuilt as any,
     runGeneration: async function* () {
       yield {
         event: "_complete" as const,
@@ -280,10 +344,10 @@ describe("roleplayPreGenerationGraph", () => {
     assert.strictEqual(result.promptContext, undefined);
   });
 
-  it("captures resolveContext error and short-circuits", async () => {
+  it("captures buildPreRerankContext error and short-circuits", async () => {
     const deps = defaultTestDeps({
-      resolveContext: async () => {
-        throw new Error("context resolution failed");
+      buildPreRerankContext: async () => {
+        throw new Error("buildPreRerankContext failed");
       },
     });
 
@@ -299,8 +363,11 @@ describe("roleplayPreGenerationGraph", () => {
     );
     assert.ok(result.errors);
     assert.strictEqual(result.errors.length, 1);
-    assert.strictEqual(result.errors[0].stage, "resolveContext");
-    assert.strictEqual(result.errors[0].message, "context resolution failed");
+    assert.strictEqual(result.errors[0].stage, "buildPreRerankContext");
+    assert.strictEqual(
+      result.errors[0].message,
+      "buildPreRerankContext failed",
+    );
     // Downstream fields must not be populated
     assert.strictEqual(result.resolvedContext, undefined);
     assert.strictEqual(result.promptContext, undefined);
@@ -330,5 +397,75 @@ describe("roleplayPreGenerationGraph", () => {
     assert.strictEqual(result.errors[0].message, "prompt build failed");
     // BuildPrompt is the last node -- promptContext should still be undefined
     assert.strictEqual(result.promptContext, undefined);
+  });
+
+  it("completes pre-generation graph with rerank fallback result", async () => {
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => ({
+        ok: false,
+        rerankMs: 100,
+        fallbackReason: "timeout_after_30000ms",
+      }) as any,
+    });
+
+    const result = await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    assert.ok(result.session, "session should be loaded");
+    assert.ok(result.characterContext, "characterContext should be loaded");
+    assert.ok(result.resolvedContext, "resolvedContext should be assembled");
+    assert.ok(result.promptContext, "promptContext should be built");
+    assert.strictEqual(
+      result.errors,
+      undefined,
+      "no errors on fallback path",
+    );
+  });
+
+  it("rerank success and fallback both produce resolvedContext", async () => {
+    const successDeps = defaultTestDeps();
+    const fallbackDeps = defaultTestDeps({
+      runLlmRerankFn: async () => ({ ok: false, rerankMs: 100, fallbackReason: "timeout_after_30000ms" }) as any,
+    });
+
+    const [success, fallback] = await Promise.all([
+      runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        successDeps,
+      ),
+      runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        fallbackDeps,
+      ),
+    ]);
+
+    // Both paths produce resolvedContext
+    assert.ok(success.resolvedContext, "rerank success should produce resolvedContext");
+    assert.ok(fallback.resolvedContext, "rerank fallback should produce resolvedContext");
+    // Both converge to buildPrompt
+    assert.ok(success.promptContext, "rerank success should produce promptContext");
+    assert.ok(fallback.promptContext, "rerank fallback should produce promptContext");
+  });
+
+  it("routes rerank fallback through deterministicContextSelector node", async () => {
+    let deterministicCalled = false;
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => ({ ok: false, rerankMs: 100, fallbackReason: "timeout_after_30000ms" }) as any,
+      deterministicSelectorFn: async () => {
+        deterministicCalled = true;
+        return { selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, selectorFallbackMs: 5 };
+      },
+    });
+
+    const result = await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    assert.ok(deterministicCalled, "deterministicSelectorFn should be called when rerank falls back");
+    assert.ok(result.resolvedContext, "resolvedContext should be produced");
+    assert.ok(result.promptContext, "promptContext should be produced");
   });
 });

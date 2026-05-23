@@ -3,6 +3,7 @@ import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { RoleplayGenerationEvent, RoleplayGenerationInput } from "../roleplay/roleplayGenerationAdapter";
 import type { PersistRoleplayTurnInput, PersistRoleplayTurnOutput } from "../roleplay/roleplayPersistenceAdapter";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
+import type { OrchestrationStreamEvent } from "../thought/thoughtTypes";
 import type { ModelBinding } from "../../config/models";
 import {
   createRecallThoughtTask,
@@ -31,10 +32,16 @@ export interface RoleplayGraphStreamAdapterDeps {
   ) => Promise<PreGenerationResult>;
   /** Internal deps for the pre-generation graph. */
   preGenerationDeps: RoleplayGraphDeps;
-  /** Generation adapter. */
+  /** Generation adapter (default path). */
   runGeneration: (
     input: RoleplayGenerationInput,
   ) => AsyncGenerator<RoleplayGenerationEvent>;
+  /**
+   * Optional generation graph deps. When provided, the adapter builds a
+   * generation subgraph and invokes it instead of `runGeneration`, making
+   * validation/rewrite/deflection decisions visible in LangSmith traces.
+   */
+  generationGraphDeps?: import("./roleplayGraph").RoleplayGraphDeps;
   /** Turn persistence. */
   persistTurn: (
     input: PersistRoleplayTurnInput,
@@ -209,21 +216,101 @@ export async function* runRoleplayTurnStreamViaGraph(
 
     let resultPayload: GenerateAndValidateResult | undefined;
 
-    for await (const ev of deps.runGeneration({
-      promptContext,
-      userMessage,
-      session,
-      personaOverlay,
-      signal,
-      thoughtSummaryCache,
-      thoughtsAcc,
-      isFirstUserTurn: context.isFirstUserTurn,
-      takeReadyRecallThought: queueReadyRecallThought,
-    })) {
-      if (ev.event === "_complete") {
-        resultPayload = ev.data;
-      } else {
-        yield ev;
+    if (deps.generationGraphDeps) {
+      // Use the generation subgraph for LangSmith trace visibility.
+      // The subgraph pushes orchestration events to a shared array as each
+      // async generator produces them. We poll the array below so events are
+      // forwarded to the frontend as they happen — same streaming behavior as
+      // the existing adapter path — instead of buffering until invoke completes.
+      const { createGenerationSubgraph } = await import("./roleplayGenerationSubgraph");
+      const { graph: genGraph, sharedEvents } = createGenerationSubgraph(deps.generationGraphDeps);
+
+      const graphPromise = genGraph.invoke({
+        sessionId,
+        userMessage,
+        session,
+        characterContext,
+        promptContext,
+        draft: undefined, validation1Result: undefined, rewriteDraft: undefined,
+        validation2Result: undefined, generationResult: undefined, errors: undefined,
+        resolvedContext: context,
+        _cache: thoughtSummaryCache,
+        _thoughtsAcc: thoughtsAcc,
+        _signal: signal,
+        _isFirstUserTurn: context.isFirstUserTurn,
+        _voiceHints: voiceHints,
+      } as any);
+
+      // Track graph completion non-blockingly so we can poll sharedEvents
+      let graphDone = false;
+      let graphError: Error | undefined;
+      let genState: any;
+
+      graphPromise.then(
+        (s) => { genState = s; graphDone = true; },
+        (e) => { graphError = e as Error; graphDone = true; },
+      );
+
+      // Poll sharedEvents and yield events as they arrive, interleaving any
+      // ready recall thoughts — matching runRoleplayGenerationAdapter behavior.
+      let pollIdx = 0;
+      while (true) {
+        while (pollIdx < sharedEvents.length) {
+          const ev = sharedEvents[pollIdx++];
+
+          // Queue any ready recall thought before each generated event
+          const recallThought = queueReadyRecallThought();
+          if (recallThought) {
+            yield { event: "thought", data: recallThought };
+          }
+
+          if (ev.type === "thought") {
+            yield { event: "thought" as const, data: ev.thought };
+          } else if (ev.type === "tool_call") {
+            yield { event: "tool_call" as const, data: { id: ev.id, name: ev.name, args: ev.args } };
+          } else if (ev.type === "tool_result") {
+            yield { event: "tool_result" as const, data: { id: ev.id, name: ev.name, summary: ev.summary } };
+          }
+          // delta events are only produced by the higher-level
+          // generateAndValidateStream, not by individual generation helpers, so
+          // they won't appear here. If they did, they would be suppressed
+          // (same as the existing adapter path).
+        }
+        if (graphDone) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      if (graphError) throw graphError;
+
+      // Check for unhandled errors from the generation subgraph.
+      // When errorSink is reached (non-tool-loop errors), errors exist but
+      // generationResult does not — yield an error event and skip persistence.
+      if (genState.errors && genState.errors.length > 0 && !genState.generationResult) {
+        const errMsg = genState.errors.map((e: any) => `[${e.stage}] ${e.message}`).join("; ");
+        yield { event: "error", data: { message: errMsg } };
+        return;
+      }
+
+      if (genState.generationResult) {
+        resultPayload = genState.generationResult as GenerateAndValidateResult;
+      }
+    } else {
+      for await (const ev of deps.runGeneration({
+        promptContext,
+        userMessage,
+        session,
+        personaOverlay,
+        signal,
+        thoughtSummaryCache,
+        thoughtsAcc,
+        isFirstUserTurn: context.isFirstUserTurn,
+        takeReadyRecallThought: queueReadyRecallThought,
+      })) {
+        if (ev.event === "_complete") {
+          resultPayload = ev.data;
+        } else {
+          yield ev;
+        }
       }
     }
 

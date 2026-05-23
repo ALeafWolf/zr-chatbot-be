@@ -262,6 +262,7 @@ const productionGraphStreamDeps: RoleplayGraphStreamAdapterDeps = {
   runPreGeneration: runRoleplayPreGenerationGraph,
   preGenerationDeps: defaultRoleplayGraphDeps,
   runGeneration: runRoleplayGenerationAdapter,
+  generationGraphDeps: defaultRoleplayGraphDeps,
   persistTurn: (input) =>
     persistRoleplayTurn(input, {
       traceRouteSwitch: tracedRouteSwitch,
