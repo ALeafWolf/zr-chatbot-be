@@ -3,6 +3,35 @@ import { z } from "zod";
 
 dotenv.config();
 
+function isNodeTestProcess(): boolean {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.npm_lifecycle_event === "test:unit" ||
+    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test=")) ||
+    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test"))
+  );
+}
+
+if (isNodeTestProcess()) {
+  for (const key of [
+    "LANGSMITH_TRACING",
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING",
+    "LANGCHAIN_TRACING_V2",
+    "TRACING",
+    "TRACING_V2",
+  ]) {
+    process.env[key] = "false";
+  }
+
+  for (const key of ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"]) {
+    process.env[key] = "";
+  }
+
+  process.env.LANGSMITH_TRACING_BACKGROUND = "false";
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = "false";
+}
+
 /**
  * Shared flag parser used by ROLEPLAY_GRAPH_STREAM_ENABLED and available for
  * unit tests to verify parsing logic against the same code path.

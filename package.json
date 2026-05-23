@@ -16,7 +16,7 @@
     "eval:retrieval": "tsx src/eval/runRetrievalEvalCli.ts",
     "test:structural-parse": "tsx src/retrieval/structuralParse.fixtures.ts",
     "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts",
-    "test:unit": "tsx --test --experimental-test-module-mocks \"src/**/*.unit.ts\""
+    "test:unit": "tsx --import ./src/test/setup.ts --test --experimental-test-module-mocks \"src/**/*.unit.ts\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",

@@ -2,32 +2,18 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/client";
 import { postTurnJobs, type PostTurnJobRow } from "../db/schema/jobs";
 import { extractPostTurnSignals } from "../llm/extraction/extractPostTurnSignals";
-import { writeInteractiveMemory } from "../memory/interactive/writeInteractiveMemory";
-import { maybeCompactSessionSummary } from "../memory/session/compactSessionSummary";
-import {
-  persistSessionMemoryChunk,
-  sessionMemoryChunkExists,
-  writeRawTurnPairSessionChunkTraced,
-} from "../memory/session/writeSessionMemoryChunk";
-import type { SessionChunkTypePersisted } from "../memory/session/writeSessionMemoryChunk";
-import type { MemoryNamespace } from "../memory/shared/memoryNamespace";
 import {
   traceLLMStage,
-  traceStage,
-  traceStageWithIO,
   withTraceContext,
 } from "../observability/langsmithTracing";
 import { env } from "../config/env";
 import { models } from "../config/models";
 import { buildTraceBaseMetadata } from "../observability/traceMetadata";
-import { collectPhase1StructMemPersistRows } from "../memory/structmem/structmemMapping";
-import { writeStructMemTurn } from "../memory/structmem/writeStructMemTurn";
 import { eq, sql } from "drizzle-orm";
 import { BackgroundRunner } from "./backgroundRunner";
 import {
   INITIAL_POST_TURN_STEP_STATUS,
   chatSessionFromSnapshot,
-  isStepComplete,
   markStepCompleted,
   normalizeStepStatus,
   parsePostTurnJobPayload,
@@ -35,31 +21,13 @@ import {
   type PostTurnStepName,
   type PostTurnStepStatus,
 } from "./postTurnJobPayload";
-import {
-  buildPostTurnWritePlan,
-  type PostTurnWritePlanEnv,
-} from "./postTurnPolicies";
-import { maybeEnqueueStructMemConsolidation } from "../memory/structmem/structmemConsolidationRepo";
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
 import {
-  incrementSessionChunkWrite,
   recordMemoryWriteSnapshot,
 } from "../eval/evalSnapshots";
-
-type PostTurnWritePlanTraceInput = {
-  session: Parameters<typeof buildPostTurnWritePlan>[0];
-  env: Parameters<typeof buildPostTurnWritePlan>[1];
-  signals: Parameters<typeof buildPostTurnWritePlan>[2];
-};
-
-function unwrapPostTurnWritePlanTraceInput(
-  inputs: Record<string, unknown>,
-): PostTurnWritePlanTraceInput {
-  if ("input" in inputs && inputs.input) {
-    return inputs.input as PostTurnWritePlanTraceInput;
-  }
-  return inputs as unknown as PostTurnWritePlanTraceInput;
-}
+import { defaultPostTurnMemoryGraphDeps, createPostTurnMemoryGraph } from "../orchestration/graphs/postTurnMemoryGraph";
+import type { PostTurnMemoryGraphDeps } from "../orchestration/graphs/postTurnMemoryGraph";
+import { createInitialPostTurnRuntimeState } from "../orchestration/graphState/postTurnGraphState";
 
 const tracedExtract = traceLLMStage(
   "llm.extract_post_turn_signals",
@@ -71,42 +39,12 @@ const tracedExtract = traceLLMStage(
   },
 );
 
-const tracedBuildPostTurnWritePlan = traceStageWithIO(
-  "post_turn.write_plan",
-  async (input: PostTurnWritePlanTraceInput) =>
-    buildPostTurnWritePlan(input.session, input.env, input.signals),
-  {
-    subsystem: "post_turn",
-    turn: "background",
-    processInputs: (inputs) => {
-      const input = unwrapPostTurnWritePlanTraceInput(inputs);
-      return {
-        sessionMode: input.session.mode,
-        writebackPolicy: input.session.writebackPolicy,
-        structMemEnabled: input.env.STRUCTMEM_ENABLED,
-        structMemConsolidationEnabled:
-          input.env.STRUCTMEM_CONSOLIDATION_ENABLED,
-        nativeStructMemExtractor: input.env.STRUCTMEM_NATIVE_EXTRACTOR,
-        suppressExtractorSessionChunks:
-          input.env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
-        memoryFactCount: input.signals.memoryFacts.length,
-        nativeStructMemEntryCount: input.signals.structMemEntries.length,
-        shouldWriteMemory: input.signals.shouldWriteMemory,
-      };
-    },
-    processOutputs: (outputs) => outputs,
-  },
-);
-
-function postTurnWritePlanEnv(): PostTurnWritePlanEnv {
-  return {
-    STRUCTMEM_ENABLED: env.STRUCTMEM_ENABLED,
-    STRUCTMEM_CONSOLIDATION_ENABLED: env.STRUCTMEM_CONSOLIDATION_ENABLED,
-    STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS:
-      env.STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS,
-    STRUCTMEM_NATIVE_EXTRACTOR: env.STRUCTMEM_NATIVE_EXTRACTOR,
-  };
-}
+// tracedBuildPostTurnWritePlan was removed in TG2 (not needed by graph — the
+// underlying sync buildPostTurnWritePlan is used instead). If TG3 re-evaluates
+// and wants the post_turn.write_plan child span back, restore it here:
+//   https://github.com/langchain-ai/langgraphjs/issues/NNN
+// For now the graph's compiled orchestration.post_turn_memory_graph span
+// provides parent-level trace visibility.
 
 export function newPostTurnJobId(): string {
   return uuidv4();
@@ -117,7 +55,7 @@ function nextRunAfter(attempts: number): Date {
   return new Date(Date.now() + delayMs);
 }
 
-class PostTurnRunner extends BackgroundRunner {
+export class PostTurnRunner extends BackgroundRunner {
   private readonly workerId = `post-turn-${process.pid}-${uuidv4()}`;
 
   constructor() {
@@ -132,24 +70,19 @@ class PostTurnRunner extends BackgroundRunner {
     }
   }
 
-  async runJobByIdForEval(jobId: string): Promise<void> {
+  /** Override in tests to load and claim an eval job without touching the DB.
+   *  Returns the claimed job or null if the job is not found or already completed. */
+  protected async loadAndClaimEvalJob(
+    jobId: string,
+  ): Promise<{ job: PostTurnJobRow } | { missing: boolean; completed: boolean }> {
     const existingRows = await db
       .select()
       .from(postTurnJobs)
       .where(eq(postTurnJobs.id, jobId))
       .limit(1);
     const existing = existingRows[0];
-    if (!existing) {
-      recordMemoryWriteSnapshot({
-        status: "failed",
-        error: `post_turn_job_not_found:${jobId}`,
-      });
-      return;
-    }
-    if (existing.status === "completed") {
-      recordMemoryWriteSnapshot({ status: "completed" });
-      return;
-    }
+    if (!existing) return { missing: true, completed: false };
+    if (existing.status === "completed") return { missing: false, completed: true };
 
     const rows = await db
       .update(postTurnJobs)
@@ -163,8 +96,23 @@ class PostTurnRunner extends BackgroundRunner {
       })
       .where(eq(postTurnJobs.id, jobId))
       .returning();
-    const job = rows[0];
-    await this.runClaimedJob(job);
+    return { job: rows[0]! };
+  }
+
+  async runJobByIdForEval(jobId: string): Promise<void> {
+    const result = await this.loadAndClaimEvalJob(jobId);
+    if ("missing" in result) {
+      if (result.missing) {
+        recordMemoryWriteSnapshot({
+          status: "failed",
+          error: `post_turn_job_not_found:${jobId}`,
+        });
+      } else {
+        recordMemoryWriteSnapshot({ status: "completed" });
+      }
+      return;
+    }
+    await this.runClaimedJob(result.job);
   }
 
   private async claimNextJob(): Promise<PostTurnJobRow | null> {
@@ -230,7 +178,12 @@ class PostTurnRunner extends BackgroundRunner {
       .where(eq(postTurnJobs.id, input.jobId));
   }
 
-  private async markCompleted(
+  /** Override in tests to inject a fake graph. */
+  protected createGraph(deps: PostTurnMemoryGraphDeps) {
+    return createPostTurnMemoryGraph(deps);
+  }
+
+  async persistStepComplete(
     jobId: string,
     step: PostTurnStepName,
     payload: PostTurnJobPayloadV1,
@@ -241,7 +194,7 @@ class PostTurnRunner extends BackgroundRunner {
     return next;
   }
 
-  private async completeJob(jobId: string): Promise<void> {
+  async completeJob(jobId: string): Promise<void> {
     await db
       .update(postTurnJobs)
       .set({
@@ -253,7 +206,7 @@ class PostTurnRunner extends BackgroundRunner {
       .where(eq(postTurnJobs.id, jobId));
   }
 
-  private async failJob(job: PostTurnJobRow, err: unknown): Promise<void> {
+  protected async failJob(job: PostTurnJobRow, err: unknown): Promise<void> {
     const message = err instanceof Error ? err.stack ?? err.message : String(err);
     const exhausted = job.attempts >= job.maxAttempts;
     await db
@@ -270,14 +223,14 @@ class PostTurnRunner extends BackgroundRunner {
     console.error(`[postTurnRunner] job ${job.id} failed:`, err);
   }
 
-  private async runClaimedJob(job: PostTurnJobRow): Promise<void> {
+  protected async runClaimedJob(job: PostTurnJobRow): Promise<void> {
     try {
       recordMemoryWriteSnapshot({
         postTurnJobId: job.id,
         status: "not_run",
       });
-      let payload = parsePostTurnJobPayload(job.payload);
-      let stepStatus = normalizeStepStatus(job.stepStatus);
+      const payload = parsePostTurnJobPayload(job.payload);
+      const stepStatus = normalizeStepStatus(job.stepStatus);
       const session = chatSessionFromSnapshot(payload.session);
       const recentMemoriesStr = payload.recentMemorySummaries
         .slice(0, 3)
@@ -300,238 +253,47 @@ class PostTurnRunner extends BackgroundRunner {
           turn: "background",
         },
         async () => {
-          const tracedPostTurnJob = traceStageWithIO(
-            "post_turn.job",
-            async (input: {
-              jobId: string;
-              run: () => Promise<{
-                status: "completed";
-                completedSteps: string[];
-              }>;
-            }) => input.run(),
-            {
-              subsystem: "post_turn",
-              turn: "background",
-              processInputs: () => ({
-                postTurnJobId: job.id,
-                sessionId: payload.sessionId,
-                userMessageId: payload.userMessageId,
-                assistantMessageId: payload.assistantMessageId,
-                userTurnIndex: payload.userTurnIndex,
-                assistantTurnIndex: payload.assistantTurnIndex,
-                attempts: job.attempts,
-              }),
-              processOutputs: (outputs) => outputs,
-            },
+          const deps = defaultPostTurnMemoryGraphDeps({
+            persistStepComplete: this.persistStepComplete.bind(this),
+            completeJobFn: this.completeJob.bind(this),
+            wakeConsolidationFn: () => structmemConsolidationRunner.wake(),
+            extractFn: tracedExtract,
+            // tracedBuildPostTurnWritePlan has a wrapped input shape ({session, env, signals})
+            // so we use the underlying sync buildPostTurnWritePlan directly.
+            // The graph-level compile span provides the parent trace visibility.
+          });
+
+          const initialState = createInitialPostTurnRuntimeState(
+            { jobId: job.id, attempts: job.attempts, payload, stepStatus },
+            session,
+            recentMemoriesStr,
           );
-          await tracedPostTurnJob({
-            jobId: job.id,
-            run: async () => {
-      if (!isStepComplete(stepStatus, "raw_chunk")) {
-        await writeRawTurnPairSessionChunkTraced({
-          session,
-          userTurnIndex: payload.userTurnIndex,
-          assistantTurnIndex: payload.assistantTurnIndex,
-          userMessage: payload.userMessage,
-          assistantReply: payload.assistantReply,
-        });
-        stepStatus = await this.markCompleted(
-          job.id,
-          "raw_chunk",
-          payload,
-          stepStatus,
-        );
-      }
 
-      if (!isStepComplete(stepStatus, "extract_signals")) {
-        const signals = await tracedExtract({
-          userMessage: payload.userMessage,
-          assistantReply: payload.assistantReply,
-          sessionMode: session.mode,
-          recentMemories: recentMemoriesStr,
-          sessionState: JSON.stringify(payload.derivedState),
-        });
-        payload = { ...payload, signals };
-        recordMemoryWriteSnapshot({
-          extraction: {
-            memoryFactCount: signals.memoryFacts.length,
-            structMemEntryCount: signals.structMemEntries.length,
-            shouldWriteMemory: payload.shouldWriteMemory,
-          },
-        });
-        stepStatus = await this.markCompleted(
-          job.id,
-          "extract_signals",
-          payload,
-          stepStatus,
-        );
-      }
-
-      const signals = payload.signals;
-      if (!signals) {
-        throw new Error("post-turn payload missing extracted signals");
-      }
-
-      const writePlan = await tracedBuildPostTurnWritePlan({
-        session,
-        env: postTurnWritePlanEnv(),
-        signals: {
-          memoryFacts: signals.memoryFacts,
-          structMemEntries: signals.structMemEntries,
-          shouldWriteMemory: payload.shouldWriteMemory,
-        },
-      });
-      recordMemoryWriteSnapshot({
-        writePlan: {
-          durableMemory: writePlan.durableMemory.write,
-          sessionChunks: writePlan.sessionChunks.write,
-          structMem: writePlan.structMem.write,
-          structMemConsolidation: writePlan.structMemConsolidation.write,
-        },
-      });
-
-      if (!isStepComplete(stepStatus, "structmem")) {
-        if (writePlan.structMem.write) {
-          const useNative = env.STRUCTMEM_NATIVE_EXTRACTOR;
-          const rows = useNative
-            ? signals.structMemEntries
-            : collectPhase1StructMemPersistRows(signals.memoryFacts);
-          if (rows.length > 0) {
-            await writeStructMemTurn({
-              session,
-              latestTurnIndex: payload.assistantTurnIndex,
+          const graph = this.createGraph(deps);
+          const state = await graph.invoke(initialState, {
+            tags: ["turn:background", "subsystem:post_turn", "graph:postTurnMemoryGraph"],
+            metadata: {
+              postTurnJobId: job.id,
+              sessionId: payload.sessionId,
               userMessageId: payload.userMessageId,
               assistantMessageId: payload.assistantMessageId,
-              rows,
-              extractorBatchConfidence:
-                signals.modelReportedConfidence.memoryFacts,
-              mergeNativeStructMemSource: useNative,
-            });
-          }
-        }
-        stepStatus = await this.markCompleted(
-          job.id,
-          "structmem",
-          payload,
-          stepStatus,
-        );
-      }
-
-      if (writePlan.structMemConsolidation.write) {
-        const enqueueResult = await maybeEnqueueStructMemConsolidation({
-          session,
-        });
-        if (enqueueResult.status === "enqueued") {
-          structmemConsolidationRunner.wake();
-        }
-      }
-
-      if (!isStepComplete(stepStatus, "session_chunks")) {
-        if (writePlan.sessionChunks.write) {
-          for (let i = 0; i < signals.memoryFacts.length; i++) {
-            const candidate = signals.memoryFacts[i]!;
-            if (candidate.memoryScope !== "current_session") continue;
-            const chunkType = (candidate.sessionChunkType ??
-              "scene_moment") as SessionChunkTypePersisted;
-            const metadata = {
-              source: "extractor",
-              memoryType: candidate.memoryType,
-              assistantMessageId: payload.assistantMessageId,
-              candidateIndex: i,
-            };
-            const exists = await sessionMemoryChunkExists({
-              sessionId: payload.sessionId,
-              turnStart: payload.userTurnIndex,
-              turnEnd: payload.assistantTurnIndex,
-              chunkType,
-              metadataContains: {
-                assistantMessageId: payload.assistantMessageId,
-                candidateIndex: i,
-              },
-            });
-            if (exists) {
-              incrementSessionChunkWrite("skipped");
-              continue;
-            }
-            await persistSessionMemoryChunk({
-              sessionId: payload.sessionId,
-              characterId: session.characterId,
-              playerId: session.playerId,
-              turnStart: payload.userTurnIndex,
-              turnEnd: payload.assistantTurnIndex,
-              chunkText: candidate.summary,
-              chunkType,
-              metadata,
-              embedding: candidate.embedding,
-            });
-          }
-        }
-        stepStatus = await this.markCompleted(
-          job.id,
-          "session_chunks",
-          payload,
-          stepStatus,
-        );
-      }
-
-      if (!isStepComplete(stepStatus, "durable_memory")) {
-        if (writePlan.durableMemory.write) {
-          for (const candidate of signals.memoryFacts) {
-            if (candidate.memoryScope !== "cross_session") continue;
-            await writeInteractiveMemory({
-              candidate,
-              characterId: session.characterId,
-              playerId: session.playerId,
-              sessionId: payload.sessionId,
-              continuityScope: session.continuityScope,
-              continuityFamily: session.continuityFamily as "main_world" | "au",
-              memoryNamespace: session.memoryNamespace as MemoryNamespace,
-            });
-          }
-        }
-        stepStatus = await this.markCompleted(
-          job.id,
-          "durable_memory",
-          payload,
-          stepStatus,
-        );
-      }
-
-      if (!isStepComplete(stepStatus, "summary_compact")) {
-        const summaryResult = await maybeCompactSessionSummary({
-          session,
-          latestTurnIndex: payload.assistantTurnIndex,
-        });
-        recordMemoryWriteSnapshot({
-          summaryCompaction: {
-            status: summaryResult.status,
-            ...("reason" in summaryResult ? { reason: summaryResult.reason } : {}),
-            ...("lastSummarizedTurnIndex" in summaryResult
-              ? {
-                  lastSummarizedTurnIndex:
-                    summaryResult.lastSummarizedTurnIndex,
-                }
-              : {}),
-          },
-        });
-        stepStatus = await this.markCompleted(
-          job.id,
-          "summary_compact",
-          payload,
-          stepStatus,
-        );
-      }
-
-      await this.completeJob(job.id);
-      recordMemoryWriteSnapshot({ status: "completed" });
-              return {
-                status: "completed" as const,
-                completedSteps: Object.entries(stepStatus)
-                  .filter(([, status]) => status === "completed")
-                  .map(([step]) => step),
-              };
+              userTurnIndex: payload.userTurnIndex,
+              assistantTurnIndex: payload.assistantTurnIndex,
+              attempts: job.attempts,
             },
           });
+
+          if (state.errors && state.errors.length > 0) {
+            const stages = state.errors.map((e: { stage: string }) => e.stage).join(", ");
+            const messages = state.errors.map((e: { stage: string; message: string }) => `${e.stage}: ${e.message}`).join("; ");
+            const retryReason = state.lastRetryReason ? ` (retry reason: ${state.lastRetryReason})` : "";
+            throw new Error(`Post-turn memory graph failed [${stages}]: ${messages}${retryReason}`);
+          }
+
+          // Graph's markJobCompleteNode already called completeJobFn +
+          // recordSnapshotFn({ status: "completed" }).
+          // Preserve the runner-level completion snapshot for symmetry.
+          recordMemoryWriteSnapshot({ status: "completed" });
         },
       );
     } catch (err) {
