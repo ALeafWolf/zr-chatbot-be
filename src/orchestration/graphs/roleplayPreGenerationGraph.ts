@@ -5,6 +5,7 @@ import {
 } from "../graphState/roleplayGraphState";
 import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { ChatSession } from "../../db/schema/chat";
+import { readRerankVariant } from "../../eval/experimentVariants";
 
 export type { RoleplayGraphDeps };
 
@@ -143,6 +144,26 @@ export function createRoleplayPreGenerationGraph(
     return "__next__";
   }
 
+  // ---- variant-aware rerank routing ----------------------------------------
+
+  /**
+   * Choose which rerank node to route to based on RERANK_VARIANT.
+   */
+  function chooseRerankVariant(_state: RoleplayGraphState): string {
+    const variant = readRerankVariant();
+    if (variant === "deterministic_only") return "deterministicContextSelector";
+    if (variant === "hybrid_score") return "hybridScoreRerank";
+    // llm_rerank_v1 and llm_rerank_smaller_model both go through the LLM rerank node
+    return "rerank";
+  }
+
+  const rerankVariantRouteMap = {
+    rerank: "rerank" as const,
+    deterministicContextSelector: "deterministicContextSelector" as const,
+    hybridScoreRerank: "hybridScoreRerank" as const,
+    __error__: "errorSink" as const,
+  };
+
   function afterRerank(state: RoleplayGraphState): string {
     if (state.errors?.length) return "__error__";
     // runLlmRerank succeeded -> ok: true (rerankResult is set)
@@ -164,6 +185,7 @@ export function createRoleplayPreGenerationGraph(
     if (!fn) return {};
 
     // Preserve the original rerank failure diagnostics from the rerank node
+    // When deterministic_only is chosen as variant, there is no prior LLM error
     const llmError = state.rerankLlmError as { fallbackReason: string; rerankMs: number } | undefined;
 
     try {
@@ -194,7 +216,7 @@ export function createRoleplayPreGenerationGraph(
           selectedContext,
           rerankOutput: null,
           rerankFallbackUsed: true,
-          rerankFallbackReason: llmError?.fallbackReason ?? "reranker_timeout_or_failure",
+          rerankFallbackReason: llmError?.fallbackReason ?? "variant_deterministic_only",
           rerankMs: llmError?.rerankMs ?? 0,
           selectorFallbackMs,
           canonChunks: pre.canonChunks,
@@ -206,6 +228,56 @@ export function createRoleplayPreGenerationGraph(
       };
     } catch (err) {
       return { errors: [{ stage: "deterministicContextSelector", message: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+
+  // ---- hybrid score rerank node --------------------------------------------
+
+  async function hybridScoreRerankNode(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
+    if (!state.preRerankContext) return {};
+    const fn = deps.hybridScoreRerankFn;
+    if (!fn) return {};
+    try {
+      const pre = state.preRerankContext as any;
+      const result = await fn({
+        userMessage: pre.userMessage,
+        structuredUserQuery: pre.contextPlannerOutput.structuredUserQuery,
+        plannerIntent: pre.contextPlannerOutput.intent,
+        plannerHints: pre.contextPlannerOutput.retrievalHints,
+        recentTurns: pre.recentTurns,
+        latestTurnDeltaText: pre.latestTurnDeltaText,
+        continuityScope: pre.session.continuityScope,
+        candidates: pre.shortlist.candidates,
+        memories: pre.memories,
+        sessionRecall: pre.sessionRecall,
+        structMemEntries: pre.structMemEntries,
+        structMemConsolidations: pre.structMemConsolidations,
+        openThreads: pre.openThreads,
+        canonChunks: pre.canonChunks,
+        canonScenes: pre.canonScenes,
+        sessionSummary: pre.sessionSummary,
+        latestTurnDelta: pre.latestTurnDelta,
+        memoryCorrections: pre.memoryCorrections,
+        retrievalPlan: pre.retrievalPlan,
+      });
+
+      return {
+        rerankResult: {
+          selectedContext: result.selectedContext,
+          rerankOutput: result.rerankOutput,
+          rerankFallbackUsed: false,
+          rerankFallbackReason: null,
+          rerankMs: result.hybridMs,
+          selectorFallbackMs: undefined,
+          canonChunks: result.canonChunks,
+          canonScenes: result.canonScenes,
+          filteredSessionSummary: result.filteredSessionSummary,
+          filteredLatestTurnDelta: result.filteredLatestTurnDelta,
+          filteredMemoryCorrections: result.filteredMemoryCorrections,
+        },
+      };
+    } catch (err) {
+      return { errors: [{ stage: "hybridScoreRerank", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
 
@@ -223,15 +295,17 @@ export function createRoleplayPreGenerationGraph(
     .addNode("buildPreRerankContext", buildPreRerankContextNode)
     .addNode("rerank", rerankNode)
     .addNode("deterministicContextSelector", deterministicContextSelectorNode)
+    .addNode("hybridScoreRerank", hybridScoreRerankNode)
     .addNode("assembleResolvedContext", assembleResolvedContextNode)
     .addNode("buildPrompt", buildPromptNode)
     .addNode("errorSink", errorSinkNode)
     .addConditionalEdges(START, hasErrors, { __error__: END, __next__: "loadSession" })
     .addConditionalEdges("loadSession", hasErrors, { __error__: END, __next__: "loadCharacterContext" })
     .addConditionalEdges("loadCharacterContext", hasErrors, { __error__: END, __next__: "buildPreRerankContext" })
-    .addConditionalEdges("buildPreRerankContext", hasErrors, { __error__: END, __next__: "rerank" })
+    .addConditionalEdges("buildPreRerankContext", chooseRerankVariant, rerankVariantRouteMap)
     .addConditionalEdges("rerank", afterRerank, rerankRouteMap)
     .addConditionalEdges("deterministicContextSelector", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
+    .addConditionalEdges("hybridScoreRerank", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
     .addConditionalEdges("assembleResolvedContext", hasErrors, { __error__: END, __next__: "buildPrompt" })
     .addEdge("buildPrompt", END)
     .addEdge("errorSink", END)

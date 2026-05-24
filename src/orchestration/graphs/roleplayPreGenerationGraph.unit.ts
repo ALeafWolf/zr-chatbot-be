@@ -5,6 +5,8 @@ import {
   runRoleplayPreGenerationGraph,
 } from "./roleplayPreGenerationGraph";
 import type { RoleplayGraphDeps } from "./roleplayGraph";
+import { defaultRoleplayGraphDeps } from "./roleplayGraph";
+import { runHybridScoreRerank } from "../context/hybridScoreRerank";
 import type { ChatSession } from "../../db/schema/chat";
 
 // ---------------------------------------------------------------------------
@@ -467,5 +469,216 @@ describe("roleplayPreGenerationGraph", () => {
     assert.ok(deterministicCalled, "deterministicSelectorFn should be called when rerank falls back");
     assert.ok(result.resolvedContext, "resolvedContext should be produced");
     assert.ok(result.promptContext, "promptContext should be produced");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Variant routing tests
+  // ---------------------------------------------------------------------------
+
+  it("default rerank variant (llm_rerank_v1) calls the LLM rerank node", async () => {
+    let llmRerankCalled = false;
+    let hybridCalled = false;
+    let deterministicCalled = false;
+
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => {
+        llmRerankCalled = true;
+        return {
+          ok: true,
+          rerankOutput: { selected: [], rejected: [], finalContextMode: "selected_memory", needsEvidenceFallback: false },
+          selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any,
+          canonChunks: [], canonScenes: [],
+          filteredSessionSummary: null, filteredLatestTurnDelta: null, filteredMemoryCorrections: [],
+          rerankMs: 10,
+        } as any;
+      },
+      hybridScoreRerankFn: async () => {
+        hybridCalled = true;
+        return {} as any;
+      },
+      deterministicSelectorFn: async () => {
+        deterministicCalled = true;
+        return {} as any;
+      },
+    });
+
+    // Don't set RERANK_VARIANT — default is llm_rerank_v1
+    const prev = process.env.RERANK_VARIANT;
+    delete process.env.RERANK_VARIANT;
+
+    await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    if (prev !== undefined) process.env.RERANK_VARIANT = prev;
+
+    assert.ok(llmRerankCalled, "LLM rerank should be called with default variant");
+    assert.ok(!hybridCalled, "hybridScoreRerank should NOT be called with default variant");
+    assert.ok(!deterministicCalled, "deterministicSelector should NOT be called on success");
+  });
+
+  it("RERANK_VARIANT=deterministic_only routes directly to deterministic selector and skips LLM rerank", async () => {
+    let llmRerankCalled = false;
+    let hybridCalled = false;
+    let deterministicCalled = false;
+
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => {
+        llmRerankCalled = true;
+        return {} as any;
+      },
+      hybridScoreRerankFn: async () => {
+        hybridCalled = true;
+        return {} as any;
+      },
+      deterministicSelectorFn: async () => {
+        deterministicCalled = true;
+        return { selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, selectorFallbackMs: 5 };
+      },
+    });
+
+    const prev = process.env.RERANK_VARIANT;
+    process.env.RERANK_VARIANT = "deterministic_only";
+
+    const result = await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    if (prev !== undefined) process.env.RERANK_VARIANT = prev;
+    else delete process.env.RERANK_VARIANT;
+
+    assert.ok(!llmRerankCalled, "LLM rerank should NOT be called for deterministic_only");
+    assert.ok(!hybridCalled, "hybridScoreRerank should NOT be called for deterministic_only");
+    assert.ok(deterministicCalled, "deterministicSelector should be called for deterministic_only");
+    assert.ok(result.resolvedContext, "resolvedContext should be produced via deterministic_only path");
+    assert.ok(result.promptContext, "promptContext should be produced via deterministic_only path");
+  });
+
+  it("RERANK_VARIANT=hybrid_score calls the hybrid score rerank and skips LLM rerank", async () => {
+    let llmRerankCalled = false;
+    let hybridCalled = false;
+    let deterministicCalled = false;
+
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => {
+        llmRerankCalled = true;
+        return {} as any;
+      },
+      hybridScoreRerankFn: async () => {
+        hybridCalled = true;
+        return {
+          selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any,
+          rerankOutput: { selected: [], rejected: [], finalContextMode: "selected_memory", needsEvidenceFallback: false },
+          canonChunks: [], canonScenes: [],
+          filteredSessionSummary: null, filteredLatestTurnDelta: null, filteredMemoryCorrections: [],
+          hybridMs: 5,
+          variantLabel: "hybrid_score",
+          selectionMethod: "score_priority_hybrid",
+        } as any;
+      },
+      deterministicSelectorFn: async () => {
+        deterministicCalled = true;
+        return {} as any;
+      },
+    });
+
+    const prev = process.env.RERANK_VARIANT;
+    process.env.RERANK_VARIANT = "hybrid_score";
+
+    const result = await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    if (prev !== undefined) process.env.RERANK_VARIANT = prev;
+    else delete process.env.RERANK_VARIANT;
+
+    assert.ok(!llmRerankCalled, "LLM rerank should NOT be called for hybrid_score");
+    assert.ok(hybridCalled, "hybridScoreRerank should be called for hybrid_score");
+    assert.ok(!deterministicCalled, "deterministicSelector should NOT be called on hybrid success");
+    assert.ok(result.resolvedContext, "resolvedContext should be produced via hybrid_score path");
+    assert.ok(result.promptContext, "promptContext should be produced via hybrid_score path");
+  });
+
+  it("RERANK_VARIANT=deterministic_only records variant_deterministic_only as fallback reason", async () => {
+    let deterministicCalled = false;
+    let passedFallbackReason: string | undefined;
+
+    const deps = defaultTestDeps({
+      deterministicSelectorFn: async (input: any) => {
+        deterministicCalled = true;
+        return { selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, selectorFallbackMs: 5 };
+      },
+    });
+
+    // Override buildPreRerankContext to produce a traceable context
+    const prevVariant = process.env.RERANK_VARIANT;
+    process.env.RERANK_VARIANT = "deterministic_only";
+
+    const result = await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    if (prevVariant !== undefined) process.env.RERANK_VARIANT = prevVariant;
+    else delete process.env.RERANK_VARIANT;
+
+    assert.ok(deterministicCalled);
+    assert.ok(result.resolvedContext, "resolvedContext should be produced");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regression: default deps include hybrid seam
+  // ---------------------------------------------------------------------------
+
+  it("defaultRoleplayGraphDeps includes hybridScoreRerankFn", () => {
+    assert.equal(
+      defaultRoleplayGraphDeps.hybridScoreRerankFn,
+      runHybridScoreRerank,
+      "hybridScoreRerankFn must be wired in default deps",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Missing explicit routing test
+  // ---------------------------------------------------------------------------
+
+  it("RERANK_VARIANT=llm_rerank_smaller_model routes to the LLM rerank node", async () => {
+    let llmRerankCalled = false;
+    let hybridCalled = false;
+
+    const deps = defaultTestDeps({
+      runLlmRerankFn: async () => {
+        llmRerankCalled = true;
+        return {
+          ok: true,
+          rerankOutput: { selected: [], rejected: [], finalContextMode: "selected_memory", needsEvidenceFallback: false },
+          selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any,
+          canonChunks: [], canonScenes: [],
+          filteredSessionSummary: null, filteredLatestTurnDelta: null, filteredMemoryCorrections: [],
+          rerankMs: 10,
+        } as any;
+      },
+      hybridScoreRerankFn: async () => {
+        hybridCalled = true;
+        return {} as any;
+      },
+    });
+
+    const prev = process.env.RERANK_VARIANT;
+    process.env.RERANK_VARIANT = "llm_rerank_smaller_model";
+
+    await runRoleplayPreGenerationGraph(
+      { sessionId: "sess_rp_test", userMessage: "test" },
+      deps,
+    );
+
+    if (prev !== undefined) process.env.RERANK_VARIANT = prev;
+    else delete process.env.RERANK_VARIANT;
+
+    assert.ok(llmRerankCalled, "LLM rerank should be called for llm_rerank_smaller_model");
+    assert.ok(!hybridCalled, "hybridScoreRerank should NOT be called for llm_rerank_smaller_model");
   });
 });

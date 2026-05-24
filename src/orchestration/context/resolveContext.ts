@@ -102,6 +102,7 @@ import {
   recordRetrievalSnapshot,
   type EvalMemorySource,
 } from "../../eval/evalSnapshots";
+import { readRerankVariant } from "../../eval/experimentVariants";
 import {
   detectMotifSignal,
   shouldProbeStructMemMotif,
@@ -340,6 +341,8 @@ export async function assembleResolvedContext(
       ? filteredCanonScenes.map((s) => s.sceneId)
       : filteredCanonChunks.map((c) => c.sceneId ?? c.id);
 
+  const currentRerankVariant = readRerankVariant();
+
   recordRetrievalSnapshot({
     query: {
       rawUserMessage: userMessage,
@@ -384,6 +387,8 @@ export async function assembleResolvedContext(
             rejectedCount: rerankOutput.rejected.length,
             finalContextMode: rerankOutput.finalContextMode,
             needsEvidenceFallback: rerankOutput.needsEvidenceFallback,
+            rerankVariant: currentRerankVariant,
+            fallbackReason: rerankFallbackReason ?? undefined,
           },
         }
       : {
@@ -395,6 +400,8 @@ export async function assembleResolvedContext(
             finalContextMode: "recent_only",
             needsEvidenceFallback: false,
             fallbackUsed: true,
+            rerankVariant: currentRerankVariant,
+            fallbackReason: rerankFallbackReason ?? "variant_deterministic_only",
           },
         }),
   });

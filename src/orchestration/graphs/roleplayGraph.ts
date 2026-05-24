@@ -43,6 +43,7 @@ import {
 } from "../generation/generateAndValidate";
 import { filterDrafterFacingIssues } from "../generation/validationFlowHelpers";
 import { runDeterministicSelector, runLlmRerank } from "../context/rerankContext";
+import { runHybridScoreRerank } from "../context/hybridScoreRerank";
 
 // ---------------------------------------------------------------------------
 // Dependency injection shape
@@ -72,6 +73,8 @@ export interface RoleplayGraphDeps {
   /** LLM-only rerank seam (pre-generation graph). On success stores result; on failure routes to deterministicContextSelector. */
   runLlmRerankFn?: typeof runLlmRerank;
   deterministicSelectorFn?: typeof runDeterministicSelector;
+  /** Hybrid score rerank seam (pre-generation graph variant path). */
+  hybridScoreRerankFn?: typeof runHybridScoreRerank;
   generateDraftFn?: typeof generateDraft;
   validateDraftFn?: typeof validateDraft;
   rewriteDraftFn?: typeof rewriteDraft;
@@ -107,6 +110,7 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
   rerankContextFn,
   runLlmRerankFn: runLlmRerank,
   deterministicSelectorFn: runDeterministicSelector,
+  hybridScoreRerankFn: runHybridScoreRerank,
   generateDraftFn: generateDraft,
   validateDraftFn: validateDraft,
   rewriteDraftFn: rewriteDraft,

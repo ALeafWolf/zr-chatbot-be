@@ -17,12 +17,24 @@ import { runResponseValidator } from "../llm/validation/runResponseValidator";
 import type { ValidationResult } from "../llm/validation/runResponseValidator";
 import type { AttributionJudgeResult } from "../llm/validation/runAttributionJudge";
 import {
+  buildRerankAssertionContext,
   checkAssertion,
   type AssertionContext,
 } from "./evalAssertions";
 import type { Assertion, Scenario } from "./evalTypes";
 import { flushLangSmithClient } from "./evalProcessDrain";
 import { loadScenariosFromFile, STUB_REPLY } from "./loadEvalScenarios";
+import {
+  rerankSelectionPrecision,
+  rerankSelectionRecall,
+  rerankRejectionAccuracy,
+  rerankContextModeAccuracy,
+  rerankCompositeScore,
+} from "./evaluators/rerankEvaluators";
+import {
+  buildExperimentVariantMetadata,
+  readAndValidateExperimentVariants,
+} from "./experimentVariants";
 import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { runAgentEval } from "./langsmith/runAgentEval";
@@ -184,20 +196,32 @@ function assertionsEvaluator(args: {
   const reply = typeof args.outputs.reply === "string" ? args.outputs.reply : "";
   const validation = args.outputs.validation as ValidationResult | undefined;
 
-  const ctx: AssertionContext | undefined =
-    args.outputs.mode === "retrieval"
-      ? {
-          retrievedCanon:
-            typeof args.outputs.retrieved_canon === "string"
-              ? args.outputs.retrieved_canon
-              : "",
-          queryRewrite: args.outputs.query_rewrite as QueryRewriteResult | undefined,
-          scene_anchor_count:
-            typeof args.outputs.scene_anchor_count === "number"
-              ? args.outputs.scene_anchor_count
-              : undefined,
-        }
-      : undefined;
+  const outputs = args.outputs as Record<string, unknown>;
+  const mode = outputs.mode as string | undefined;
+
+  let ctx: AssertionContext | undefined;
+
+  if (mode === "retrieval") {
+    ctx = {
+      retrievedCanon:
+        typeof outputs.retrieved_canon === "string"
+          ? outputs.retrieved_canon
+          : "",
+      queryRewrite: outputs.query_rewrite as QueryRewriteResult | undefined,
+      scene_anchor_count:
+        typeof outputs.scene_anchor_count === "number"
+          ? outputs.scene_anchor_count
+          : undefined,
+    };
+  } else if (mode === "agent_turn") {
+    const retrieval = outputs.retrieval as
+      | { rerank?: { selected?: Array<{ id: string; source: string }>; finalContextMode?: string; fallbackUsed?: boolean } }
+      | undefined;
+    const rerankCtx = buildRerankAssertionContext(retrieval?.rerank);
+    if (rerankCtx) {
+      ctx = rerankCtx;
+    }
+  }
 
   const results: EvaluationResult[] = [];
   let allPass = true;
@@ -295,6 +319,16 @@ async function main(): Promise<void> {
 
   try {
     const { version } = loadScenariosFromFile();
+    const variants = readAndValidateExperimentVariants();
+
+    const variantSuffix = [
+      variants.rerankVariant !== "llm_rerank_v1" ? `rerank:${variants.rerankVariant}` : "",
+      variants.retrievalVariant !== "tier3_current" ? `retrieval:${variants.retrievalVariant}` : "",
+      variants.validatorVariant !== "current" ? `validator:${variants.validatorVariant}` : "",
+      variants.contextPlannerVariant !== "current" ? `planner:${variants.contextPlannerVariant}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     const experiment = await evaluate(evalTarget, {
       client,
@@ -322,13 +356,73 @@ async function main(): Promise<void> {
             example: args.example,
             outputs: args.outputs,
           }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          rerankSelectionPrecision({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          rerankSelectionRecall({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          rerankRejectionAccuracy({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          rerankContextModeAccuracy({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          rerankCompositeScore({
+            example: args.example,
+            outputs: args.outputs,
+          }),
       ],
-      experimentPrefix: "zuoran-phase1",
+      experimentPrefix: variantSuffix
+        ? `zuoran-phase1 (${variantSuffix})`
+        : "zuoran-phase1",
       maxConcurrency: 1,
-      description: `Phase 1 regression: scenario assertions (scenarios v${version})`,
+      description: variantSuffix
+        ? `Phase 1 regression: scenario assertions (scenarios v${version}) — variants [${variantSuffix}]`
+        : `Phase 1 regression: scenario assertions (scenarios v${version})`,
       metadata: {
         scenarios_file_version: version,
         langsmith_project: env.LANGSMITH_PROJECT,
+        ...buildExperimentVariantMetadata(),
       },
     });
 
