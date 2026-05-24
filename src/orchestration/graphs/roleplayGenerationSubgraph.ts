@@ -4,7 +4,7 @@ import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
 import type { OrchestrationStreamEvent, Thought } from "../thought/thoughtTypes";
 import { filterDrafterFacingIssues } from "../generation/validationFlowHelpers";
-import { __testing as genTesting } from "../generation/generateAndValidate";
+import { __testing as genTesting, buildValidatorContext } from "../generation/generateAndValidate";
 
 /**
  * Create a generation subgraph that runs generation/validation/rewrite/deflection
@@ -78,8 +78,33 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
     const fn = deps.validateDraftFn; if (!fn) return {};
     const dc = (state.rewriteDraft as any)?.content ?? (state.draft as any)?.content; if (!dc) return {};
     try {
-      const a = state.rewriteDraft ? 2 : 1; const po = (state.characterContext as any)?.personaOverlay ?? {};
-      const r = await fn(dc, { characterId: (state.session as any)?.characterId ?? "", continuityScope: (state.session as any)?.continuityScope ?? "main", mode: (state.session as any)?.mode ?? "canonical_live", maxNsfwLevel: po.max_nsfw_level ?? "none", escalationRule: po.escalation_rule ?? "", outOfScopeChapterBehavior: po.out_of_scope_chapter_behavior ?? "", recentContext: "", retrievedCanonNarrative: "", wasCanonInjected: false, selectedMemorySources: [], signal: undefined } as any, a);
+      const a = state.rewriteDraft ? 2 : 1;
+      const session = state.session as any;
+      const characterContext = state.characterContext as any;
+      const promptContext = state.promptContext as any;
+      const ctx = state as any;
+
+      const validatorCtx = buildValidatorContext({
+        session: {
+          characterId: session?.characterId ?? "",
+          continuityScope: session?.continuityScope ?? "main",
+          mode: session?.mode ?? "canonical_live",
+        },
+        personaOverlay: {
+          max_nsfw_level: characterContext?.personaOverlay?.max_nsfw_level ?? "none",
+          escalation_rule: characterContext?.personaOverlay?.escalation_rule ?? "",
+          out_of_scope_chapter_behavior: characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
+        },
+        promptContext: {
+          conversationHistory: promptContext?.conversationHistory ?? [],
+          retrievedCanonNarrative: promptContext?.retrievedCanonNarrative,
+          selectedMemorySources: promptContext?.selectedMemorySources,
+        },
+        userMessage: state.userMessage,
+        signal: ctx._signal,
+      });
+
+      const r = await fn(dc, validatorCtx as any, a);
       return a === 1 ? { validation1Result: r } : { validation2Result: r };
     } catch (e: any) { return { errors: [{ stage: "validateDraft", message: String(e) }] as any }; }
   }

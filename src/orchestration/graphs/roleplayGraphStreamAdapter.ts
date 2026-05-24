@@ -40,6 +40,10 @@ export interface RoleplayGraphStreamAdapterDeps {
    * Optional generation graph deps. When provided, the adapter builds a
    * generation subgraph and invokes it instead of `runGeneration`, making
    * validation/rewrite/deflection decisions visible in LangSmith traces.
+   *
+   * ⚠️ Experimental: this is a secondary streaming mechanism based on shared
+   * event polling. It must remain behind the ROLEPLAY_GRAPH_STREAM_ENABLED
+   * feature flag until parity with the direct generation path is proven.
    */
   generationGraphDeps?: import("./roleplayGraph").RoleplayGraphDeps;
   /** Turn persistence. */
@@ -284,10 +288,13 @@ export async function* runRoleplayTurnStreamViaGraph(
 
       // Check for unhandled errors from the generation subgraph.
       // When errorSink is reached (non-tool-loop errors), errors exist but
-      // generationResult does not — yield an error event and skip persistence.
+      // generationResult does not — yield a safe generic error event and
+      // skip persistence. Internal details remain in logs/traces/tests.
       if (genState.errors && genState.errors.length > 0 && !genState.generationResult) {
-        const errMsg = genState.errors.map((e: any) => `[${e.stage}] ${e.message}`).join("; ");
-        yield { event: "error", data: { message: errMsg } };
+        yield {
+          event: "error",
+          data: { message: "The roleplay graph stream failed before completion." },
+        };
         return;
       }
 
@@ -372,7 +379,12 @@ export async function* runRoleplayTurnStreamViaGraph(
       },
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    yield { event: "error", data: { message } };
+    // Safe generic SSE error: internal details remain available through
+    // logs, traces, and test assertions but are not leaked to the frontend.
+    console.error("[roleplayGraphStreamAdapter] unhandled error:", err);
+    yield {
+      event: "error",
+      data: { message: "The roleplay graph stream failed before completion." },
+    };
   }
 }

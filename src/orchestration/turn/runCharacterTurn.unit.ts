@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { env, parseEnabledFlag } from "../../config/env";
 import { createRoleplayStreamFn } from "./runCharacterTurn";
+import { createRoleplayGraph } from "../graphs/roleplayGraph";
 import type { RoleplayGraphStreamAdapterDeps } from "../graphs/roleplayGraphStreamAdapter";
 import type { PreGenerationResult } from "../graphs/roleplayPreGenerationGraph";
 import type { CharacterTurnSseEvent } from "./runCharacterTurn";
@@ -217,6 +218,37 @@ describe("createRoleplayStreamFn", () => {
       graphPathCalled,
       false,
       "graph adapter should NOT be called when flag is false",
+    );
+  });
+
+  it("production graph stream path is pre-generation/adapter based, NOT createRoleplayGraph()", async () => {
+    let preGenCalled = false;
+
+    const deps: RoleplayGraphStreamAdapterDeps = {
+      ...minimalFakeDeps,
+      runPreGeneration: async (input, deps) => {
+        preGenCalled = true;
+        return fakePreGenerationResult();
+      },
+    };
+
+    const streamFn = createRoleplayStreamFn(true, deps);
+    await collect(
+      streamFn({
+        sessionId: "sess_test",
+        userMessage: "hello",
+        session: fakeSession(),
+      }),
+    );
+
+    assert.ok(
+      preGenCalled,
+      "production graph stream must invoke runPreGeneration (adapter based), NOT createRoleplayGraph()",
+    );
+    // createRoleplayGraph is dev/smoke-only — verify the runtime marker exists
+    assert.ok(
+      (createRoleplayGraph as any).__devSmokeOnly,
+      "createRoleplayGraph must be tagged as dev/smoke-only, not used by production stream",
     );
   });
 });

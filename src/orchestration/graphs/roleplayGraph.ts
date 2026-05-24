@@ -34,6 +34,7 @@ import {
 import { buildPreRerankContext, assembleResolvedContext } from "../context/resolveContext";
 import { rerankContext as rerankContextFn } from "../context/rerankContext";
 import {
+  buildValidatorContext,
   generateDraft,
   validateDraft,
   rewriteDraft,
@@ -121,10 +122,46 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
 // Roleplay graph factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a coarse roleplay graph that includes generation, validation,
+ * deflection, persistence, and wake-post-turn nodes.
+ *
+ * ⚠️ DEV/SMOKE-ONLY — NOT the production stream path.
+ *
+ * This graph is useful for development and smoke testing, but it is NOT
+ * behavior-equivalent to the production stream path (direct generation or
+ * graph stream adapter). The production graph stream adapter uses the
+ * pre-generation graph (see `runRoleplayPreGenerationGraph`) and delegates
+ * generation/persistence to the existing stream adapters.
+ *
+ * Known gaps vs the production stream path:
+ * - Fresh thought caches/arrays (`_cache`, `_thoughtsAcc`) instead of shared
+ *   per-request instances.
+ * - Hardcoded `isFirstUserTurn: false` — does not detect first-turn metadata.
+ * - Persistence uses `thoughts: []` — recall thoughts are not accumulated.
+ * - Drained generation via `runGeneration()` without stream event semantics.
+ * - Validation context now uses the shared `buildValidatorContext()` helper
+ *   (fixed in Task Group 2), which closes the original parity gap.
+ *
+ * Production graph stream routing (`createRoleplayStreamFn` in
+ * `runCharacterTurn.ts`) does NOT use this function. It routes through
+ * `runRoleplayPreGenerationGraph` + optional `createGenerationSubgraph`.
+ */
 export function createRoleplayGraph(
   deps: RoleplayGraphDeps = defaultRoleplayGraphDeps,
+): ReturnType<typeof createRoleplayGraphImpl> {
+  const graph = createRoleplayGraphImpl(deps);
+  return graph;
+}
+
+/** Runtime marker: this function is dev/smoke-only, not the production stream path. */
+(createRoleplayGraph as any).__devSmokeOnly = true;
+
+/** @internal */
+function createRoleplayGraphImpl(
+  deps: RoleplayGraphDeps = defaultRoleplayGraphDeps,
 ) {
-  // ---- existing nodes -------------------------------------------------------
+  // ---- nodes ---------------------------------------------------------------
 
   async function loadSessionNode(
     state: RoleplayGraphState,
@@ -242,21 +279,32 @@ export function createRoleplayGraph(
 
     try {
       const attempt = state.rewriteDraft ? 2 : 1;
-      const personaOverlay = (state.characterContext as any)?.personaOverlay ?? {};
-      const validatorInput = {
-        characterId: state.session?.characterId ?? "",
-        continuityScope: state.session?.continuityScope ?? "main",
-        mode: state.session?.mode ?? "canonical_live",
-        maxNsfwLevel: personaOverlay.max_nsfw_level ?? "none",
-        escalationRule: personaOverlay.escalation_rule ?? "",
-        outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior ?? "",
-        recentContext: "",
-        retrievedCanonNarrative: "",
-        wasCanonInjected: false,
-        selectedMemorySources: [],
-        signal: undefined,
-      };
-      const result = await fn(draftContent, validatorInput as any, attempt);
+      const session = state.session as any;
+      const characterContext = state.characterContext as any;
+      const promptContext = state.promptContext as any;
+      const ctx = state as any;
+
+      const validatorContext = buildValidatorContext({
+        session: {
+          characterId: session?.characterId ?? "",
+          continuityScope: session?.continuityScope ?? "main",
+          mode: session?.mode ?? "canonical_live",
+        },
+        personaOverlay: {
+          max_nsfw_level: characterContext?.personaOverlay?.max_nsfw_level ?? "none",
+          escalation_rule: characterContext?.personaOverlay?.escalation_rule ?? "",
+          out_of_scope_chapter_behavior: characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
+        },
+        promptContext: {
+          conversationHistory: promptContext?.conversationHistory ?? [],
+          retrievedCanonNarrative: promptContext?.retrievedCanonNarrative,
+          selectedMemorySources: promptContext?.selectedMemorySources,
+        },
+        userMessage: state.userMessage,
+        signal: ctx._signal,
+      });
+
+      const result = await fn(draftContent, validatorContext as any, attempt);
       if (attempt === 1) return { validation1Result: result };
       return { validation2Result: result };
     } catch (err) {

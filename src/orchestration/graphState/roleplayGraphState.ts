@@ -57,13 +57,16 @@ export const RoleplayGraphStateSchema = z.object({
   /** Set before routing to safeDeflection to track the reason. */
   deflectionReason: z.string().optional(),
 
-  /** Error accumulator. */
+  /** Error accumulator. Uses passthrough() so graph routing metadata
+   *  such as `toolLoopExceeded` survives state normalization. */
   errors: z
     .array(
-      z.object({
-        stage: z.string(),
-        message: z.string(),
-      }),
+      z
+        .object({
+          stage: z.string(),
+          message: z.string(),
+        })
+        .passthrough(),
     )
     .optional(),
 

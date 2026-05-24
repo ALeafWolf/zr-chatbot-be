@@ -396,4 +396,16 @@ describe("roleplayGraph", () => {
     assert.deepStrictEqual((state.generationResult as any).validatorResult.issues, []);
     assert.strictEqual((state.generationResult as any).wasRewritten, true);
   });
+
+  // ---------------------------------------------------------------------------
+  // Dev/smoke-only posture test
+  // ---------------------------------------------------------------------------
+
+  it("createRoleplayGraph is dev/smoke-only and not the production graph stream path", () => {
+    // Runtime marker confirms dev/smoke-only posture
+    assert.ok(
+      (createRoleplayGraph as any).__devSmokeOnly,
+      "createRoleplayGraph must be tagged as dev/smoke-only",
+    );
+  });
 });

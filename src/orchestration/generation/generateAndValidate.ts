@@ -595,32 +595,13 @@ export async function* generateAndValidateStream(input: {
     yield { type: "thought", thought };
   }
 
-  const priorTranscript = promptContext.conversationHistory
-    .slice(-4)
-    .map((m) => `${m.role}: ${m.content}`)
-    .join("\n");
-  const recentContextStr = [
-    "Recent transcript (last messages from session, before this turn):",
-    priorTranscript || "(none)",
-    "",
-    "Current user message (this turn):",
-    `user: ${userMessage}`,
-  ].join("\n");
-
-  const validatorInput = {
-    characterId: session.characterId,
-    continuityScope: session.continuityScope,
-    mode: session.mode,
-    maxNsfwLevel: personaOverlay.max_nsfw_level,
-    escalationRule: personaOverlay.escalation_rule,
-    outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior,
-    recentContext: recentContextStr,
-    retrievedCanonNarrative: promptContext.retrievedCanonNarrative ?? "",
-    wasCanonInjected:
-      (promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
-    selectedMemorySources: promptContext.selectedMemorySources ?? [],
+  const validatorInput = buildValidatorContext({
+    session,
+    personaOverlay,
+    promptContext,
+    userMessage,
     signal,
-  };
+  });
 
   const toolCtx: ToolCtx = {
     sessionId: session.sessionId,
@@ -857,9 +838,65 @@ export async function generateAndValidate(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Shared validator context builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build `Omit<ValidatorInput, "draft">` from session, prompt context, and
+ * persona overlay fields.
+ *
+ * This helper is shared between the direct generation path and the graph
+ * generation path to ensure validation receives the same context fields.
+ */
+export function buildValidatorContext(input: {
+  session: { characterId: string; continuityScope: string; mode: string };
+  personaOverlay: {
+    max_nsfw_level: string;
+    escalation_rule: string;
+    out_of_scope_chapter_behavior: string;
+  };
+  promptContext: {
+    conversationHistory?: Array<{ role: string; content: string }>;
+    retrievedCanonNarrative?: string;
+    selectedMemorySources?: Array<unknown>;
+  };
+  userMessage: string;
+  signal?: AbortSignal;
+}): Omit<ValidatorInput, "draft"> {
+  const priorTranscript = (input.promptContext.conversationHistory ?? [])
+    .slice(-4)
+    .map((m) => `${m.role}: ${m.content}`)
+    .join("\n");
+
+  const recentContextStr = [
+    "Recent transcript (last messages from session, before this turn):",
+    priorTranscript || "(none)",
+    "",
+    "Current user message (this turn):",
+    `user: ${input.userMessage}`,
+  ].join("\n");
+
+  return {
+    characterId: input.session.characterId,
+    continuityScope: input.session.continuityScope,
+    mode: input.session.mode,
+    maxNsfwLevel: input.personaOverlay.max_nsfw_level,
+    escalationRule: input.personaOverlay.escalation_rule,
+    outOfScopeChapterBehavior: input.personaOverlay.out_of_scope_chapter_behavior,
+    recentContext: recentContextStr,
+    retrievedCanonNarrative: input.promptContext.retrievedCanonNarrative ?? "",
+    wasCanonInjected:
+      (input.promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
+    selectedMemorySources: (input.promptContext.selectedMemorySources ?? []) as any,
+    signal: input.signal,
+  };
+}
+
 export const __testing = {
   traceInputsForGenerationToolLoop,
   decorateUserMessageForGeneration,
   buildToolMessages,
   buildRewriteToolMessages,
+  buildValidatorContext,
 };

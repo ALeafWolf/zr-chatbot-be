@@ -100,6 +100,11 @@ const envSchema = z.object({
   // stream adapter (runRoleplayTurnStreamViaGraph) instead of the existing
   // direct stream path. The graph path preserves the same SSE event order,
   // recall thought behavior, and persistence semantics.
+  //
+  // ⚠️ Startup-only: this flag is read at module load time. Changing the
+  // environment variable at runtime does NOT switch an already-loaded process.
+  // ROLEPLAY_GRAPH_STREAM_ENABLED is read in runCharacterTurn.ts:
+  //   const roleplayStreamFn = createRoleplayStreamFn(env.ROLEPLAY_GRAPH_STREAM_ENABLED);
   ROLEPLAY_GRAPH_STREAM_ENABLED: z
     .string()
     .default("false")

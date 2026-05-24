@@ -135,6 +135,17 @@ function fakePreGenerationResult(
   };
 }
 
+const fakeGenResultData = {
+  content: "Test response for path parity.",
+  validatorResult: {
+    in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false,
+  },
+  wasRewritten: false,
+  wasDeflected: false,
+  inputTokens: 100,
+  outputTokens: 50,
+};
+
 const fakePersistOutput = {
   persistedRoute: "roleplay_turn" as const,
   persisted: {
@@ -910,8 +921,8 @@ describe("roleplayGraphStreamAdapter", () => {
     assert.strictEqual((events[0] as any).event, "error", "should emit error event");
     assert.match(
       (events[0] as any).data.message,
-      /LLM call failed/,
-      "error message should propagate",
+      /failed before completion/,
+      "error message should be safe/generic, not raw error details",
     );
     assert.strictEqual(persistCalled, false, "persistTurn should not be called");
   });
@@ -955,9 +966,97 @@ describe("roleplayGraphStreamAdapter", () => {
     assert.strictEqual((events[0] as any).event, "error", "should emit error event");
     assert.match(
       (events[0] as any).data.message,
-      /Validator API error/,
-      "error message should propagate",
+      /failed before completion/,
+      "error message should be safe/generic, not raw error details",
     );
     assert.strictEqual(persistCalled, false, "persistTurn should not be called");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Path parity tests
+  // ---------------------------------------------------------------------------
+
+  // Helper: minimal RoleplayGraphDeps for the generation subgraph path test
+  function makeSubgraphDeps(): RoleplayGraphDeps {
+    return {
+      loadSession: async () => ({}) as any,
+      loadCharacterContext: async () => ({}) as any,
+      resolveContext: async () => ({}) as any,
+      buildPromptContext: async () => ({}) as any,
+      runGeneration: async function* () {},
+      persistTurn: async () => ({}) as any,
+      generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
+      generateDraftFn: async function* () {
+        return { content: "Graph generated response.", inputTokens: 100, outputTokens: 50 };
+      } as any,
+      validateDraftFn: async () => ({ in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }),
+      rewriteDraftFn: async function* () { return { content: "", inputTokens: 0, outputTokens: 0 }; } as any,
+      safeDeflectionFn: async function* () { return { content: "", wasDeflected: true, wasRewritten: false, inputTokens: 0, outputTokens: 0, validatorResult: {} } as any; } as any,
+    };
+  }
+
+  it("3-path parity: direct generation path produces delta+done events", async () => {
+    const deps = makeAdapterDeps({
+      runGeneration: async function* () {
+        yield { event: "thought" as const, data: { kind: "recall" as const, text: "recall", ts: Date.now() } };
+        yield { event: "tool_call" as const, data: { id: "t1", name: "test_tool", args: {} } };
+        yield { event: "tool_result" as const, data: { id: "t1", name: "test_tool", summary: "done" } };
+        yield { event: "_complete" as const, data: fakeGenResultData };
+      },
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    assert.ok(events.length > 1, "direct path should produce multiple events");
+    const thoughtEvents = events.filter((e) => e.event === "thought");
+    assert.ok(thoughtEvents.length >= 1, "direct path should emit at least one thought event");
+    const doneEvent = events.find((e) => e.event === "done");
+    assert.ok(doneEvent, "direct path should emit a done event");
+    const deltaEvents = events.filter((e) => e.event === "delta");
+    assert.ok(deltaEvents.length > 0, "direct path should emit delta events");
+  });
+
+  it("3-path parity: graph pre-generation + direct generation path produces delta+done events", async () => {
+    const deps = makeAdapterDeps({
+      generationGraphDeps: undefined,
+      runGeneration: async function* () {
+        yield { event: "_complete" as const, data: fakeGenResultData };
+      },
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    const deltaEvents = events.filter((e) => e.event === "delta");
+    assert.ok(deltaEvents.length > 0, "pre-gen+direct path should emit delta events");
+    const doneEvent = events.find((e) => e.event === "done");
+    assert.ok(doneEvent, "pre-gen+direct path should emit a done event");
+  });
+
+  it("3-path parity: graph pre-generation + generation subgraph path produces delta+done events", async () => {
+    const deps = makeAdapterDeps({
+      generationGraphDeps: makeSubgraphDeps(),
+    });
+
+    const events = await collect(
+      runRoleplayTurnStreamViaGraph(
+        { sessionId: "sess_rp_test", userMessage: "hello", session: fakeSession() },
+        deps,
+      ),
+    );
+
+    const deltaEvents = events.filter((e) => e.event === "delta");
+    assert.ok(deltaEvents.length > 0, "pre-gen+subgraph path should emit delta events");
+    const doneEvent = events.find((e) => e.event === "done");
+    assert.ok(doneEvent, "pre-gen+subgraph path should emit a done event");
   });
 });
