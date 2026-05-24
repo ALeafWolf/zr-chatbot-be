@@ -6,13 +6,13 @@ import { env } from "../config/env";
 import { BackgroundRunner } from "./backgroundRunner";
 import {
   failStructMemConsolidationJob,
-  runStructMemConsolidation,
 } from "../memory/structmem/structmemConsolidationRepo";
 import { withTraceContext } from "../observability/langsmithTracing";
 import {
   buildTraceBaseMetadata,
   hashPlayerId,
 } from "../observability/traceMetadata";
+import { getStructMemConsolidationGraph } from "../orchestration/graphs/structMemConsolidationGraph";
 
 async function claimStructMemConsolidationJobImpl(
   workerId: string,
@@ -79,9 +79,24 @@ class StructMemConsolidationRunner extends BackgroundRunner {
     super("structmemConsolidationRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
   }
 
+  /** Override in tests to inject a fake graph. */
+  protected createGraph(): ReturnType<typeof getStructMemConsolidationGraph> {
+    return getStructMemConsolidationGraph();
+  }
+
+  /** Override in tests to intercept failure path without touching DB. */
+  protected async onJobFailed(job: StructMemConsolidationJob, err: unknown): Promise<void> {
+    await failStructMemConsolidationJob(job, err);
+  }
+
+  /** Override in tests to return a controlled sequence of jobs. */
+  protected async claimJob(): Promise<StructMemConsolidationJob | null> {
+    return claimStructMemConsolidationJob(this.workerId);
+  }
+
   protected async runLoop(): Promise<void> {
     while (true) {
-      const job = await claimStructMemConsolidationJob(this.workerId);
+      const job = await this.claimJob();
       if (!job) return;
       try {
         await withTraceContext(
@@ -101,11 +116,50 @@ class StructMemConsolidationRunner extends BackgroundRunner {
             turn: "background",
           },
           async () => {
-            await runStructMemConsolidation(job);
+            const graph = this.createGraph();
+            const state = await graph.invoke(
+              { jobId: job.id },
+              {
+                tags: [
+                  "turn:background",
+                  "subsystem:structmem",
+                  "graph:structMemConsolidationGraph",
+                ],
+                metadata: {
+                  structmemConsolidationJobId: job.id,
+                  sessionId: job.sessionId,
+                  characterId: job.characterId,
+                  playerIdHash: hashPlayerId(job.playerId),
+                  memoryNamespace: job.memoryNamespace,
+                  turnStart: job.turnStart,
+                  turnEnd: job.turnEnd,
+                  attemptCount: job.attemptCount,
+                  maxAttempts: job.maxAttempts,
+                },
+              },
+            );
+
+            if (state.errors && state.errors.length > 0) {
+              const stages = state.errors
+                .map((e: { stage: string }) => e.stage)
+                .join(", ");
+              const messages = state.errors
+                .map(
+                  (e: { stage: string; message: string }) =>
+                    `${e.stage}: ${e.message}`,
+                )
+                .join("; ");
+              const failReason = state.failureReason
+                ? ` (failure: ${state.failureReason})`
+                : "";
+              throw new Error(
+                `StructMem consolidation graph failed [${stages}]: ${messages}${failReason}`,
+              );
+            }
           },
         );
       } catch (err) {
-        await failStructMemConsolidationJob(job, err);
+        await this.onJobFailed(job, err);
         console.error(
           `[structmemConsolidationRunner] job ${job.id} failed:`,
           err,

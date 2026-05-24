@@ -691,3 +691,129 @@ export async function failStructMemConsolidationJob(
     errorMessage: message.slice(0, 8000),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Graph-safe seams (TG1)
+// ---------------------------------------------------------------------------
+
+/** Load a consolidation job by id. Returns null if not found. */
+export async function loadConsolidationJobById(
+  jobId: string,
+): Promise<StructMemConsolidationJob | null> {
+  const rows = await db
+    .select()
+    .from(structmemConsolidationJobs)
+    .where(eq(structmemConsolidationJobs.id, jobId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/** Select consolidation buffer for a session. Traced wrapper + result type. */
+export type SelectConsolidationBufferResult = Awaited<
+  ReturnType<typeof selectConsolidationBufferImpl>
+>;
+export const selectConsolidationBufferForGraph =
+  selectConsolidationBufferTraced;
+
+/** Mark a consolidation job completed or skipped (graph-friendly status subset). */
+export async function markConsolidationJob(
+  jobId: string,
+  status: "completed" | "skipped",
+): Promise<void> {
+  await markJob({ jobId, status });
+}
+
+/**
+ * Persist current-session consolidation in a transaction.
+ * Extracted from runStructMemConsolidationImpl for graph reuse.
+ */
+export interface PersistCurrentSessionConsolidationInput {
+  jobId: string;
+  sessionId: string;
+  characterId: string;
+  playerId: string;
+  memoryNamespace: string;
+  consolidationId: string;
+  summaryText: string;
+  summaryJson: Record<string, unknown>;
+  embedding: number[];
+  turnStart: number | null;
+  turnEnd: number | null;
+  confidenceScore: number | null;
+  sourceRows: Array<{
+    entry: { id: string; eventId: string };
+    sourceRole: "buffer" | "semantic_seed";
+  }>;
+}
+
+export interface PersistCurrentSessionConsolidationResult {
+  consolidationId: string;
+  sourceEntryCount: number;
+  sourceLinkCount: number;
+}
+
+export async function persistCurrentSessionConsolidation(
+  input: PersistCurrentSessionConsolidationInput,
+): Promise<PersistCurrentSessionConsolidationResult> {
+  const now = new Date();
+  const sourceEntryIds = [
+    ...new Set(input.sourceRows.map((r) => r.entry.id)),
+  ];
+
+  await db.transaction(async (tx) => {
+    await tx.insert(structmemConsolidations).values({
+      id: input.consolidationId,
+      sessionId: input.sessionId,
+      characterId: input.characterId,
+      playerId: input.playerId,
+      memoryNamespace: input.memoryNamespace,
+      scope: "current_session",
+      summaryText: input.summaryText,
+      summaryJson: input.summaryJson,
+      embedding: input.embedding,
+      turnStart: input.turnStart,
+      turnEnd: input.turnEnd,
+      confidenceScore: input.confidenceScore,
+      promotionStatus: "none",
+      createdAt: now,
+    });
+
+    if (input.sourceRows.length > 0) {
+      await tx.insert(structmemConsolidationSources).values(
+        input.sourceRows.map((r) => ({
+          consolidationId: input.consolidationId,
+          entryId: r.entry.id,
+          eventId: r.entry.eventId,
+          sourceRole: r.sourceRole,
+          createdAt: now,
+        })),
+      );
+    }
+
+    await tx
+      .update(structmemEntries)
+      .set({
+        firstConsolidatedAt: sql`COALESCE(${structmemEntries.firstConsolidatedAt}, ${now})`,
+        consolidationCount: sql`${structmemEntries.consolidationCount} + 1`,
+      })
+      .where(inArray(structmemEntries.id, sourceEntryIds));
+  });
+
+  return {
+    consolidationId: input.consolidationId,
+    sourceEntryCount: sourceEntryIds.length,
+    sourceLinkCount: input.sourceRows.length,
+  };
+}
+
+/** Load a chat session by id. Returns null if not found. */
+export async function loadChatSession(
+  sessionId: string,
+): Promise<ChatSession | null> {
+  const rows = await db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.sessionId, sessionId))
+    .limit(1);
+  return rows[0] ?? null;
+}
