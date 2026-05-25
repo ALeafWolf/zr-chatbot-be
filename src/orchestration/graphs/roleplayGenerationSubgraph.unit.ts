@@ -25,7 +25,7 @@ function makeMinDeps(): RoleplayGraphDeps {
 describe("createGenerationSubgraph", () => {
   it("completes the success path with a generationResult", async () => {
     const { graph } = createGenerationSubgraph(makeMinDeps());
-    const state = await graph.invoke({
+    const state = await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: "hello",
       promptContext: { systemPrompt: "[SYSTEM]\nYou are Zuo Ran.", conversationHistory: [] },
@@ -53,7 +53,7 @@ describe("createGenerationSubgraph", () => {
     } as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    const state = await graph.invoke({
+    const state = await (graph.invoke as any)({
       sessionId: "sess_test", userMessage: "hello",
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
@@ -79,7 +79,7 @@ describe("createGenerationSubgraph", () => {
     } as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    const state = await graph.invoke({
+    const state = await (graph.invoke as any)({
       sessionId: "sess_test", userMessage: "hello",
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
@@ -107,7 +107,7 @@ describe("createGenerationSubgraph", () => {
     } as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    const state = await graph.invoke({
+    const state = await (graph.invoke as any)({
       sessionId: "sess_test", userMessage: "hello",
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
@@ -118,7 +118,7 @@ describe("createGenerationSubgraph", () => {
       },
     });
 
-    // Non-tool-loop errors are fatal — no generationResult
+    // Non-tool-loop errors are fatal �?no generationResult
     assert.ok(state.errors, "errors should exist");
     const genError = state.errors.find((e: any) => e.stage === "generateDraft");
     assert.ok(genError, "generateDraft error should be present");
@@ -138,7 +138,7 @@ describe("createGenerationSubgraph", () => {
     }) as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    await graph.invoke({
+    await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: "What happened in chapter 3?",
       promptContext: {
@@ -180,7 +180,7 @@ describe("createGenerationSubgraph", () => {
     }) as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    await graph.invoke({
+    await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: "Hi",
       promptContext: {
@@ -212,7 +212,7 @@ describe("createGenerationSubgraph", () => {
     }) as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    await graph.invoke({
+    await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: "Hi",
       promptContext: {
@@ -262,7 +262,7 @@ describe("createGenerationSubgraph", () => {
     }) as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    await graph.invoke({
+    await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: fakeUserMessage,
       promptContext: fakePromptContext,
@@ -303,7 +303,7 @@ describe("createGenerationSubgraph", () => {
     } as any;
 
     const { graph } = createGenerationSubgraph(deps);
-    const state = await graph.invoke({
+    const state = await (graph.invoke as any)({
       sessionId: "sess_test", userMessage: "hello",
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },

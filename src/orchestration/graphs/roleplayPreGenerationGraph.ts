@@ -5,6 +5,9 @@ import {
 } from "../graphState/roleplayGraphState";
 import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { ChatSession } from "../../db/schema/chat";
+import type { LoadRoleplayCharacterContextOutput } from "../roleplay/roleplayAdapters";
+import type { ResolvedContext } from "../context/resolveContext";
+import type { PromptContext } from "../prompt/buildPromptContext";
 import { readRerankVariant } from "../../eval/experimentVariants";
 
 export type { RoleplayGraphDeps };
@@ -14,10 +17,10 @@ export type { RoleplayGraphDeps };
 // ---------------------------------------------------------------------------
 
 export interface PreGenerationResult {
-  session: unknown;
-  characterContext: unknown;
-  resolvedContext: unknown;
-  promptContext: unknown;
+  session?: ChatSession;
+  characterContext?: LoadRoleplayCharacterContextOutput;
+  resolvedContext?: ResolvedContext;
+  promptContext?: PromptContext;
   errors: Array<{ stage: string; message: string }> | undefined;
 }
 
@@ -52,7 +55,7 @@ export function createRoleplayPreGenerationGraph(
     const fn = deps.buildPreRerankContext;
     if (!fn) return {};
     try {
-      return { preRerankContext: await fn({ session: state.session as ChatSession, userMessage: state.userMessage, characterDefaults: (state.characterContext as any).characterDefaults }) };
+      return { preRerankContext: await fn({ session: state.session!, userMessage: state.userMessage, characterDefaults: state.characterContext!.characterDefaults }) };
     } catch (err) {
       return { errors: [{ stage: "buildPreRerankContext", message: err instanceof Error ? err.message : String(err) }] };
     }

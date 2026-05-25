@@ -129,13 +129,10 @@ export async function* runRoleplayTurnStreamViaGraph(
       return;
     }
 
-    const session = preGenResult.session as ChatSession;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const characterContext = preGenResult.characterContext as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const context = preGenResult.resolvedContext as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const promptContext = preGenResult.promptContext as any;
+    const session = preGenResult.session!;
+    const characterContext = preGenResult.characterContext!;
+    const context = preGenResult.resolvedContext!;
+    const promptContext = preGenResult.promptContext!;
 
     if (!characterContext || !context || !promptContext) {
       yield {

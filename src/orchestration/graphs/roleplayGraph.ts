@@ -238,16 +238,28 @@ function createRoleplayGraphImpl(
     if (!fn) return {};
 
     try {
+      // Guards at the top of this function ensure these are non-null
+      const session = state.session!;
+      const characterContext = state.characterContext!;
+      const promptContext = state.promptContext!;
+
       const gen = fn({
-        promptContext: state.promptContext as any,
+        promptContext,
         userMessage: state.userMessage,
-        session: state.session as ChatSession,
-        characterDefaults: (state.characterContext as any).characterDefaults,
-        toolCtx: { sessionId: state.session.sessionId, characterId: state.session.characterId, memoryNamespace: state.session.memoryNamespace, continuityScope: state.session.continuityScope, continuityFamily: state.session.continuityFamily, signal: new AbortController().signal } as any,
+        session,
+        characterDefaults: characterContext.characterDefaults,
+        toolCtx: {
+          sessionId: session.sessionId,
+          characterId: session.characterId,
+          memoryNamespace: session.memoryNamespace,
+          continuityScope: session.continuityScope,
+          continuityFamily: session.continuityFamily as "main_world" | "au",
+          signal: new AbortController().signal,
+        },
         thoughtSummaryCache: new Map(),
         thoughtsAcc: [],
         isFirstUserTurn: false,
-        voiceHints: (state.characterContext as any).voiceHints ?? "",
+        voiceHints: characterContext.voiceHints ?? "",
         openAICompatibleRequestExtensions: undefined,
         buildMessages: genTesting.buildToolMessages,
       });
@@ -279,29 +291,25 @@ function createRoleplayGraphImpl(
 
     try {
       const attempt = state.rewriteDraft ? 2 : 1;
-      const session = state.session as any;
-      const characterContext = state.characterContext as any;
-      const promptContext = state.promptContext as any;
-      const ctx = state as any;
 
       const validatorContext = buildValidatorContext({
         session: {
-          characterId: session?.characterId ?? "",
-          continuityScope: session?.continuityScope ?? "main",
-          mode: session?.mode ?? "canonical_live",
+          characterId: state.session?.characterId ?? "",
+          continuityScope: state.session?.continuityScope ?? "main",
+          mode: state.session?.mode ?? "canonical_live",
         },
         personaOverlay: {
-          max_nsfw_level: characterContext?.personaOverlay?.max_nsfw_level ?? "none",
-          escalation_rule: characterContext?.personaOverlay?.escalation_rule ?? "",
-          out_of_scope_chapter_behavior: characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
+          max_nsfw_level: state.characterContext?.personaOverlay?.max_nsfw_level ?? "none",
+          escalation_rule: state.characterContext?.personaOverlay?.escalation_rule ?? "",
+          out_of_scope_chapter_behavior: state.characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
         },
         promptContext: {
-          conversationHistory: promptContext?.conversationHistory ?? [],
-          retrievedCanonNarrative: promptContext?.retrievedCanonNarrative,
-          selectedMemorySources: promptContext?.selectedMemorySources,
+          conversationHistory: state.promptContext?.conversationHistory ?? [],
+          retrievedCanonNarrative: state.promptContext?.retrievedCanonNarrative,
+          selectedMemorySources: state.promptContext?.selectedMemorySources,
         },
         userMessage: state.userMessage,
-        signal: ctx._signal,
+        signal: (state as any)._signal,
       });
 
       const result = await fn(draftContent, validatorContext as any, attempt);
@@ -321,20 +329,31 @@ function createRoleplayGraphImpl(
     const fn = deps.rewriteDraftFn;
     if (!fn) return {};
 
+    const session = state.session;
+    const characterContext = state.characterContext;
+    const promptContext = state.promptContext;
+
     const issues = filterDrafterFacingIssues((state.validation1Result as any).issues ?? []);
     const rewriteIntro = "Revising response...";
 
     try {
       const gen = fn({
-        promptContext: state.promptContext as any,
+        promptContext,
         userMessage: state.userMessage,
-        session: state.session as ChatSession,
-        characterDefaults: (state.characterContext as any).characterDefaults,
-        toolCtx: { sessionId: state.session.sessionId, characterId: state.session.characterId, memoryNamespace: state.session.memoryNamespace, continuityScope: state.session.continuityScope, continuityFamily: state.session.continuityFamily, signal: new AbortController().signal } as any,
+        session,
+        characterDefaults: characterContext.characterDefaults,
+        toolCtx: {
+          sessionId: session.sessionId,
+          characterId: session.characterId,
+          memoryNamespace: session.memoryNamespace,
+          continuityScope: session.continuityScope,
+          continuityFamily: session.continuityFamily as "main_world" | "au",
+          signal: new AbortController().signal,
+        },
         thoughtSummaryCache: new Map(),
         thoughtsAcc: [],
         isFirstUserTurn: false,
-        voiceHints: (state.characterContext as any).voiceHints ?? "",
+        voiceHints: characterContext.voiceHints ?? "",
         openAICompatibleRequestExtensions: undefined,
         issues,
         rewriteIntro,
@@ -362,7 +381,8 @@ function createRoleplayGraphImpl(
     const fn = deps.safeDeflectionFn;
     if (!fn) return {};
 
-    const safeText = (state.characterContext as any)?.characterDefaults?.safe_deflection ?? "I am not sure.";
+    const characterContext = state.characterContext;
+    const safeText = characterContext?.characterDefaults?.safe_deflection ?? "I am not sure.";
 
     // Detect the deflection reason from graph state context
     const hasDraftToolLoopErr = state.errors?.some((e) => (e as any).stage === "generateDraft" && (e as any).toolLoopExceeded);
@@ -374,12 +394,12 @@ function createRoleplayGraphImpl(
 
     try {
       const gen = fn({
-        characterName: (state.characterContext as any)?.characterDefaults?.name ?? "",
+        characterName: characterContext?.characterDefaults?.name ?? "",
         safeDeflectionText: safeText,
         reason,
         thoughtSummaryCache: new Map(),
         thoughtsAcc: [],
-        voiceHints: (state.characterContext as any)?.voiceHints ?? "",
+        voiceHints: characterContext?.voiceHints ?? "",
       });
       const iterator = gen[Symbol.asyncIterator]();
       let next = await iterator.next();

@@ -1,4 +1,8 @@
 import * as z from "zod";
+import type { ChatSession } from "../../db/schema/chat";
+import type { LoadRoleplayCharacterContextOutput } from "../roleplay/roleplayAdapters";
+import type { ResolvedContext } from "../context/resolveContext";
+import type { PromptContext } from "../prompt/buildPromptContext";
 
 /**
  * Zod schema for the coarse roleplay graph state (Phase 3 preparation).
@@ -12,13 +16,13 @@ export const RoleplayGraphStateSchema = z.object({
   userMessage: z.string(),
 
   /** Populated by loadSession node. */
-  session: z.any().optional(),
+  session: z.custom<ChatSession>().optional(),
 
   /** Populated by loadCharacterContext node. */
-  characterContext: z.any().optional(),
+  characterContext: z.custom<LoadRoleplayCharacterContextOutput>().optional(),
 
   /** Populated by resolveContext node (or by assembleResolvedContext via new graph nodes). */
-  resolvedContext: z.any().optional(),
+  resolvedContext: z.custom<ResolvedContext>().optional(),
 
   /** Populated by buildPreRerankContext node. */
   preRerankContext: z.any().optional(),
@@ -30,7 +34,7 @@ export const RoleplayGraphStateSchema = z.object({
   rerankLlmError: z.any().optional(),
 
   /** Populated by buildPrompt node. */
-  promptContext: z.any().optional(),
+  promptContext: z.custom<PromptContext>().optional(),
 
   /** Populated by generateDraft node. */
   draft: z.any().optional(),

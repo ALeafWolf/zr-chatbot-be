@@ -43,20 +43,23 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
     const fn = deps.generateDraftFn;
     if (!fn) return {};
     const ctx = state as any;
+    const session = state.session;
+    const characterContext = state.characterContext;
+    const promptContext = state.promptContext;
     try {
       const gen = fn({
-        promptContext: state.promptContext as any,
+        promptContext,
         userMessage: state.userMessage,
-        session: state.session as any,
-        characterDefaults: (state.characterContext as any).characterDefaults,
+        session,
+        characterDefaults: characterContext.characterDefaults,
         toolCtx: {
-          sessionId: (state.session as any).sessionId,
-          characterId: (state.session as any).characterId,
-          memoryNamespace: (state.session as any).memoryNamespace,
-          continuityScope: (state.session as any).continuityScope,
-          continuityFamily: (state.session as any).continuityFamily as "main_world" | "au",
+          sessionId: session.sessionId,
+          characterId: session.characterId,
+          memoryNamespace: session.memoryNamespace,
+          continuityScope: session.continuityScope,
+          continuityFamily: session.continuityFamily as "main_world" | "au",
           signal: ctx._signal ?? new AbortController().signal,
-        } as any,
+        },
         thoughtSummaryCache: ctx._cache ?? new Map(),
         thoughtsAcc: ctx._thoughtsAcc ?? [],
         isFirstUserTurn: ctx._isFirstUserTurn ?? false,
@@ -79,29 +82,25 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
     const dc = (state.rewriteDraft as any)?.content ?? (state.draft as any)?.content; if (!dc) return {};
     try {
       const a = state.rewriteDraft ? 2 : 1;
-      const session = state.session as any;
-      const characterContext = state.characterContext as any;
-      const promptContext = state.promptContext as any;
-      const ctx = state as any;
 
       const validatorCtx = buildValidatorContext({
         session: {
-          characterId: session?.characterId ?? "",
-          continuityScope: session?.continuityScope ?? "main",
-          mode: session?.mode ?? "canonical_live",
+          characterId: state.session?.characterId ?? "",
+          continuityScope: state.session?.continuityScope ?? "main",
+          mode: state.session?.mode ?? "canonical_live",
         },
         personaOverlay: {
-          max_nsfw_level: characterContext?.personaOverlay?.max_nsfw_level ?? "none",
-          escalation_rule: characterContext?.personaOverlay?.escalation_rule ?? "",
-          out_of_scope_chapter_behavior: characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
+          max_nsfw_level: state.characterContext?.personaOverlay?.max_nsfw_level ?? "none",
+          escalation_rule: state.characterContext?.personaOverlay?.escalation_rule ?? "",
+          out_of_scope_chapter_behavior: state.characterContext?.personaOverlay?.out_of_scope_chapter_behavior ?? "",
         },
         promptContext: {
-          conversationHistory: promptContext?.conversationHistory ?? [],
-          retrievedCanonNarrative: promptContext?.retrievedCanonNarrative,
-          selectedMemorySources: promptContext?.selectedMemorySources,
+          conversationHistory: state.promptContext?.conversationHistory ?? [],
+          retrievedCanonNarrative: state.promptContext?.retrievedCanonNarrative,
+          selectedMemorySources: state.promptContext?.selectedMemorySources,
         },
         userMessage: state.userMessage,
-        signal: ctx._signal,
+        signal: (state as any)._signal,
       });
 
       const r = await fn(dc, validatorCtx as any, a);
@@ -110,14 +109,16 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
   }
 
   async function rwDraft(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
-    if (!state.validation1Result) return {}; const fn = deps.rewriteDraftFn; if (!fn) return {};
+    if (!state.validation1Result || !state.session || !state.characterContext) return {}; const fn = deps.rewriteDraftFn; if (!fn) return {};
     const issues = filterDrafterFacingIssues((state.validation1Result as any).issues ?? []);
     const ctx = state as any;
+    const session = state.session;
+    const characterContext = state.characterContext;
     try {
       const gen = fn({
-        promptContext: state.promptContext as any, userMessage: state.userMessage, session: state.session as any,
-        characterDefaults: (state.characterContext as any).characterDefaults,
-        toolCtx: { sessionId: (state.session as any).sessionId, characterId: (state.session as any).characterId, memoryNamespace: (state.session as any).memoryNamespace, continuityScope: (state.session as any).continuityScope, continuityFamily: (state.session as any).continuityFamily as "main_world" | "au", signal: ctx._signal ?? new AbortController().signal } as any,
+        promptContext: state.promptContext!, userMessage: state.userMessage, session,
+        characterDefaults: characterContext.characterDefaults,
+        toolCtx: { sessionId: session.sessionId, characterId: session.characterId, memoryNamespace: session.memoryNamespace, continuityScope: session.continuityScope, continuityFamily: session.continuityFamily as "main_world" | "au", signal: ctx._signal ?? new AbortController().signal },
         thoughtSummaryCache: ctx._cache ?? new Map(), thoughtsAcc: ctx._thoughtsAcc ?? [], isFirstUserTurn: ctx._isFirstUserTurn ?? false,
         voiceHints: ctx._voiceHints ?? "", openAICompatibleRequestExtensions: undefined,
         issues, rewriteIntro: "Revising response...", buildRewriteMessages: genTesting.buildRewriteToolMessages,
@@ -130,12 +131,13 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
 
   async function safeDef(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
     const fn = deps.safeDeflectionFn; if (!fn) return {};
-    const st = (state.characterContext as any)?.characterDefaults?.safe_deflection ?? "";
+    const cc = state.characterContext;
+    const st = cc?.characterDefaults?.safe_deflection ?? "";
     const ctx = state as any;
     const isD = state.errors?.some((e: any) => e.stage === "generateDraft" && e.toolLoopExceeded);
     const isR = state.errors?.some((e: any) => e.stage === "runRewriteDraft" && e.toolLoopExceeded);
     try {
-      const gen = fn({ characterName: (state.characterContext as any)?.characterDefaults?.name ?? "", safeDeflectionText: st, reason: isD ? "tool_loop_exceeded" : isR ? "rewrite_tool_loop_exceeded" : "validator_hard_fail", thoughtSummaryCache: ctx._cache ?? new Map(), thoughtsAcc: ctx._thoughtsAcc ?? [], voiceHints: ctx._voiceHints ?? "" });
+      const gen = fn({ characterName: cc?.characterDefaults?.name ?? "", safeDeflectionText: st, reason: isD ? "tool_loop_exceeded" : isR ? "rewrite_tool_loop_exceeded" : "validator_hard_fail", thoughtSummaryCache: ctx._cache ?? new Map(), thoughtsAcc: ctx._thoughtsAcc ?? [], voiceHints: ctx._voiceHints ?? "" });
       const value = await drainGenerator(gen);
       return value ? { generationResult: value as GenerateAndValidateResult, generationEvents: sharedEvents } : {};
     } catch (e: any) { return { errors: [{ stage: "safeDeflection", message: e.message ?? String(e) }] as any }; }

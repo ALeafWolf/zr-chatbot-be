@@ -102,13 +102,23 @@ function fakePreGenerationResult(
   return {
     session: fakeSession(),
     characterContext: {
-      characterDefaults: fakeCharacterDefaults,
+      characterDefaults: { ...fakeCharacterDefaults, archetype: "romantic_lead", values: ["honesty"] },
       overlayId: "main",
       personaOverlay: {
         overlay_id: "main",
         character_id: "zuo_ran",
         continuity_scope: "main",
         relationship_status: "confirmed_relationship",
+        openness: "open",
+        domesticity: "low",
+        baseline_warmth: "warm",
+        baseline_nsfw_openness: "low",
+        max_nsfw_level: "none",
+        escalation_rule: "",
+        out_of_scope_chapter_behavior: "",
+        overlay_identity: "main",
+        tone_notes: {},
+        writeback_policies: {},
       },
       voiceHints: "formal, restrained",
     },
@@ -119,6 +129,52 @@ function fakePreGenerationResult(
         conversationalStance: "neutral",
       },
       memories: [],
+      canonChunks: [],
+      canonScenes: [],
+      recentTurns: [],
+      queryEmbedding: [],
+      canonQueryEmbedding: [],
+      sessionSummary: null,
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemEntryContextExpansions: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      memoryCorrections: [],
+      latestTurnDelta: null,
+      queryRewrite: {
+        intent: "general",
+        confidence: 1,
+        segments: [],
+        combined_for_embedding: "test",
+        entities: [],
+        parseOk: true,
+        structuralParseOk: true,
+        labelOk: true,
+      },
+      retrievalPlan: {
+        intent: "general",
+        canonMode: "skip",
+        durableMemoryTopK: 8,
+        sessionRecallTopK: 12,
+        structMemEntryTopK: 16,
+        structMemConsolidationTopK: 4,
+        openThreadTopK: 4,
+        broadFailOpen: false,
+        forceOpenThreads: false,
+        contextNeed: {
+          needsRecentTurns: true,
+          needsOlderSessionRecall: false,
+          needsDurableMemory: false,
+          needsStructMem: false,
+          needsStructMemConsolidation: false,
+          needsCanon: false,
+          needsWeb: false,
+          injectionMode: "full",
+          reason: "test",
+        },
+      },
+      turnType: "general_roleplay" as any,
       isFirstUserTurn: false,
       recallThoughtContext: {
         items: [],
@@ -382,14 +438,15 @@ describe("roleplayGraphStreamAdapter", () => {
             recallThoughtContext: {
               items: [
                 {
-                  source: "memory",
+                  source: "memory" as any,
                   text: "previous conversation context",
+                  visibleMode: "direct",
                 },
               ],
               countsBySource: { memory: 1 },
               selectionMode: "rerank",
             },
-          },
+          } as any,
         }),
       buildRecallThought: async () => ({ text: "recall thought summary" }),
     });
@@ -508,12 +565,12 @@ describe("roleplayGraphStreamAdapter", () => {
             isFirstUserTurn: false,
             recallThoughtContext: {
               items: [
-                { source: "memory", text: "something to recall" },
+                { source: "memory" as any, text: "something to recall", visibleMode: "direct" },
               ],
               countsBySource: { memory: 1 },
               selectionMode: "rerank",
             },
-          },
+          } as any,
         }),
       buildRecallThought: async () => {
         // Never settles within the 150ms final recall timeout
@@ -761,11 +818,11 @@ describe("roleplayGraphStreamAdapter", () => {
             memories: [],
             isFirstUserTurn: false,
             recallThoughtContext: {
-              items: [{ source: "memory", text: "previous conversation context" }],
+              items: [{ source: "memory" as any, text: "previous conversation context", visibleMode: "direct" }],
               countsBySource: { memory: 1 },
               selectionMode: "rerank",
-            },
-          },
+            } as any,
+          } as any,
         }),
       buildRecallThought: async () => ({ text: "recall thought summary" }),
       generationGraphDeps: {
@@ -777,7 +834,7 @@ describe("roleplayGraphStreamAdapter", () => {
         persistTurn: async () => ({}) as any,
         generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
         generateDraftFn: async function* () {
-          // Yield a tool_call — the recall thought starts settling during the
+          // Yield a tool_call �?the recall thought starts settling during the
           // async gap of genGraph.invoke, so it should be ready when the poll
           // loop discovers this event and calls queueReadyRecallThought.
           yield { type: "tool_call" as const, id: "tc-1", name: "search", args: { q: "test" } };
@@ -827,7 +884,7 @@ describe("roleplayGraphStreamAdapter", () => {
         persistTurn: async () => ({}) as any,
         generationModelBinding: { provider: "deepseek" as const, model: "deepseek-chat" },
         generateDraftFn: async function* (input: any) {
-          // Push to thoughtsAcc before yielding the thought event — just like
+          // Push to thoughtsAcc before yielding the thought event �?just like
           // the real helpers do via emitThought(). If drainGenerator also pushes
           // the thought, it will appear twice in the final thoughtsAcc.
           const ta = input.thoughtsAcc as Thought[];
