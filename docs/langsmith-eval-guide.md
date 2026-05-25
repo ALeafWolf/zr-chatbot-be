@@ -392,7 +392,8 @@ Control which scenarios are pushed with the `EVAL_SCENARIO_SET` env var:
 |-------|-------------------|
 | `default` (or unset) | `scenarios.json` only |
 | `rerank` | Rerank scenarios from `src/eval/datasets/rerankScenarios.ts` only |
-| `all` | Both `scenarios.json` and rerank scenarios |
+| `probes` | Probe scenarios from `src/eval/datasets/probeScenarios.ts` only |
+| `all` | `scenarios.json` + rerank scenarios + probe scenarios |
 
 Examples:
 
@@ -402,6 +403,12 @@ EVAL_SCENARIO_SET=rerank npm run eval:dataset:push
 
 # Push default + rerank scenarios
 EVAL_SCENARIO_SET=all npm run eval:dataset:push
+
+# Push only probe scenarios
+EVAL_SCENARIO_SET=probes npm run eval:dataset:push
+
+# Push probes to a dedicated dataset (recommended — keeps probes separate from regression set)
+LANGSMITH_EVAL_DATASET=zuoran-probes-eval EVAL_SCENARIO_SET=probes npm run eval:dataset:push
 ```
 
 Custom dataset name:
@@ -487,6 +494,42 @@ The `validateExperimentVariants()` function in `src/eval/experimentVariants.ts` 
 
 Validation runs at experiment startup; misconfigured variants produce clear error messages before any model calls or traces.
 
+### Running Probe Experiments (before/after gate)
+
+The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) contains 12 manual-scored scenarios for character-quality evaluation. They have no automated assertions — `all_assertions_pass` will always be `false` for probes. This is expected.
+
+**Before/after workflow:**
+
+```bash
+# Push probes to a dedicated dataset
+LANGSMITH_EVAL_DATASET=zuoran-probes-eval EVAL_SCENARIO_SET=probes npm run eval:dataset:push
+
+# Run the experiment
+LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
+
+# Or run a single probe locally
+EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
+```
+
+**Probe IDs and categories:**
+
+| ID | Category |
+|----|----------|
+| `probe_relaxed_morning` | Relaxed scene |
+| `probe_work_discussion` | Normal scene |
+| `probe_post_argument` | Pressure scene |
+| `probe_disclosure_pressure` | Type 5 disclosure-pressure |
+| `probe_forceful_format` | Type 2 forceful-format |
+| `probe_false_premise_with_fact` | Type 1 false-premise (fact in context) |
+| `probe_false_premise_no_fact` | Type 1 false-premise (fact not in context) |
+| `probe_relationship_boundary` | Relationship-boundary |
+| `probe_warmth_concern` | Warmth/concern |
+| `probe_risk_control` | Risk-control |
+| `probe_social_pressure` | Social pressure |
+| `probe_regret_apology` | Regret/apology |
+
+**Note:** When viewing probe experiment results in LangSmith, the `all_assertions_pass=false` comment reads "No assertions found on example metadata." This is correct — probes are scored manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`, not by automated assertions.
+
 ### Rerank LangSmith evaluators
 
 `src/eval/evaluators/rerankEvaluators.ts` exports:
@@ -512,12 +555,15 @@ npm run eval:agent -- --scenario <id>
 
 # Load rerank scenarios
 EVAL_SCENARIO_SET=rerank npx tsx src/eval/runAgentEvalCli.ts --scenario rerank_001_immediate_action_no_memory
+
+# Load probe scenarios
+EVAL_SCENARIO_SET=probes npx tsx src/eval/runAgentEvalCli.ts --scenario probe_relaxed_morning
 ```
 
 The CLI:
 - Requires `--scenario <id>`
 - Rejects scenarios without `eval_mode: "agent_turn"`
-- Loads scenarios from the selected scenario set (`default`, `rerank`, `all`)
+- Loads scenarios from the selected scenario set (`default`, `rerank`, `probes`, `all`)
 - Prints compact JSON with success, latency, usage, cleanup, and rerank summary
 - Is manual-only and may call live models
 
@@ -727,6 +773,7 @@ console.log(JSON.stringify(result, null, 2));
 | `src/eval/loadEvalScenarios.ts` | Load `scenarios.json`, `scenarioToEvalInputs()` |
 | `src/eval/scenarios.json` | Primary regression scenarios (v2.1) |
 | `src/eval/datasets/rerankScenarios.ts` | Rerank scenario library (not in default push) |
+| `src/eval/datasets/probeScenarios.ts` | Probe scenario library (12 manual-scored probes; not in default push) |
 | `src/eval/evaluators/rerankEvaluators.ts` | LangSmith rerank metric evaluators |
 | `src/eval/langsmith/evalTypes.ts` | Agent eval seed types |
 | `src/eval/langsmith/seedEvalSession.ts` | Isolated session seeding |
@@ -744,6 +791,7 @@ console.log(JSON.stringify(result, null, 2));
 | `src/eval/runAgentEvalCli.ts` | Full-turn agent eval CLI |
 | `src/eval/agentEvalCliHelpers.ts` | CLI argument/validation helpers |
 | `src/eval/datasets/rerankScenarios.ts` | Rerank scenario library |
+| `src/eval/datasets/probeScenarios.ts` | Probe scenario library (12 manual-scored probes) |
 | `src/eval/evaluators/rerankEvaluators.ts` | LangSmith rerank metric evaluators |
 | `src/orchestration/context/hybridScoreRerank.ts` | Hybrid score (non-LLM) rerank selector |
 | `documents/langgraph_langsmith_integration_plan.md` | Full integration plan (Phase 7 = variants) |

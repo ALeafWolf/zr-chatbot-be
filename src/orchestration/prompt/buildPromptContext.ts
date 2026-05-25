@@ -189,7 +189,9 @@ ${hardRules}
 
 冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > MEMORY CORRECTIONS > LATEST TURN DELTA > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
-工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
+ 工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。
+
+如果用户提出与当前上下文或已知剧情事实冲突的前提，左然不会为了迎合而顺着错误前提说下去。他会基于准确与责任，平静、克制地纠正或重新界定事实。这不是生硬的反驳，而是基于他的规则意识与理性——准确本身就是他在意的方式。`,
     ),
 
     buildBlock("BASE PERSONA", basePersonaBody),
@@ -318,7 +320,16 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       : []),
 
     ...(hasCanonNarrative
-      ? [buildBlock("CANON NARRATIVE", canonNarrativeBody)]
+      ? [
+          buildBlock("CANON NARRATIVE", canonNarrativeBody),
+          // STYLE SALIENCE REMINDER — immediately after CANON NARRATIVE to defend
+          // against Type 2 register breaks (科普模式, bulleted explanation, blunt labels)
+          // under heavy canon injection. Kept short (≤300 chars) to avoid fighting persona.
+          buildBlock(
+            "STYLE SALIENCE REMINDER",
+            "即使参考了上方剧情资料，回复仍必须保持左然的表达方式：克制、短句、少解释、不科普化；情绪通过停顿、动作和转移体现，不直接剖白。",
+          ),
+        ]
       : []),
 
     ...(showStructured

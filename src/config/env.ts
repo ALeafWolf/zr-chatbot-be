@@ -436,7 +436,7 @@ const envSchema = z.object({
   LANGSMITH_ENDPOINT: z
     .string()
     .default("https://api.smith.langchain.com"),
-  LANGSMITH_EVAL_DATASET: z.string().default("zuoran-phase1-eval"),
+  LANGSMITH_EVAL_DATASET: z.string().default("zuoran-chatbot-eval"),
 });
 
 const parsed = envSchema.safeParse(process.env);

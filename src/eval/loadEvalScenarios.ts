@@ -12,7 +12,7 @@ export const RERANK_SCENARIOS_PATH = path.join(
 export const STUB_REPLY =
   "[STUB — full turn replay requires live DB + API keys]";
 
-export type ScenarioSet = "default" | "rerank" | "all";
+export type ScenarioSet = "default" | "rerank" | "probes" | "all";
 
 export function loadScenariosFromFile(filePath: string = EVAL_SCENARIOS_PATH): {
   version: string;
@@ -45,10 +45,30 @@ export function loadRerankScenarios(): Scenario[] {
 }
 
 /**
+ * Load probe scenarios from the probe scenario library.
+ */
+export function loadProbeScenarios(): Scenario[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./datasets/probeScenarios");
+    const scenarios: Scenario[] | undefined = mod.PROBE_EVAL_SCENARIOS;
+    if (!Array.isArray(scenarios)) {
+      console.warn("PROBE_EVAL_SCENARIOS export not found or not an array");
+      return [];
+    }
+    return scenarios;
+  } catch (err) {
+    console.warn("Could not load probe scenarios:", (err as Error).message);
+    return [];
+  }
+}
+
+/**
  * Load scenarios based on EVAL_SCENARIO_SET.
  * - "default" (or unset): scenarios.json only
  * - "rerank": only rerank scenarios
- * - "all": scenarios.json + rerank scenarios
+ * - "probes": only probe scenarios
+ * - "all": scenarios.json + rerank scenarios + probe scenarios
  */
 export function loadScenariosBySet(
   set: ScenarioSet = "default",
@@ -59,14 +79,19 @@ export function loadScenariosBySet(
     return { version, scenarios };
   }
 
+  if (set === "probes") {
+    return { version, scenarios: loadProbeScenarios() };
+  }
+
   const rerank = loadRerankScenarios();
+  const probes = loadProbeScenarios();
 
   if (set === "rerank") {
     return { version, scenarios: rerank };
   }
 
   // "all"
-  return { version, scenarios: [...scenarios, ...rerank] };
+  return { version, scenarios: [...scenarios, ...rerank, ...probes] };
 }
 
 export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown> {

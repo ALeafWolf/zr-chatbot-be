@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildPromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
+import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 
@@ -559,6 +560,91 @@ describe("buildPromptContext structured query label rules", () => {
     assert.ok(
       internalLogicIdx < continuityIdx,
       "[CHARACTER INTERNAL LOGIC] should come before [CONTINUITY OVERLAY]",
+    );
+  });
+
+  it("trace payload records CHARACTER INTERNAL LOGIC block presence when injected", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: { core_belief: "真正的在意必须通过可靠的行动来证明。" },
+    } as unknown as CharacterDefaults;
+
+    const { systemPrompt } = buildPromptContext(input);
+    const payload = buildPromptTracePayload({
+      systemPrompt,
+      conversationHistory: [],
+    });
+
+    assert.strictEqual(
+      payload.blockPresence["CHARACTER INTERNAL LOGIC"],
+      true,
+      "trace payload should record CHARACTER INTERNAL LOGIC as present",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // STYLE SALIENCE REMINDER block
+  // -------------------------------------------------------------------------
+
+  it("STYLE SALIENCE REMINDER appears after CANON NARRATIVE when canon renders", () => {
+    const input = baseInput();
+    input.canonChunks = [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const canonIdx = prompt.indexOf("[CANON NARRATIVE]");
+    const reminderIdx = prompt.indexOf("[STYLE SALIENCE REMINDER]");
+
+    assert.ok(canonIdx >= 0, "[CANON NARRATIVE] should exist");
+    assert.ok(reminderIdx >= 0, "[STYLE SALIENCE REMINDER] should exist when canon renders");
+    assert.ok(
+      canonIdx < reminderIdx,
+      "[STYLE SALIENCE REMINDER] should appear after [CANON NARRATIVE]",
+    );
+  });
+
+  it("STYLE SALIENCE REMINDER is absent when canon does not render", () => {
+    const input = baseInput();
+    input.canonChunks = [];
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[STYLE SALIENCE REMINDER]"),
+      "style reminder should be absent when canon does not render",
+    );
+  });
+
+  it("STYLE SALIENCE REMINDER body is ≤ 300 characters", () => {
+    const input = baseInput();
+    input.canonChunks = [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const match = prompt.match(/\[STYLE SALIENCE REMINDER\]\n([\s\S]*?)(?:\n\[|$)/);
+    assert.ok(match, "should find STYLE SALIENCE REMINDER block body");
+    const body = match[1].trim();
+    assert.ok(
+      body.length <= 300,
+      `STYLE SALIENCE REMINDER body length ${body.length} should be ≤ 300`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Anti-sycophancy correction instruction
+  // -------------------------------------------------------------------------
+
+  it("anti-sycophancy instruction appears in SYSTEM block", () => {
+    const prompt = buildPromptContext(baseInput()).systemPrompt;
+    assert.ok(
+      prompt.includes("不会为了迎合而顺着错误前提说下去"),
+      "anti-sycophancy instruction must be present in system prompt",
+    );
+  });
+
+  it("no hedge-on-uncertainty instruction is present", () => {
+    const prompt = buildPromptContext(baseInput()).systemPrompt;
+    assert.ok(
+      !prompt.includes("当你不确定"),
+      "hedge-on-uncertainty instruction must NOT be present",
     );
   });
 });
