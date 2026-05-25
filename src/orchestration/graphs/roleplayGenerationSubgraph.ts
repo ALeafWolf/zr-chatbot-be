@@ -109,14 +109,14 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
   }
 
   async function rwDraft(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
-    if (!state.validation1Result || !state.session || !state.characterContext) return {}; const fn = deps.rewriteDraftFn; if (!fn) return {};
+    if (!state.validation1Result || !state.session || !state.characterContext || !state.promptContext) return {}; const fn = deps.rewriteDraftFn; if (!fn) return {};
     const issues = filterDrafterFacingIssues((state.validation1Result as any).issues ?? []);
     const ctx = state as any;
     const session = state.session;
     const characterContext = state.characterContext;
     try {
       const gen = fn({
-        promptContext: state.promptContext!, userMessage: state.userMessage, session,
+        promptContext: state.promptContext, userMessage: state.userMessage, session,
         characterDefaults: characterContext.characterDefaults,
         toolCtx: { sessionId: session.sessionId, characterId: session.characterId, memoryNamespace: session.memoryNamespace, continuityScope: session.continuityScope, continuityFamily: session.continuityFamily as "main_world" | "au", signal: ctx._signal ?? new AbortController().signal },
         thoughtSummaryCache: ctx._cache ?? new Map(), thoughtsAcc: ctx._thoughtsAcc ?? [], isFirstUserTurn: ctx._isFirstUserTurn ?? false,
