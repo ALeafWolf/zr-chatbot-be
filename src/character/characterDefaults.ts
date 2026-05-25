@@ -21,6 +21,22 @@ export interface CharacterDefaults {
   in_character_expression?: string;
   /** Long-form affective grounding; surfaced in prompts as [情感内核]. */
   emotional_core?: string;
+  /** Pre-DB internal-logic core: stable psychological causality behind character behavior.
+   *  All fields optional; block renders only when at least one is non-empty. */
+  internal_logic?: {
+    /** Formative background that set baseline assumptions about the world. */
+    growth_environment?: string;
+    /** Deep, usually unquestioned assumption about how things work. */
+    core_belief?: string;
+    /** What the character most wants. */
+    core_motivation?: string;
+    /** What the character most fears losing or causing. */
+    core_fear?: string;
+    /** Habitual behaviors that protect against core_fear, written with their source (改版二). */
+    defense_mechanism?: string;
+    /** Explicit transition rule between emotional states; targets Type 5 missing-transition failures. */
+    transition_rule?: string;
+  };
   private_habits_and_texture?: string[];
   /** Layered relational behavior prose; subsets chosen by overlay `relationship_status`. */
   relationship_expression?: {
