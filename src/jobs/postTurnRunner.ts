@@ -113,6 +113,11 @@ export class PostTurnRunner extends BackgroundRunner {
       return;
     }
     await this.runClaimedJob(result.job);
+    // Force "completed" so the live PostTurnRunner never re-claims this eval job.
+    // runClaimedJob marks the job completed on graph success; on failure it marks
+    // it "retry", which the live runner would then pick up after cleanupEvalSession
+    // has already deleted the eval session — causing an FK violation in structmem_events.
+    await this.completeJob(result.job.id);
   }
 
   private async claimNextJob(): Promise<PostTurnJobRow | null> {

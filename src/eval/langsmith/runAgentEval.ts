@@ -110,7 +110,7 @@ export function normalizeAgentEvalInput(raw: Record<string, unknown>): AgentEval
       auWorldKey: readString(sessionRaw, "auWorldKey", "au_world_key"),
       writebackPolicy:
         readString(sessionRaw, "writebackPolicy", "writeback_policy") ??
-        (mode === "sandbox" ? "no_writeback" : "full_writeback"),
+        "no_writeback",
       thinking:
         typeof sessionRaw.thinking === "boolean"
           ? sessionRaw.thinking
@@ -204,7 +204,11 @@ export async function runAgentEval(
         }),
     );
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+    const cause =
+      err instanceof Error && err.cause instanceof Error
+        ? `\ncause: ${err.cause.message}`
+        : "";
+    error = err instanceof Error ? err.message + cause : String(err);
   }
 
   const cleanup = await cleanupEvalSession(seeded);

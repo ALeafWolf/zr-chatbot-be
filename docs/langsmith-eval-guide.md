@@ -501,13 +501,22 @@ The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) contains 12
 **Before/after workflow:**
 
 ```bash
-# Push probes to a dedicated dataset
+# Step 1 — push probes to a dedicated dataset (one time, or whenever probe set changes)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval EVAL_SCENARIO_SET=probes npm run eval:dataset:push
 
-# Run the experiment
+# Step 2 — run experiment on baseline (stash or checkout commit before internal-logic changes)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
+# → creates experiment "zuoran-phase1 [run-1]" in LangSmith
 
-# Or run a single probe locally
+# Step 3 — restore changes and run again on current HEAD
+LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
+# → creates experiment "zuoran-phase1 [run-2]" in LangSmith
+```
+
+> In LangSmith, open both experiments under **Experiments → Compare**. The `reply` field in each row's output is the character's response to that probe. Score each probe manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`.
+
+```bash
+# Or run a single probe locally (output to stdout only — not submitted to LangSmith as an experiment)
 EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
 ```
 

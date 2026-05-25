@@ -432,7 +432,8 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
   LANGSMITH_API_KEY: z.string().optional(),
-  LANGSMITH_PROJECT: z.string().default("zuoran-chatbot-phase1"),
+  LANGSMITH_PROJECT: z.string().default("zuoran-chatbot"),
+  LANGSMITH_EXPERIMENT_PREFIX: z.string().default("zuoran"),
   LANGSMITH_ENDPOINT: z
     .string()
     .default("https://api.smith.langchain.com"),
