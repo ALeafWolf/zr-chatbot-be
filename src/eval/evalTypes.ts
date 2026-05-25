@@ -45,6 +45,14 @@ export interface Scenario {
   assertions: Assertion[];
   /** Expected substring in retrieved canon for retrieval-quality metrics. */
   retrieval_expected_needle?: string;
+
+  // --- Rerank scenario fields (optional, for LangSmith metadata) ---
+  /** Memory IDs the reranker should select. */
+  expected_selected_ids?: string[];
+  /** Memory IDs the reranker should reject. */
+  expected_rejected_ids?: string[];
+  /** Expected final context mode after reranking (e.g. "selected_memory", "recent_only", "memory_and_canon"). */
+  expected_final_context_mode?: string;
 }
 
 export interface ScenariosFile {

@@ -27,10 +27,8 @@ Metrics captured in agent-turn mode include retrieval (including **memory rerank
 
 ### What's not yet implemented
 
-- Wiring rerank LangSmith evaluators and `rerankScenarios.ts` into the main dataset push / experiment runner.
-- Passing rerank snapshot fields into `assertionsEvaluator` for `agent_turn` rows (rerank assertion types work in local `runAllAssertions` when you supply `AssertionContext.rerank` manually).
-- `npm run eval` local CLI for full agent-turn replay (use LangSmith or call `runAgentEval` directly).
 - CI integration, online feedback, and multi-dataset milestone automation.
+- Variant guardrails for context planner (`no_rewrite`) and validator (`lightweight`) — these are recognized but fail fast with a clear error until implemented.
 
 ## Prerequisites
 
@@ -386,6 +384,26 @@ npm run eval:dataset:push
 
 Reads `src/eval/scenarios.json`, converts each scenario via `scenarioToEvalInputs()`, and uploads to `LANGSMITH_EVAL_DATASET`. Existing examples in that dataset are deleted first, then recreated.
 
+### Scenario set selection
+
+Control which scenarios are pushed with the `EVAL_SCENARIO_SET` env var:
+
+| Value | Scenarios included |
+|-------|-------------------|
+| `default` (or unset) | `scenarios.json` only |
+| `rerank` | Rerank scenarios from `src/eval/datasets/rerankScenarios.ts` only |
+| `all` | Both `scenarios.json` and rerank scenarios |
+
+Examples:
+
+```bash
+# Push only rerank scenarios
+EVAL_SCENARIO_SET=rerank npm run eval:dataset:push
+
+# Push default + rerank scenarios
+EVAL_SCENARIO_SET=all npm run eval:dataset:push
+```
+
 Custom dataset name:
 
 ```bash
@@ -394,7 +412,7 @@ LANGSMITH_EVAL_DATASET=zuoran-memory-retrieval-v1 npm run eval:dataset:push
 
 Assertions are stored on example **metadata** (`metadata.assertions`), not in inputs.
 
-To push rerank scenarios, you would need a separate script or merge `RERANK_EVAL_SCENARIOS` into your push pipeline (not automated yet).
+Rerank-labeled examples also carry `expected_selected_ids`, `expected_rejected_ids`, and `expected_final_context_mode` in metadata when present on the scenario.
 
 ## Running LangSmith Experiments
 
@@ -411,8 +429,9 @@ npm run eval:langsmith
    - `input_draft` present → validator-only
    - otherwise → `mode: "skipped"`
 3. Runs evaluators:
-   - `assertionsEvaluator` — deterministic assertion checks
+   - `assertionsEvaluator` — deterministic assertion checks (incl. rerank for `agent_turn` rows)
    - `retrievalQualityEvaluator` — anchor counts and needle hits (retrieval mode only)
+   - `rerankSelectionPrecision`, `rerankSelectionRecall`, `rerankRejectionAccuracy`, `rerankContextModeAccuracy`, `rerankCompositeScore` — rerank metrics
 4. Exits with code 1 if any row fails `all_assertions_pass`.
 
 **Terminal output example:**
@@ -426,7 +445,49 @@ Experiment: zuoran-phase1-abc123
 
 **Concurrency:** `maxConcurrency: 1` (sequential) to avoid DB contention on shared canon tables.
 
-### Rerank LangSmith evaluators (standalone)
+### Running experiments by variant
+
+Use env vars to select rerank, retrieval, and validator variants:
+
+```bash
+# Default (current) behavior
+npm run eval:langsmith
+
+# Deterministic-only rerank (no LLM rerank call)
+RERANK_VARIANT=deterministic_only npm run eval:langsmith
+
+# Hybrid score rerank (non-LLM score+priority selector)
+RERANK_VARIANT=hybrid_score npm run eval:langsmith
+
+# LLM rerank with smaller/cheaper model (set MEMORY_RERANK_MODEL)
+RERANK_VARIANT=llm_rerank_smaller_model MEMORY_RERANK_MODEL=deepseek:deepseek-chat npm run eval:langsmith
+
+# HyDE-enabled retrieval (requires CANON_QUERY_HYDE=1)
+RETRIEVAL_VARIANT=hyde_enabled CANON_QUERY_HYDE=1 npm run eval:langsmith
+
+# Motif-probe retrieval (requires STRUCTMEM_MOTIF_PROBE_ENABLED=1)
+RETRIEVAL_VARIANT=motif_probe_enabled STRUCTMEM_MOTIF_PROBE_ENABLED=1 npm run eval:langsmith
+
+# Strict-attribution validator (requires VALIDATOR_STRICT_ATTRIBUTION=1)
+VALIDATOR_VARIANT=strict_attribution VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval:langsmith
+
+# Combined variants
+RERANK_VARIANT=hybrid_score RETRIEVAL_VARIANT=hyde_enabled CANON_QUERY_HYDE=1 npm run eval:langsmith
+```
+
+#### Variant guardrails
+
+The `validateExperimentVariants()` function in `src/eval/experimentVariants.ts` checks that selected variants are compatible with the current environment:
+
+- `RETRIEVAL_VARIANT=hyde_enabled` requires `CANON_QUERY_HYDE=1`
+- `RETRIEVAL_VARIANT=motif_probe_enabled` requires `STRUCTMEM_MOTIF_PROBE_ENABLED=1`
+- `VALIDATOR_VARIANT=strict_attribution` requires `VALIDATOR_STRICT_ATTRIBUTION=1`
+- `CONTEXT_PLANNER_VARIANT=no_rewrite` — not yet implemented, fails fast
+- `VALIDATOR_VARIANT=lightweight` — not yet implemented, fails fast
+
+Validation runs at experiment startup; misconfigured variants produce clear error messages before any model calls or traces.
+
+### Rerank LangSmith evaluators
 
 `src/eval/evaluators/rerankEvaluators.ts` exports:
 
@@ -436,7 +497,51 @@ Experiment: zuoran-phase1-abc123
 - `rerankContextModeAccuracy`
 - `rerankCompositeScore`
 
-These read `outputs.retrieval.rerank` and example `metadata.expected_selected_ids` / `expected_rejected_ids` / `expected_final_context_mode`. Register them in `runLangSmithExperiment.ts` when you push rerank-labeled examples.
+These read `outputs.retrieval.rerank` and example `metadata.expected_selected_ids` / `expected_rejected_ids` / `expected_final_context_mode`. They return `score: null` with a descriptive comment when no rerank snapshot is available, making them safe for mixed datasets.
+
+### Full-turn agent eval CLI
+
+Run a single agent-turn scenario locally without pushing to LangSmith:
+
+```bash
+# Run a specific scenario
+npx tsx src/eval/runAgentEvalCli.ts --scenario <id>
+
+# Or using the npm script
+npm run eval:agent -- --scenario <id>
+
+# Load rerank scenarios
+EVAL_SCENARIO_SET=rerank npx tsx src/eval/runAgentEvalCli.ts --scenario rerank_001_immediate_action_no_memory
+```
+
+The CLI:
+- Requires `--scenario <id>`
+- Rejects scenarios without `eval_mode: "agent_turn"`
+- Loads scenarios from the selected scenario set (`default`, `rerank`, `all`)
+- Prints compact JSON with success, latency, usage, cleanup, and rerank summary
+- Is manual-only and may call live models
+
+Output example:
+
+```json
+{
+  "scenarioId": "rerank_001_immediate_action_no_memory",
+  "success": true,
+  "latencyMs": 2340,
+  "usage": {
+    "totalInputTokens": 1234,
+    "totalOutputTokens": 89,
+    "estimatedCostUsd": 0.0032
+  },
+  "cleanup": { "attempted": true, "completed": true },
+  "rerank": {
+    "selected": 3,
+    "rejectedCount": 12,
+    "finalContextMode": "selected_memory",
+    "fallbackUsed": false
+  }
+}
+```
 
 ## Interpreting Results
 
@@ -455,8 +560,8 @@ These read `outputs.retrieval.rerank` and example `metadata.expected_selected_id
    - **Feedback** — assertion scores
 4. Click a run for:
    - **Trace** — full span tree (`llm.memory_rerank`, generation, validation, post-turn)
-   - **Metadata** — `scenarioId`, `evalSessionId`, `evalMode`, git SHA, environment
-   - **Tags** — `eval:true`, `environment:*`, `character:*`, `subsystem:*`
+   - **Metadata** — `scenarioId`, `evalSessionId`, `evalMode`, git SHA, environment, and variant fields (`graphVersion`, `rerankVariant`, `retrievalVariant`, `validatorVariant`)
+   - **Tags** — `eval:true`, `environment:*`, `character:*`, `subsystem:*`, `variant:*` (when non-default variants are active)
 
 ### Key fields in AgentEvalOutput
 
@@ -471,16 +576,17 @@ These read `outputs.retrieval.rerank` and example `metadata.expected_selected_id
     "retrieved": { "interactive_memory": ["mem_1"], "canon": [] },
     "injected": { "interactive_memory": ["mem_1"], "canon": [] },
     "dropped": { "duplicate": 0, "lowScore": 0, "correctionConflict": 0, "sourceBudget": 0, "other": 0 },
-    "rerank": {
-      "enabled": true,
-      "selected": [
-        { "source": "interactive_memory", "id": "mem_1", "relevance": "required", "usageInstruction": "must_use" }
-      ],
-      "rejectedCount": 12,
-      "finalContextMode": "selected_memory",
-      "needsEvidenceFallback": false,
-      "fallbackUsed": false
-    }
+      "rerank": {
+        "enabled": true,
+        "selected": [
+          { "source": "interactive_memory", "id": "mem_1", "relevance": "required", "usageInstruction": "must_use" }
+        ],
+        "rejectedCount": 12,
+        "finalContextMode": "selected_memory",
+        "needsEvidenceFallback": false,
+        "fallbackUsed": false,
+        "rerankVariant": "llm_rerank_v1"
+      }
   },
   "validation": {
     "attempts": [{ "attempt": 1, "needsRewrite": false, "issues": [] }],
@@ -522,6 +628,9 @@ When `retrieval.rerank.fallbackUsed` is `true`, the deterministic selector ran i
 | `cleanup.completed: false` | Incomplete cleanup | SQL for `eval_%` rows |
 | `mode: "skipped"` | Missing `input_draft` on non-agent row | Add draft or set `eval_mode` |
 | `estimatedCostUsd: null` | Unknown model pricing | `llmSpans[].pricingKnown` |
+| `rerank.rerankVariant=deterministic_only` | Intentional variant (not a failure) | Check `rerank.fallbackReason=variant_deterministic_only` |
+| `rerank.rerankVariant=hybrid_score` | Non-LLM hybrid selector in use | Check `rerank.fallbackUsed=false` if successful |
+| Guardrail error at startup | Misconfigured variant env vars | Check `CANON_QUERY_HYDE`, `STRUCTMEM_MOTIF_PROBE_ENABLED`, or `VALIDATOR_STRICT_ATTRIBUTION` |
 
 ## Running Subset-Specific Eval
 
@@ -541,7 +650,30 @@ VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval:langsmith
 MEMORY_RERANK_MAX_SELECTED=4 npm run eval:langsmith
 ```
 
+### Run with variant config
+
+```bash
+RERANK_VARIANT=hybrid_score npm run eval:langsmith
+RERANK_VARIANT=deterministic_only npm run eval:langsmith
+RETRIEVAL_VARIANT=hyde_enabled CANON_QUERY_HYDE=1 npm run eval:langsmith
+VALIDATOR_VARIANT=strict_attribution VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval:langsmith
+```
+
 Scenario `configOverrides` take precedence when wired through agent-turn input normalization.
+
+## Unit Tests and Variant Safety
+
+Unit tests do not send LangSmith traces or consume LangSmith quota. The test setup in `src/test/setup.ts` forces all LangSmith env vars to `"false"` and mocks the `traceable` module. Variant env vars set in tests are scoped per-test and cleaned up after each test.
+
+Key variant test files:
+
+| Test file | Covers |
+|-----------|--------|
+| `src/eval/experimentVariants.unit.ts` | Variant parsing, alias normalization, metadata/tags, guardrails |
+| `src/eval/agentEvalCliHelpers.unit.ts` | CLI argument validation, scenario-set filtering |
+| `src/eval/loadEvalScenarios.unit.ts` | Scenario loading by set, rerank scenario eval_mode |
+| `src/orchestration/graphs/roleplayPreGenerationGraph.unit.ts` | Variant routing, hybrid score node, deterministic-only path |
+| `src/orchestration/context/hybridScoreRerank.unit.ts` | Hybrid score selection algorithm |
 
 ## Debugging
 
@@ -608,4 +740,11 @@ console.log(JSON.stringify(result, null, 2));
 | `src/orchestration/context/resolveContext.ts` | Records retrieval + rerank snapshots |
 | `src/orchestration/retrieval/memoryRerank.ts` | Memory rerank LLM stage |
 | `src/observability/langsmithTracing.ts` | Tracing + usage capture |
+| `src/eval/experimentVariants.ts` | Variant metadata helper, guardrails, run matrix |
+| `src/eval/runAgentEvalCli.ts` | Full-turn agent eval CLI |
+| `src/eval/agentEvalCliHelpers.ts` | CLI argument/validation helpers |
+| `src/eval/datasets/rerankScenarios.ts` | Rerank scenario library |
+| `src/eval/evaluators/rerankEvaluators.ts` | LangSmith rerank metric evaluators |
+| `src/orchestration/context/hybridScoreRerank.ts` | Hybrid score (non-LLM) rerank selector |
+| `documents/langgraph_langsmith_integration_plan.md` | Full integration plan (Phase 7 = variants) |
 | `documents/langsmith_eval_system_implementation_plan.md` | Full implementation plan (Milestones 1–9) |

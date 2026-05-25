@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { env } from "../config/env";
 import { models, type ModelBinding } from "../config/models";
+import { buildExperimentVariantMetadata } from "../eval/experimentVariants";
 
 export const TRACE_SCHEMA_VERSION = 1;
 export const TRACE_PRICING_VERSION = "2026-05-15";
@@ -52,6 +53,13 @@ export interface TraceBaseMetadata {
   modelAttributionJudge: string;
   modelEmbedding: string;
   modelConsolidation: string;
+
+  // Experiment variant metadata
+  graphVersion?: string;
+  rerankVariant?: string;
+  contextPlannerVariant?: string;
+  retrievalVariant?: string;
+  validatorVariant?: string;
 }
 
 export interface TraceLlmMetadata {
@@ -153,6 +161,7 @@ export function buildTraceBaseMetadata(
     modelEmbedding: formatModelBinding(models.embedding),
     modelConsolidation: formatModelBinding(models.consolidation),
     ...(input.extra ?? {}),
+    ...buildExperimentVariantMetadata(),
   };
 }
 

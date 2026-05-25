@@ -8,6 +8,11 @@ import {
   type AgentEvalOutput,
   withAgentEvalCapture,
 } from "../evalSnapshots";
+import {
+  buildExperimentVariantMetadata,
+  buildExperimentVariantTags,
+  readAndValidateExperimentVariants,
+} from "../experimentVariants";
 import { cleanupEvalSession } from "./cleanupEvalSession";
 import type {
   AgentEvalInput,
@@ -151,6 +156,9 @@ export function normalizeAgentEvalInput(raw: Record<string, unknown>): AgentEval
 export async function runAgentEval(
   rawInput: Record<string, unknown>,
 ): Promise<AgentEvalOutput> {
+  // Validate experiment variants before any model calls or LangSmith traces.
+  readAndValidateExperimentVariants();
+
   const input = normalizeAgentEvalInput(rawInput);
   let seeded: EvalSeededSession | null = null;
   let reply = "";
@@ -175,7 +183,9 @@ export async function runAgentEval(
           evalSessionId: seeded.sessionId,
           evalMode: "agent_turn",
           configOverrides: input.configOverrides ?? {},
+          ...buildExperimentVariantMetadata(),
         },
+        tags: buildExperimentVariantTags(),
       },
       async () =>
         await withAgentEvalCapture(capture, async () => {

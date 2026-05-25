@@ -71,6 +71,7 @@ function isTestProcess(): boolean {
 }
 
 function shouldTraceLangSmith(): boolean {
+  if (process.env.LANGSMITH_TRACING === "false") return false;
   return env.LANGSMITH_TRACING && !isTestProcess();
 }
 

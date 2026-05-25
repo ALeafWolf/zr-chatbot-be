@@ -48,6 +48,10 @@ export interface RetrievalEvalSnapshot {
     finalContextMode: string;
     needsEvidenceFallback: boolean;
     fallbackUsed?: boolean;
+    /** The selected rerank variant (e.g. llm_rerank_v1, deterministic_only, hybrid_score). */
+    rerankVariant?: string;
+    /** Human-readable reason for fallback or variant choice. */
+    fallbackReason?: string;
   };
 }
 

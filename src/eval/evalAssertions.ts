@@ -2,6 +2,28 @@ import type { Assertion, Scenario } from "./evalTypes";
 import type { ValidationResult } from "../llm/validation/runResponseValidator";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 
+/**
+ * Build an `AssertionContext` rerank sub-object from a `RetrievalEvalSnapshot`
+ * rerank output. Returns undefined when no rerank snapshot is available.
+ */
+export function buildRerankAssertionContext(
+  rerank?: {
+    selected?: Array<{ id: string; source: string }>;
+    finalContextMode?: string;
+    fallbackUsed?: boolean;
+  } | null,
+): { rerank: NonNullable<AssertionContext["rerank"]> } | undefined {
+  if (!rerank) return undefined;
+  return {
+    rerank: {
+      selectedIds: (rerank.selected ?? []).map((s) => s.id),
+      selectedSources: (rerank.selected ?? []).map((s) => s.source),
+      finalContextMode: rerank.finalContextMode,
+      fallbackUsed: rerank.fallbackUsed,
+    },
+  };
+}
+
 export interface AssertionContext {
   retrievedCanon?: string;
   queryRewrite?: QueryRewriteResult;

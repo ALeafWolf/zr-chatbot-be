@@ -3,6 +3,44 @@ import { z } from "zod";
 
 dotenv.config();
 
+function isNodeTestProcess(): boolean {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.npm_lifecycle_event === "test:unit" ||
+    process.argv.some((arg) => arg === "--test" || arg.startsWith("--test=")) ||
+    process.execArgv.some((arg) => arg === "--test" || arg.startsWith("--test"))
+  );
+}
+
+if (isNodeTestProcess()) {
+  for (const key of [
+    "LANGSMITH_TRACING",
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING",
+    "LANGCHAIN_TRACING_V2",
+    "TRACING",
+    "TRACING_V2",
+  ]) {
+    process.env[key] = "false";
+  }
+
+  for (const key of ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"]) {
+    process.env[key] = "";
+  }
+
+  process.env.LANGSMITH_TRACING_BACKGROUND = "false";
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = "false";
+}
+
+/**
+ * Shared flag parser used by ROLEPLAY_GRAPH_STREAM_ENABLED and available for
+ * unit tests to verify parsing logic against the same code path.
+ */
+export function parseEnabledFlag(value: string | undefined): boolean {
+  const s = (value ?? "false").trim().toLowerCase();
+  return s === "1" || s === "true";
+}
+
 const envSchema = z.object({
   // Database
   // Connection string for the chatbot backend database.
@@ -56,6 +94,21 @@ const envSchema = z.object({
       if (n <= 4096) return 8192;
       return Math.min(16384, n);
     }),
+
+  // Roleplay Graph Stream
+  // Disabled by default. When true, roleplay turns use the Phase A graph-backed
+  // stream adapter (runRoleplayTurnStreamViaGraph) instead of the existing
+  // direct stream path. The graph path preserves the same SSE event order,
+  // recall thought behavior, and persistence semantics.
+  //
+  // ⚠️ Startup-only: this flag is read at module load time. Changing the
+  // environment variable at runtime does NOT switch an already-loaded process.
+  // ROLEPLAY_GRAPH_STREAM_ENABLED is read in runCharacterTurn.ts:
+  //   const roleplayStreamFn = createRoleplayStreamFn(env.ROLEPLAY_GRAPH_STREAM_ENABLED);
+  ROLEPLAY_GRAPH_STREAM_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
 
   // DeepSeek V4 Thinking Marker
   // Optional generation-only thinking-mode marker for deepseek:deepseek-v4-pro.

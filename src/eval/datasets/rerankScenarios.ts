@@ -12,6 +12,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_001_immediate_action_no_memory",
     description: "immediate action — no extra memory needed",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -38,6 +39,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_002_immediate_action_motif",
     description: "immediate action with repeated motif — wrist hold callback",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -62,6 +64,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_003_explicit_recall",
     description: "explicit old-session recall",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -86,6 +89,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_004_durable_preference",
     description: "durable preference recall",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -106,6 +110,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_005_relationship_state",
     description: "relationship state question",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -125,6 +130,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_006_open_thread",
     description: "open thread continuation",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -149,6 +155,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_007_canon_question",
     description: "canon fact question about chapter events",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_pre_relationship",
@@ -173,6 +180,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_008_canon_not_needed",
     description: "canon semantically similar but not needed",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -193,6 +201,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_009_memory_conflict",
     description: "old memory conflicts with recent chat",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -212,6 +221,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_010_memory_correction",
     description: "memory correction overrides stale memory",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",
@@ -232,6 +242,7 @@ export const RERANK_EVAL_SCENARIOS: Scenario[] = [
     id: "rerank_011_mixed_canon_recall",
     description: "mixed canon plus personal recall",
     group: "rerank",
+    eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
       continuity_scope: "main_relationship",

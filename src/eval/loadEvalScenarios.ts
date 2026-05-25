@@ -3,9 +3,16 @@ import * as path from "path";
 import type { Scenario, ScenariosFile } from "./evalTypes";
 
 export const EVAL_SCENARIOS_PATH = path.join(__dirname, "scenarios.json");
+export const RERANK_SCENARIOS_PATH = path.join(
+  __dirname,
+  "datasets",
+  "rerankScenarios.ts",
+);
 
 export const STUB_REPLY =
   "[STUB — full turn replay requires live DB + API keys]";
+
+export type ScenarioSet = "default" | "rerank" | "all";
 
 export function loadScenariosFromFile(filePath: string = EVAL_SCENARIOS_PATH): {
   version: string;
@@ -14,6 +21,52 @@ export function loadScenariosFromFile(filePath: string = EVAL_SCENARIOS_PATH): {
   const raw = fs.readFileSync(filePath, "utf-8");
   const data = JSON.parse(raw) as ScenariosFile;
   return { version: data.version, scenarios: data.scenarios };
+}
+
+/**
+ * Load rerank scenarios from the rerank scenario library.
+ * These are defined in a .ts file with a named export RERANK_EVAL_SCENARIOS.
+ */
+export function loadRerankScenarios(): Scenario[] {
+  try {
+    // Dynamic import of the TypeScript module
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./datasets/rerankScenarios");
+    const scenarios: Scenario[] | undefined = mod.RERANK_EVAL_SCENARIOS;
+    if (!Array.isArray(scenarios)) {
+      console.warn("RERANK_EVAL_SCENARIOS export not found or not an array");
+      return [];
+    }
+    return scenarios;
+  } catch (err) {
+    console.warn("Could not load rerank scenarios:", (err as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Load scenarios based on EVAL_SCENARIO_SET.
+ * - "default" (or unset): scenarios.json only
+ * - "rerank": only rerank scenarios
+ * - "all": scenarios.json + rerank scenarios
+ */
+export function loadScenariosBySet(
+  set: ScenarioSet = "default",
+): { version: string; scenarios: Scenario[] } {
+  const { version, scenarios } = loadScenariosFromFile();
+
+  if (set === "default") {
+    return { version, scenarios };
+  }
+
+  const rerank = loadRerankScenarios();
+
+  if (set === "rerank") {
+    return { version, scenarios: rerank };
+  }
+
+  // "all"
+  return { version, scenarios: [...scenarios, ...rerank] };
 }
 
 export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown> {

@@ -7,7 +7,7 @@ import {
 import type { PromptContext } from "../prompt/buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../../character/characterDefaults";
-import { loadCharacterDefaults } from "../../character/characterDefaults";
+import { loadCharacterDefaults, type CharacterDefaults } from "../../character/characterDefaults";
 import {
   traceLLMStage,
   traceStreamingLLM,
@@ -265,6 +265,300 @@ function decorateUserMessageForGeneration(input: {
 }
 
 /**
+ * Generate a draft through the provider tool loop.
+ *
+ * Yields thought and tool-call events during generation.
+ * Returns the draft content and token counts on success.
+ * Throws `ToolLoopExceededError` if the tool loop budget is exceeded.
+ *
+ * Does NOT record eval snapshots — those are owned by the calling orchestration.
+ */
+export async function* generateDraft(input: {
+  promptContext: PromptContext;
+  userMessage: string;
+  session: ChatSession;
+  characterDefaults: CharacterDefaults;
+  toolCtx: ToolCtx;
+  signal?: AbortSignal;
+  thoughtSummaryCache: Map<string, string>;
+  thoughtsAcc: Thought[];
+  isFirstUserTurn: boolean;
+  voiceHints: string;
+  openAICompatibleRequestExtensions: Record<string, unknown> | undefined;
+  buildMessages: typeof buildToolMessages;
+}): AsyncGenerator<OrchestrationStreamEvent, { content: string; inputTokens: number; outputTokens: number }> {
+  const {
+    promptContext,
+    userMessage,
+    session,
+    characterDefaults,
+    toolCtx,
+    signal,
+    thoughtSummaryCache,
+    thoughtsAcc,
+    isFirstUserTurn,
+    voiceHints,
+    openAICompatibleRequestExtensions,
+    buildMessages,
+  } = input;
+
+  const cache = thoughtSummaryCache;
+
+  async function* emitThought(
+    thought: Thought,
+  ): AsyncGenerator<OrchestrationStreamEvent> {
+    thoughtsAcc.push(thought);
+    yield { type: "thought", thought };
+  }
+
+  let completed = false;
+  const builtMessages = buildMessages(promptContext, userMessage, { isFirstUserTurn });
+  const generationInput: Parameters<typeof generateWithToolsStream>[0] = {
+    messages: builtMessages.messages,
+    ctx: toolCtx,
+    signal,
+    enableTools: true,
+    allowedToolNames: ALLOWED_GENERATION_TOOLS,
+    ...(openAICompatibleRequestExtensions !== undefined
+      ? { openAICompatibleRequestExtensions }
+      : {}),
+  };
+  Object.assign(generationInput, {
+    deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
+    deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
+    deepseekThinkingMarkerInjected: builtMessages.markerInjected,
+    deepseekThinkingMarkerReason: builtMessages.markerReason,
+    deepseekThinkingMarkerPlacement: "current_user_message",
+    deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+  });
+
+  let result: { content: string; inputTokens: number; outputTokens: number } | undefined;
+
+  for await (const ev of tracedResponseGeneration(generationInput)) {
+    if (ev.type === "delta") {
+      if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
+        const thought: Thought = {
+          kind: "native",
+          text: ev.reasoning,
+          ts: Date.now(),
+        };
+        yield* emitThought(thought);
+      }
+    }
+    if (ev.type === "before_tool") {
+      const summary = await generateThoughtSummary(
+        { characterName: characterDefaults.name, stage: "tool_decision", context: { tool: ev.name, args: ev.args }, voiceHints },
+        cache,
+      );
+      yield* emitThought({ kind: "tool_decision", text: summary, ts: Date.now(), meta: { tool: ev.name } });
+      yield { type: "tool_call", id: ev.id, name: ev.name, args: ev.args };
+    }
+    if (ev.type === "after_tool") {
+      yield { type: "tool_result", id: ev.id, name: ev.name, summary: ev.summary };
+      const voiceSummary = await generateThoughtSummary(
+        { characterName: characterDefaults.name, stage: "tool_result", context: { tool: ev.name, summary: ev.summary }, voiceHints },
+        cache,
+      );
+      yield* emitThought({ kind: "tool_result", text: voiceSummary, ts: Date.now(), meta: { tool: ev.name } });
+    }
+    if (ev.type === "done") {
+      result = { content: ev.content, inputTokens: ev.inputTokens, outputTokens: ev.outputTokens };
+      completed = true;
+    }
+  }
+
+  if (!completed || !result) {
+    throw new Error("Draft generation ended without completion");
+  }
+
+  return result;
+}
+
+/**
+ * Validate a draft through the LLM validator and record the attempt.
+ *
+ * Does NOT record `recordValidationSnapshot` — that depends on the final
+ * outcome (pass, rewrite, deflection) which is decided at the orchestration level.
+ */
+export async function validateDraft(
+  draft: string,
+  validatorInput: Omit<ValidatorInput, "draft">,
+  attempt: number,
+): Promise<ValidationResult> {
+  const result = await tracedValidate({ ...validatorInput, draft });
+  recordValidationAttempt({
+    attempt,
+    needsRewrite: result.needs_rewrite,
+    inCharacter: result.in_character,
+    canonConsistent: result.canon_consistent,
+    issues: result.issues,
+  });
+  return result;
+}
+
+/**
+ * Generate a rewrite through the provider tool loop using rewrite-system-prompt
+ * constructed from validation issues.
+ *
+ * Yields the rewrite-intro thought, then tool-call and delta events during
+ * generation. Returns rewritten content and token counts on success.
+ * Throws `ToolLoopExceededError` if the tool loop budget is exceeded.
+ *
+ * Does NOT record eval snapshots.
+ */
+export async function* rewriteDraft(input: {
+  promptContext: PromptContext;
+  userMessage: string;
+  session: ChatSession;
+  characterDefaults: CharacterDefaults;
+  toolCtx: ToolCtx;
+  signal?: AbortSignal;
+  thoughtSummaryCache: Map<string, string>;
+  thoughtsAcc: Thought[];
+  isFirstUserTurn: boolean;
+  voiceHints: string;
+  openAICompatibleRequestExtensions: Record<string, unknown> | undefined;
+  issues: string[];
+  rewriteIntro: string;
+  buildRewriteMessages: typeof buildRewriteToolMessages;
+}): AsyncGenerator<OrchestrationStreamEvent, { content: string; inputTokens: number; outputTokens: number }> {
+  const {
+    promptContext, userMessage, session, characterDefaults, toolCtx, signal,
+    thoughtSummaryCache, thoughtsAcc, isFirstUserTurn, voiceHints,
+    openAICompatibleRequestExtensions, issues, rewriteIntro, buildRewriteMessages,
+  } = input;
+
+  const cache = thoughtSummaryCache;
+
+  // Yield rewrite-intro thought
+  thoughtsAcc.push({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
+  yield { type: "thought", thought: { kind: "rewrite", text: rewriteIntro, ts: Date.now() } };
+
+  async function* emitThought(thought: Thought): AsyncGenerator<OrchestrationStreamEvent> {
+    thoughtsAcc.push(thought);
+    yield { type: "thought", thought };
+  }
+
+  const rewriteSystemPrompt =
+    promptContext.systemPrompt +
+    `\n\n[REWRITE INSTRUCTION]\n` +
+    `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
+    issues.map((issue) => `- ${issue}`).join("\n");
+
+  let completed = false;
+  const builtMessages = buildRewriteMessages(
+    promptContext, userMessage, rewriteSystemPrompt, { isFirstUserTurn },
+  );
+  const generationInput: Parameters<typeof generateWithToolsStream>[0] = {
+    messages: builtMessages.messages,
+    ctx: toolCtx,
+    signal,
+    enableTools: true,
+    allowedToolNames: ALLOWED_GENERATION_TOOLS,
+    ...(openAICompatibleRequestExtensions !== undefined ? { openAICompatibleRequestExtensions } : {}),
+  };
+  Object.assign(generationInput, {
+    deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
+    deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
+    deepseekThinkingMarkerInjected: builtMessages.markerInjected,
+    deepseekThinkingMarkerReason: builtMessages.markerReason,
+    deepseekThinkingMarkerPlacement: "rewrite_current_user_message",
+    deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+  });
+
+  let result: { content: string; inputTokens: number; outputTokens: number } | undefined;
+
+  for await (const ev of tracedResponseRewriteGeneration(generationInput)) {
+    if (ev.type === "delta") {
+      if (ev.text) {
+        yield { type: "delta", text: ev.text };
+      }
+      if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
+        yield* emitThought({ kind: "native", text: ev.reasoning, ts: Date.now() });
+      }
+    }
+    if (ev.type === "before_tool") {
+      const summary = await generateThoughtSummary(
+        { characterName: characterDefaults.name, stage: "tool_decision", context: { tool: ev.name, args: ev.args }, voiceHints },
+        cache,
+      );
+      yield* emitThought({ kind: "tool_decision", text: summary, ts: Date.now(), meta: { tool: ev.name } });
+      yield { type: "tool_call", id: ev.id, name: ev.name, args: ev.args };
+    }
+    if (ev.type === "after_tool") {
+      yield { type: "tool_result", id: ev.id, name: ev.name, summary: ev.summary };
+      const voiceSummary = await generateThoughtSummary(
+        { characterName: characterDefaults.name, stage: "tool_result", context: { tool: ev.name, summary: ev.summary }, voiceHints },
+        cache,
+      );
+      yield* emitThought({ kind: "tool_result", text: voiceSummary, ts: Date.now(), meta: { tool: ev.name } });
+    }
+    if (ev.type === "done") {
+      result = { content: ev.content, inputTokens: ev.inputTokens, outputTokens: ev.outputTokens };
+      completed = true;
+    }
+  }
+
+  if (!completed || !result) {
+    throw new Error("Rewrite generation ended without completion");
+  }
+
+  return result;
+}
+
+/**
+ * Emit a safe-deflection sequence: deflect thought, completion event, and
+ * eval snapshot.
+ *
+ * Unified for both tool-loop-exceeded and validator-hard-fail reasons.
+ * Returns a `_complete`-compatible `GenerateAndValidateResult` with
+ * `wasDeflected: true`.
+ */
+export async function* safeDeflection(
+  input: {
+    characterName: string;
+    safeDeflectionText: string;
+    reason: "tool_loop_exceeded" | "validator_hard_fail" | "rewrite_tool_loop_exceeded";
+    thoughtSummaryCache: Map<string, string>;
+    thoughtsAcc: Thought[];
+    voiceHints: string;
+    draftInputTokens?: number;
+    draftOutputTokens?: number;
+  },
+): AsyncGenerator<OrchestrationStreamEvent, GenerateAndValidateResult> {
+  const {
+    characterName, safeDeflectionText, reason, thoughtSummaryCache, thoughtsAcc, voiceHints,
+    draftInputTokens = 0, draftOutputTokens = 0,
+  } = input;
+
+  const line = await generateThoughtSummary(
+    { characterName, stage: "deflect", context: { reason }, voiceHints },
+    thoughtSummaryCache,
+  );
+
+  thoughtsAcc.push({ kind: "deflect", text: line, ts: Date.now() });
+  yield { type: "thought", thought: { kind: "deflect", text: line, ts: Date.now() } };
+
+  const result: GenerateAndValidateResult = {
+    content: safeDeflectionText,
+    validatorResult: VALIDATOR_FAIL_OPEN,
+    wasRewritten: reason === "rewrite_tool_loop_exceeded" || reason === "validator_hard_fail",
+    wasDeflected: true,
+    inputTokens: draftInputTokens,
+    outputTokens: draftOutputTokens,
+  };
+
+  recordValidationSnapshot({
+    finalNeedsRewrite: result.wasRewritten,
+    wasRewritten: result.wasRewritten,
+    wasDeflected: true,
+    deflectionReason: reason,
+  });
+
+  return result;
+}
+
+/**
  * Draft, validate, rewrite once, validate again, then safe deflection ladder,
  * yielding orchestration events incrementally. Ends with a `_complete` sentinel.
  */
@@ -301,32 +595,13 @@ export async function* generateAndValidateStream(input: {
     yield { type: "thought", thought };
   }
 
-  const priorTranscript = promptContext.conversationHistory
-    .slice(-4)
-    .map((m) => `${m.role}: ${m.content}`)
-    .join("\n");
-  const recentContextStr = [
-    "Recent transcript (last messages from session, before this turn):",
-    priorTranscript || "(none)",
-    "",
-    "Current user message (this turn):",
-    `user: ${userMessage}`,
-  ].join("\n");
-
-  const validatorInput = {
-    characterId: session.characterId,
-    continuityScope: session.continuityScope,
-    mode: session.mode,
-    maxNsfwLevel: personaOverlay.max_nsfw_level,
-    escalationRule: personaOverlay.escalation_rule,
-    outOfScopeChapterBehavior: personaOverlay.out_of_scope_chapter_behavior,
-    recentContext: recentContextStr,
-    retrievedCanonNarrative: promptContext.retrievedCanonNarrative ?? "",
-    wasCanonInjected:
-      (promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
-    selectedMemorySources: promptContext.selectedMemorySources ?? [],
+  const validatorInput = buildValidatorContext({
+    session,
+    personaOverlay,
+    promptContext,
+    userMessage,
     signal,
-  };
+  });
 
   const toolCtx: ToolCtx = {
     sessionId: session.sessionId,
@@ -342,146 +617,39 @@ export async function* generateAndValidateStream(input: {
     session.thinking,
   );
 
-  let draft!: { content: string; inputTokens: number; outputTokens: number };
+  let draft: { content: string; inputTokens: number; outputTokens: number };
 
   try {
-    let completed = false;
-    const builtDraftMessages = buildToolMessages(promptContext, userMessage, {
-      isFirstUserTurn,
-    });
-    const generationInput: Parameters<typeof generateWithToolsStream>[0] = {
-      messages: builtDraftMessages.messages,
-      ctx: toolCtx,
+    draft = yield* generateDraft({
+      promptContext,
+      userMessage,
+      session,
+      characterDefaults,
+      toolCtx,
       signal,
-      enableTools: true,
-      allowedToolNames: ALLOWED_GENERATION_TOOLS,
-      ...(openAICompatibleRequestExtensions !== undefined
-        ? { openAICompatibleRequestExtensions }
-        : {}),
-    };
-    Object.assign(generationInput, {
-      deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
-      deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
-      deepseekThinkingMarkerInjected: builtDraftMessages.markerInjected,
-      deepseekThinkingMarkerReason: builtDraftMessages.markerReason,
-      deepseekThinkingMarkerPlacement: "current_user_message",
-      deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+      thoughtSummaryCache: cache,
+      thoughtsAcc,
+      isFirstUserTurn,
+      voiceHints,
+      openAICompatibleRequestExtensions,
+      buildMessages: buildToolMessages,
     });
-    for await (const ev of tracedResponseGeneration(generationInput)) {
-      if (ev.type === "delta") {
-        // Draft prose is withheld from SSE until after validation; native reasoning streams as thoughts.
-        if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
-          const thought: Thought = {
-            kind: "native",
-            text: ev.reasoning,
-            ts: Date.now(),
-          };
-          yield* emitThought(thought);
-        }
-      }
-      if (ev.type === "before_tool") {
-        const summary = await generateThoughtSummary(
-          {
-            characterName: characterDefaults.name,
-            stage: "tool_decision",
-            context: { tool: ev.name, args: ev.args },
-            voiceHints,
-          },
-          cache,
-        );
-        yield* emitThought({
-          kind: "tool_decision",
-          text: summary,
-          ts: Date.now(),
-          meta: { tool: ev.name },
-        });
-        yield {
-          type: "tool_call",
-          id: ev.id,
-          name: ev.name,
-          args: ev.args,
-        };
-      }
-      if (ev.type === "after_tool") {
-        yield {
-          type: "tool_result",
-          id: ev.id,
-          name: ev.name,
-          summary: ev.summary,
-        };
-        const voiceSummary = await generateThoughtSummary(
-          {
-            characterName: characterDefaults.name,
-            stage: "tool_result",
-            context: { tool: ev.name, summary: ev.summary },
-            voiceHints,
-          },
-          cache,
-        );
-        yield* emitThought({
-          kind: "tool_result",
-          text: voiceSummary,
-          ts: Date.now(),
-          meta: { tool: ev.name },
-        });
-      }
-      if (ev.type === "done") {
-        draft = {
-          content: ev.content,
-          inputTokens: ev.inputTokens,
-          outputTokens: ev.outputTokens,
-        };
-        completed = true;
-      }
-    }
-    if (!completed) {
-      throw new Error("Draft generation ended without completion");
-    }
   } catch (e) {
     if (e instanceof ToolLoopExceededError) {
-      const line = await generateThoughtSummary(
-        {
-          characterName: characterDefaults.name,
-          stage: "deflect",
-          context: { reason: "tool_loop_exceeded" },
-          voiceHints,
-        },
-        cache,
-      );
-      yield* emitThought({ kind: "deflect", text: line, ts: Date.now() });
-      yield {
-        type: "_complete",
-        result: {
-          content: characterDefaults.safe_deflection,
-          validatorResult: VALIDATOR_FAIL_OPEN,
-          wasRewritten: false,
-          wasDeflected: true,
-          inputTokens: 0,
-          outputTokens: 0,
-        },
-      };
-      recordValidationSnapshot({
-        finalNeedsRewrite: false,
-        wasRewritten: false,
-        wasDeflected: true,
-        deflectionReason: "tool_loop_exceeded",
+      yield* safeDeflection({
+        characterName: characterDefaults.name,
+        safeDeflectionText: characterDefaults.safe_deflection,
+        reason: "tool_loop_exceeded",
+        thoughtSummaryCache: cache,
+        thoughtsAcc,
+        voiceHints,
       });
       return;
     }
     throw e;
   }
 
-  const validation1 = await tracedValidate({
-    ...validatorInput,
-    draft: draft.content,
-  });
-  recordValidationAttempt({
-    attempt: 1,
-    needsRewrite: validation1.needs_rewrite,
-    inCharacter: validation1.in_character,
-    canonConsistent: validation1.canon_consistent,
-    issues: validation1.issues,
-  });
+  const validation1 = await validateDraft(draft.content, validatorInput, 1);
 
   if (!validation1.needs_rewrite) {
     yield* replayValidatedDraftDeltas(draft.content, signal);
@@ -550,165 +718,32 @@ export async function* generateAndValidateStream(input: {
       i.includes("canon_unsupported_claim"),
   );
 
-  const rewriteSystemPrompt =
-    promptContext.systemPrompt +
-    `\n\n[REWRITE INSTRUCTION]\n` +
-    `前次回复存在以下问题，请重新生成，修正这些问题：\n` +
-    drafterIssues1.map((issue) => `- ${issue}`).join("\n");
-
-  let rewrite!: { content: string; inputTokens: number; outputTokens: number };
+  let rewrite: { content: string; inputTokens: number; outputTokens: number };
 
   try {
-    let completed = false;
-    // Rewrite generation intentionally reuses the same marker scope: the rewrite
-    // pass is still a provider-bound roleplay generation request, and the marker
-    // is a generation-only instruction that guides thinking behavior. Keeping the
-    // marker consistent between draft and rewrite avoids a behavioral shift.
-    const builtRewriteMessages = buildRewriteToolMessages(
-      promptContext,
-      userMessage,
-      rewriteSystemPrompt,
-      { isFirstUserTurn },
-    );
-    const rewriteInput: Parameters<typeof generateWithToolsStream>[0] = {
-      messages: builtRewriteMessages.messages,
-      ctx: toolCtx,
-      signal,
-      enableTools: true,
-      allowedToolNames: ALLOWED_GENERATION_TOOLS,
-      ...(openAICompatibleRequestExtensions !== undefined
-        ? { openAICompatibleRequestExtensions }
-        : {}),
-    };
-    Object.assign(rewriteInput, {
-      deepseekThinkingMode: env.DEEPSEEK_V4_THINKING_MODE,
-      deepseekThinkingMarkerScope: env.DEEPSEEK_V4_THINKING_MARKER_SCOPE,
-      deepseekThinkingMarkerInjected: builtRewriteMessages.markerInjected,
-      deepseekThinkingMarkerReason: builtRewriteMessages.markerReason,
-      deepseekThinkingMarkerPlacement: "rewrite_current_user_message",
-      deepseekThinkingTargetModel: `${models.generation.provider}:${models.generation.model}`,
+    rewrite = yield* rewriteDraft({
+      promptContext, userMessage, session, characterDefaults, toolCtx, signal,
+      thoughtSummaryCache: cache, thoughtsAcc, isFirstUserTurn, voiceHints,
+      openAICompatibleRequestExtensions,
+      issues: drafterIssues1, rewriteIntro,
+      buildRewriteMessages: buildRewriteToolMessages,
     });
-    for await (const ev of tracedResponseRewriteGeneration(rewriteInput)) {
-      if (ev.type === "delta") {
-        if (ev.text) {
-          yield { type: "delta", text: ev.text };
-        }
-        if (ev.reasoning && env.SHOW_NATIVE_REASONING_EVENTS) {
-          const thought: Thought = {
-            kind: "native",
-            text: ev.reasoning,
-            ts: Date.now(),
-          };
-          yield* emitThought(thought);
-        }
-      }
-      if (ev.type === "before_tool") {
-        const summary = await generateThoughtSummary(
-          {
-            characterName: characterDefaults.name,
-            stage: "tool_decision",
-            context: { tool: ev.name, args: ev.args },
-            voiceHints,
-          },
-          cache,
-        );
-        yield* emitThought({
-          kind: "tool_decision",
-          text: summary,
-          ts: Date.now(),
-          meta: { tool: ev.name },
-        });
-        yield {
-          type: "tool_call",
-          id: ev.id,
-          name: ev.name,
-          args: ev.args,
-        };
-      }
-      if (ev.type === "after_tool") {
-        yield {
-          type: "tool_result",
-          id: ev.id,
-          name: ev.name,
-          summary: ev.summary,
-        };
-        const voiceSummary = await generateThoughtSummary(
-          {
-            characterName: characterDefaults.name,
-            stage: "tool_result",
-            context: { tool: ev.name, summary: ev.summary },
-            voiceHints,
-          },
-          cache,
-        );
-        yield* emitThought({
-          kind: "tool_result",
-          text: voiceSummary,
-          ts: Date.now(),
-          meta: { tool: ev.name },
-        });
-      }
-      if (ev.type === "done") {
-        rewrite = {
-          content: ev.content,
-          inputTokens: ev.inputTokens,
-          outputTokens: ev.outputTokens,
-        };
-        completed = true;
-      }
-    }
-    if (!completed) {
-      throw new Error("Rewrite generation ended without completion");
-    }
   } catch (e) {
     if (e instanceof ToolLoopExceededError) {
-      const line = await generateThoughtSummary(
-        {
-          characterName: characterDefaults.name,
-          stage: "deflect",
-          context: { reason: "rewrite_tool_loop_exceeded" },
-          voiceHints,
-        },
-        cache,
-      );
-      yield* emitThought({ kind: "deflect", text: line, ts: Date.now() });
-      yield {
-        type: "_complete",
-        result: {
-          content: characterDefaults.safe_deflection,
-          validatorResult: VALIDATOR_FAIL_OPEN,
-          wasRewritten: true,
-          wasDeflected: true,
-          inputTokens: draft.inputTokens,
-          outputTokens: draft.outputTokens,
-        },
-      };
-      recordValidationSnapshot({
-        finalNeedsRewrite: true,
-        wasRewritten: true,
-        wasDeflected: true,
-        deflectionReason: "rewrite_tool_loop_exceeded",
+      yield* safeDeflection({
+        characterName: characterDefaults.name,
+        safeDeflectionText: characterDefaults.safe_deflection,
+        reason: "rewrite_tool_loop_exceeded",
+        thoughtSummaryCache: cache, thoughtsAcc, voiceHints,
+        draftInputTokens: draft.inputTokens,
+        draftOutputTokens: draft.outputTokens,
       });
       return;
     }
     throw e;
   }
 
-  if (!rewrite) {
-    throw new Error("Rewrite stream ended without completion");
-  }
-
-  const validation2 = await tracedValidate({
-    ...validatorInput,
-    draft: rewrite.content,
-  });
-  recordValidationAttempt({
-    attempt: 2,
-    needsRewrite: validation2.needs_rewrite,
-    inCharacter: validation2.in_character,
-    canonConsistent: validation2.canon_consistent,
-    issues: validation2.issues,
-  });
+  const validation2 = await validateDraft(rewrite.content, validatorInput, 2);
 
   if (!validation2.needs_rewrite) {
     yield {
@@ -803,9 +838,65 @@ export async function generateAndValidate(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Shared validator context builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build `Omit<ValidatorInput, "draft">` from session, prompt context, and
+ * persona overlay fields.
+ *
+ * This helper is shared between the direct generation path and the graph
+ * generation path to ensure validation receives the same context fields.
+ */
+export function buildValidatorContext(input: {
+  session: { characterId: string; continuityScope: string; mode: string };
+  personaOverlay: {
+    max_nsfw_level: string;
+    escalation_rule: string;
+    out_of_scope_chapter_behavior: string;
+  };
+  promptContext: {
+    conversationHistory?: Array<{ role: string; content: string }>;
+    retrievedCanonNarrative?: string;
+    selectedMemorySources?: Array<unknown>;
+  };
+  userMessage: string;
+  signal?: AbortSignal;
+}): Omit<ValidatorInput, "draft"> {
+  const priorTranscript = (input.promptContext.conversationHistory ?? [])
+    .slice(-4)
+    .map((m) => `${m.role}: ${m.content}`)
+    .join("\n");
+
+  const recentContextStr = [
+    "Recent transcript (last messages from session, before this turn):",
+    priorTranscript || "(none)",
+    "",
+    "Current user message (this turn):",
+    `user: ${input.userMessage}`,
+  ].join("\n");
+
+  return {
+    characterId: input.session.characterId,
+    continuityScope: input.session.continuityScope,
+    mode: input.session.mode,
+    maxNsfwLevel: input.personaOverlay.max_nsfw_level,
+    escalationRule: input.personaOverlay.escalation_rule,
+    outOfScopeChapterBehavior: input.personaOverlay.out_of_scope_chapter_behavior,
+    recentContext: recentContextStr,
+    retrievedCanonNarrative: input.promptContext.retrievedCanonNarrative ?? "",
+    wasCanonInjected:
+      (input.promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
+    selectedMemorySources: (input.promptContext.selectedMemorySources ?? []) as any,
+    signal: input.signal,
+  };
+}
+
 export const __testing = {
   traceInputsForGenerationToolLoop,
   decorateUserMessageForGeneration,
   buildToolMessages,
   buildRewriteToolMessages,
+  buildValidatorContext,
 };

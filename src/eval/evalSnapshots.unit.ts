@@ -114,4 +114,80 @@ describe("agent eval snapshots", () => {
     assert.equal(capture.usage.totalTokens, 6);
     assert.equal(capture.usage.estimatedCostUsd, null);
   });
+
+  it("captures rerank variant and fallback reason when rerank snapshot is recorded", async () => {
+    const capture = createAgentEvalCapture({
+      scenarioId: "variant_test",
+    });
+
+    await withAgentEvalCapture(capture, async () => {
+      const retrieved = createEmptyEvalSourceIds();
+      const injected = createEmptyEvalSourceIds();
+      recordRetrievalSnapshot({
+        query: {
+          rawUserMessage: "test",
+          intent: "general",
+          confidence: null,
+          hydeUsed: false,
+          rawFusionUsed: false,
+        },
+        retrieved,
+        injected,
+        dropped: { duplicate: 0, lowScore: 0, correctionConflict: 0, sourceBudget: 0, other: 0 },
+        topSources: [],
+        rerank: {
+          enabled: true,
+          candidateIds: createEmptyEvalSourceIds(),
+          selected: [],
+          rejectedCount: 0,
+          finalContextMode: "selected_memory",
+          needsEvidenceFallback: false,
+          rerankVariant: "hybrid_score",
+        },
+      });
+    });
+
+    assert.ok(capture.retrieval?.rerank, "rerank snapshot should exist");
+    assert.equal(capture.retrieval?.rerank?.rerankVariant, "hybrid_score");
+    assert.equal(capture.retrieval?.rerank?.fallbackReason, undefined);
+  });
+
+  it("captures fallback reason when deterministic_only variant is used", async () => {
+    const capture = createAgentEvalCapture({
+      scenarioId: "fallback_test",
+    });
+
+    await withAgentEvalCapture(capture, async () => {
+      const retrieved = createEmptyEvalSourceIds();
+      const injected = createEmptyEvalSourceIds();
+      recordRetrievalSnapshot({
+        query: {
+          rawUserMessage: "test",
+          intent: "general",
+          confidence: null,
+          hydeUsed: false,
+          rawFusionUsed: false,
+        },
+        retrieved,
+        injected,
+        dropped: { duplicate: 0, lowScore: 0, correctionConflict: 0, sourceBudget: 0, other: 0 },
+        topSources: [],
+        rerank: {
+          enabled: false,
+          candidateIds: createEmptyEvalSourceIds(),
+          selected: [],
+          rejectedCount: 0,
+          finalContextMode: "recent_only",
+          needsEvidenceFallback: false,
+          fallbackUsed: true,
+          rerankVariant: "deterministic_only",
+          fallbackReason: "variant_deterministic_only",
+        },
+      });
+    });
+
+    assert.ok(capture.retrieval?.rerank, "rerank snapshot should exist");
+    assert.equal(capture.retrieval?.rerank?.rerankVariant, "deterministic_only");
+    assert.equal(capture.retrieval?.rerank?.fallbackReason, "variant_deterministic_only");
+  });
 });

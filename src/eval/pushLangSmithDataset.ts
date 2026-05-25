@@ -11,7 +11,12 @@ import { Client } from "langsmith";
 import type { ExampleCreate } from "langsmith/schemas";
 import { env } from "../config/env";
 import { flushLangSmithClient } from "./evalProcessDrain";
-import { loadScenariosFromFile, scenarioToEvalInputs } from "./loadEvalScenarios";
+import {
+  loadScenariosFromFile,
+  loadRerankScenarios,
+  scenarioToEvalInputs,
+  type ScenarioSet,
+} from "./loadEvalScenarios";
 
 function requireLangSmithKey(): void {
   if (!env.LANGSMITH_API_KEY?.trim()) {
@@ -38,6 +43,9 @@ async function clearDatasetExamples(
 async function main(): Promise<void> {
   requireLangSmithKey();
 
+  const scenarioSet: ScenarioSet =
+    (process.env.EVAL_SCENARIO_SET as ScenarioSet) ?? "default";
+
   const client = new Client({
     apiKey: env.LANGSMITH_API_KEY,
     apiUrl: env.LANGSMITH_ENDPOINT,
@@ -45,26 +53,57 @@ async function main(): Promise<void> {
 
   try {
     const datasetName = env.LANGSMITH_EVAL_DATASET;
-    const { version, scenarios } = loadScenariosFromFile();
+    const { version, scenarios: defaultScenarios } = loadScenariosFromFile();
+
+    let allScenarios = [...defaultScenarios];
+
+    if (scenarioSet === "rerank" || scenarioSet === "all") {
+      const rerank = loadRerankScenarios();
+      allScenarios = [...allScenarios, ...rerank];
+      console.log(`Loaded ${rerank.length} rerank scenarios (${scenarioSet} set).`);
+    }
+
+    if (scenarioSet === "rerank") {
+      allScenarios = allScenarios.filter(
+        (s) => s.group === "rerank" || s.id.startsWith("rerank_"),
+      );
+    }
+
+    const { version: fileVersion } = loadScenariosFromFile();
 
     let dataset = await client.readDataset({ datasetName }).catch(() => null);
     if (!dataset) {
       dataset = await client.createDataset(datasetName, {
-        description: `Zuoran Phase 1 regression eval (scenarios v${version})`,
+        description: `Zuoran Phase 1 regression eval (scenarios v${fileVersion})`,
         dataType: "kv",
       });
     }
 
     await clearDatasetExamples(client, datasetName);
 
-    const uploads: ExampleCreate[] = scenarios.map((scenario) => ({
-      dataset_id: dataset.id,
-      inputs: scenarioToEvalInputs(scenario),
-      metadata: {
+    const uploads: ExampleCreate[] = allScenarios.map((scenario) => {
+      const metadata: Record<string, unknown> = {
         assertions: scenario.assertions,
-        scenarios_file_version: version,
-      },
-    }));
+        scenarios_file_version: fileVersion,
+      };
+
+      // Include optional rerank metadata fields
+      if (scenario.expected_selected_ids !== undefined) {
+        metadata.expected_selected_ids = scenario.expected_selected_ids;
+      }
+      if (scenario.expected_rejected_ids !== undefined) {
+        metadata.expected_rejected_ids = scenario.expected_rejected_ids;
+      }
+      if (scenario.expected_final_context_mode !== undefined) {
+        metadata.expected_final_context_mode = scenario.expected_final_context_mode;
+      }
+
+      return {
+        dataset_id: dataset.id,
+        inputs: scenarioToEvalInputs(scenario),
+        metadata,
+      };
+    });
 
     await client.createExamples(uploads);
 

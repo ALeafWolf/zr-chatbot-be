@@ -5,12 +5,42 @@ import {
   attachTraceLlmMetadata,
   buildTraceBaseMetadata,
 } from "./traceMetadata";
+import { runRetrievalEmbeddingBatch } from "../orchestration/retrieval/retrievalEmbeddingBatch";
 import { __testing, withTraceContext } from "./langsmithTracing";
 
 describe("langsmith tracing wrappers", () => {
   it("disables LangSmith emission during unit tests", () => {
     assert.equal(__testing.isTestProcess(), true);
     assert.equal(__testing.shouldTraceLangSmith(), false);
+    for (const key of [
+      "LANGSMITH_TRACING",
+      "LANGSMITH_TRACING_V2",
+      "LANGCHAIN_TRACING",
+      "LANGCHAIN_TRACING_V2",
+      "TRACING",
+      "TRACING_V2",
+    ]) {
+      assert.equal(process.env[key], "false", `${key} should be forced off`);
+    }
+    assert.equal(process.env.LANGSMITH_API_KEY, "");
+    assert.equal(process.env.LANGCHAIN_API_KEY, "");
+  });
+
+  it("runs trace-wrapped functions without LangSmith emission", async () => {
+    assert.equal(__testing.shouldTraceLangSmith(), false);
+
+    const result = await runRetrievalEmbeddingBatch({
+      requests: [
+        { key: "memory", text: "memory" },
+        { key: "canon", text: "canon" },
+      ],
+      embed: async (text) => [text.length],
+    });
+
+    assert.deepEqual(result.queryEmbedding, [6]);
+    assert.deepEqual(result.canonQueryEmbedding, [5]);
+    assert.equal(result.trace.requestedCount, 2);
+    assert.equal(result.trace.failedCount, 0);
   });
 
   it("omits turn:foreground from root trace tags", async () => {

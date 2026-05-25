@@ -67,6 +67,7 @@ function isApprovedTraceTag(tag: string): boolean {
   if (tag === "turn:foreground" || tag === "turn:background") return true;
   if (tag.startsWith("character:")) return tag.length > "character:".length;
   if (tag.startsWith("env:")) return tag.length > "env:".length;
+  if (tag.startsWith("variant:")) return tag.length > "variant:".length;
   if (!tag.startsWith("subsystem:")) return false;
   return SUBSYSTEM_SET.has(tag.slice("subsystem:".length));
 }

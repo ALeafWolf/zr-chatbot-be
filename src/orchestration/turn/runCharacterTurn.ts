@@ -2,14 +2,16 @@ import { db } from "../../db/client";
 import { chatSessions } from "../../db/schema/chat";
 
 import { eq } from "drizzle-orm";
+import { loadCharacterDefaults } from "../../character/characterDefaults";
 import {
-  loadCharacterDefaults,
-  loadPersonaOverlay,
-} from "../../character/characterDefaults";
+  loadRoleplayCharacterContext,
+  resolveRoleplayContext,
+  buildRoleplayPromptContext,
+} from "../roleplay/roleplayAdapters";
+import { persistRoleplayTurn } from "../roleplay/roleplayPersistenceAdapter";
 import { classifyTurnRoute } from "./classifyTurnRoute";
-import { resolveContext } from "../context/resolveContext";
-import { buildPromptContextTraced } from "../prompt/buildPromptContext";
-import { generateAndValidateStream } from "../generation/generateAndValidate";
+import { runRoleplayGenerationAdapter } from "../roleplay/roleplayGenerationAdapter";
+import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
 import { postTurnRunner } from "../../jobs/postTurnRunner";
 import type { ChatSession } from "../../db/schema/chat";
 import {
@@ -36,7 +38,6 @@ import {
   APP_COMMAND_ROUTE,
   ROLEPLAY_TURN_ROUTE,
   UNSUPPORTED_ROUTE,
-  persistedRouteForRoleplayResult,
   type TurnRoute,
 } from "./turnRoutes";
 import { executeAppCommand } from "../../features/appCommands/appCommandExecutor";
@@ -46,6 +47,11 @@ import {
   takeReadyRecallThought,
   waitForRecallThought,
 } from "../thought/recallThoughtTask";
+import { env } from "../../config/env";
+import { runRoleplayTurnStreamViaGraph } from "../graphs/roleplayGraphStreamAdapter";
+import type { RoleplayGraphStreamAdapterDeps } from "../graphs/roleplayGraphStreamAdapter";
+import { runRoleplayPreGenerationGraph } from "../graphs/roleplayPreGenerationGraph";
+import { defaultRoleplayGraphDeps } from "../graphs/roleplayGraph";
 
 type RecallThoughtTraceInput = {
   characterName: string;
@@ -181,13 +187,6 @@ export type CharacterTurnSseEvent =
 
 const FINAL_REPLY_REPLAY_SLICE = 96;
 
-function voiceHintsFrom(characterDefaults: ReturnType<typeof loadCharacterDefaults>): string {
-  const s = characterDefaults.speech_style;
-  return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
-    "，",
-  );
-}
-
 async function loadSessionImpl(sessionId: string): Promise<ChatSession> {
   const sessionRows = await db
     .select()
@@ -250,6 +249,70 @@ const tracedUnsupportedTurn = traceStage(
   { subsystem: "orchestration", turn: "foreground" },
 );
 
+// ---------------------------------------------------------------------------
+// Roleplay graph stream production dependency wiring
+// ---------------------------------------------------------------------------
+
+/**
+ * Production deps for runRoleplayTurnStreamViaGraph.
+ * Wires the same trace, generation, persistence, recall, and wake behavior as
+ * the existing runRoleplayTurnStream path.
+ */
+const productionGraphStreamDeps: RoleplayGraphStreamAdapterDeps = {
+  runPreGeneration: runRoleplayPreGenerationGraph,
+  preGenerationDeps: defaultRoleplayGraphDeps,
+  runGeneration: runRoleplayGenerationAdapter,
+  generationGraphDeps: defaultRoleplayGraphDeps,
+  persistTurn: (input) =>
+    persistRoleplayTurn(input, {
+      traceRouteSwitch: tracedRouteSwitch,
+      estimateModelCost,
+      persistCompletedTurn,
+      wakePostTurnRunner: () => postTurnRunner.wake(),
+    }),
+  generationModelBinding: models.generation,
+  buildRecallThought: async (input) => {
+    const result = await tracedRecallThought(input);
+    return { text: result.text };
+  },
+  updateThoughts: updateAssistantMessageThoughts,
+  traceRoleplayTurn: (input) => tracedRoleplayTurn(input),
+};
+
+/**
+ * Roleplay stream function signature. Shared by the existing direct stream and
+ * the graph-backed adapter.
+ */
+type RoleplayStreamFn = (
+  input: Parameters<typeof runRoleplayTurnStream>[0],
+) => AsyncGenerator<CharacterTurnSseEvent>;
+
+/**
+ * Select the roleplay stream function based on the feature flag.
+ *
+ * When ROLEPLAY_GRAPH_STREAM_ENABLED is true the graph-backed adapter is used;
+ * otherwise the existing direct stream path runs. App-command and unsupported
+ * routes are not affected by this selector.
+ *
+ * @param deps - Optional deps override for the graph adapter (used in tests).
+ * @param existingStreamFn - Override for the existing stream path (used in tests).
+ */
+export function createRoleplayStreamFn(
+  graphStreamEnabled: boolean,
+  deps?: RoleplayGraphStreamAdapterDeps,
+  existingStreamFn?: RoleplayStreamFn,
+): RoleplayStreamFn {
+  if (graphStreamEnabled) {
+    return (input) => runRoleplayTurnStreamViaGraph(input, deps ?? productionGraphStreamDeps);
+  }
+  return existingStreamFn ?? runRoleplayTurnStream;
+}
+
+/** Roleplay stream function selected by the current feature flag. */
+const roleplayStreamFn = createRoleplayStreamFn(
+  env.ROLEPLAY_GRAPH_STREAM_ENABLED,
+);
+
 /**
  * Phase 1 turn flow with incremental SSE events (`thought`, `tool_*`, `delta`, then `done`).
  * Abort via `signal` skips persistence if the turn did not finish cleanly.
@@ -265,39 +328,19 @@ async function* runRoleplayTurnStream(
       userMessageChars: userMessage.length,
     });
 
-    const characterDefaults = loadCharacterDefaults(session.characterId);
-    const overlayId = session.personaOverlayId ?? `${session.continuityScope}`;
-    const personaOverlay = loadPersonaOverlay(overlayId);
-    const voiceHints = voiceHintsFrom(characterDefaults);
-
-    const context = await resolveContext({
+    const { characterDefaults, personaOverlay, voiceHints } =
+      await loadRoleplayCharacterContext({ session });
+    const context = await resolveRoleplayContext({
       session,
       userMessage,
       characterDefaults,
     });
-
-    const promptContext = await buildPromptContextTraced({
+    const promptContext = await buildRoleplayPromptContext({
       characterDefaults,
       personaOverlay,
       session,
-      derivedState: context.derivedState,
-      memories: context.memories,
-      canonChunks: context.canonChunks,
-      canonScenes: context.canonScenes,
-      recentTurns: context.recentTurns,
-      sessionSummary: context.sessionSummary,
-      openThreads: context.openThreads,
-      memoryCorrections: context.memoryCorrections,
-      latestTurnDelta: context.latestTurnDelta,
-      sessionRecall: context.sessionRecall,
-      structMemEntries: context.structMemEntries,
-      structMemEntryContextExpansions:
-        context.structMemEntryContextExpansions,
-      structMemConsolidations: context.structMemConsolidations,
-      motifProbe: context.motifProbe,
-      memoryRerank: context.rerankOutput,
+      resolvedContext: context,
       userMessage,
-      queryRewrite: context.queryRewrite,
     });
 
     const thoughtSummaryCache = new Map<string, string>();
@@ -361,64 +404,25 @@ async function* runRoleplayTurnStream(
       return recallThought;
     }
 
-    let resultPayload:
-      | {
-          content: string;
-          validatorResult: unknown;
-          wasRewritten: boolean;
-          wasDeflected: boolean;
-          inputTokens: number;
-          outputTokens: number;
-        }
-      | undefined;
+    let resultPayload: GenerateAndValidateResult | undefined;
 
-    for await (const ev of generateAndValidateStream({
-      promptContext,
-      userMessage,
-      session,
-      personaOverlay,
-      signal,
-      thoughtSummaryCache,
-      thoughtsOut: thoughtsAcc,
-      isFirstUserTurn: context.isFirstUserTurn,
-    })) {
-      if (signal?.aborted) {
-        return;
-      }
-
-      const recallThought = queueReadyRecallThought();
-      if (recallThought) {
-        yield { event: "thought", data: recallThought };
-      }
-
-      switch (ev.type) {
-        case "thought":
-          yield { event: "thought", data: ev.thought };
-          break;
-        case "delta":
-          // Final prose is replayed only after validation and DB persistence.
-          break;
-        case "tool_call":
-          yield {
-            event: "tool_call",
-            data: { id: ev.id, name: ev.name, args: ev.args },
-          };
-          break;
-        case "tool_result":
-          yield {
-            event: "tool_result",
-            data: {
-              id: ev.id,
-              name: ev.name,
-              summary: ev.summary,
-            },
-          };
-          break;
-        case "_complete":
-          resultPayload = ev.result;
-          break;
-        default:
-          break;
+    for await (const ev of runRoleplayGenerationAdapter(
+      {
+        promptContext,
+        userMessage,
+        session,
+        personaOverlay,
+        signal,
+        thoughtSummaryCache,
+        thoughtsAcc,
+        isFirstUserTurn: context.isFirstUserTurn,
+        takeReadyRecallThought: queueReadyRecallThought,
+      },
+    )) {
+      if (ev.event === "_complete") {
+        resultPayload = ev.data;
+      } else {
+        yield ev;
       }
     }
 
@@ -436,42 +440,25 @@ async function* runRoleplayTurnStream(
       yield { event: "thought", data: finalRecallThought.thought };
     }
 
-    const persistedRoute = persistedRouteForRoleplayResult({
-      wasDeflected: result.wasDeflected,
-    });
-    await tracedRouteSwitch({
-      classifiedRoute: ROLEPLAY_TURN_ROUTE,
-      persistedRoute,
-    });
-
-    const estimatedCostUsd = estimateModelCost(models.generation, {
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-    });
-
-    const persisted = await persistCompletedTurn({
-      session,
-      userMessage,
-      assistantReply: result.content,
-      validatorResult: result.validatorResult,
-      route: persistedRoute,
-      derivedState: context.derivedState,
-      memories: context.memories,
-      thoughts: thoughtsAcc,
-      usage: {
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        estimatedCostUsd,
+    const { persistedRoute, persisted } = await persistRoleplayTurn(
+      {
+        session,
+        userMessage,
+        generationResult: result,
+        derivedState: context.derivedState,
+        memories: context.memories,
+        thoughts: thoughtsAcc,
+        generationModelBinding: models.generation,
+        finalRecallTimedOut: finalRecallThought.timedOut,
+        persistLateRecallThought,
       },
-    });
-
-    if (finalRecallThought.timedOut) {
-      persistLateRecallThought(persisted.assistantMessageId);
-    }
-
-    if (persisted.jobId) {
-      postTurnRunner.wake();
-    }
+      {
+        traceRouteSwitch: tracedRouteSwitch,
+        estimateModelCost,
+        persistCompletedTurn,
+        wakePostTurnRunner: () => postTurnRunner.wake(),
+      },
+    );
 
     for (let i = 0; i < result.content.length; i += FINAL_REPLY_REPLAY_SLICE) {
       yield {
@@ -538,7 +525,7 @@ async function* runAppCommandTurnStream(
 
   if (signal?.aborted) return;
 
-  // App commands emit a single done event with structured payload — no deltas.
+  // App commands emit a single done event with structured payload -- no deltas.
   yield {
     event: "done",
     data: {
@@ -614,13 +601,13 @@ export async function* runCharacterTurnStream(
       fallbackReason: routeIntent.fallbackReason,
     });
 
-    // Emit the route early so the frontend can adapt its UI — for example,
+    // Emit the route early so the frontend can adapt its UI -- for example,
     // suppress the character streaming bubble for app commands.
     yield { event: "route", data: { route: routeIntent.type } };
 
     switch (routeIntent.type) {
       case ROLEPLAY_TURN_ROUTE:
-        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        yield* roleplayStreamFn({ session, sessionId, userMessage, signal });
         return;
       case APP_COMMAND_ROUTE:
         yield* runAppCommandTurnStream({ session, sessionId, userMessage, signal });
@@ -629,7 +616,7 @@ export async function* runCharacterTurnStream(
         yield* runUnsupportedTurnStream({ session, sessionId, userMessage, signal });
         return;
       default:
-        yield* runRoleplayTurnStream({ session, sessionId, userMessage, signal });
+        yield* roleplayStreamFn({ session, sessionId, userMessage, signal });
         return;
     }
   } catch (err) {
