@@ -33,7 +33,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -60,7 +60,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -86,7 +86,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -114,7 +114,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -154,7 +154,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -193,7 +193,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -217,12 +217,13 @@ describe("createGenerationSubgraph", () => {
       userMessage: "Hi",
       promptContext: {
         systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+        conversationHistory: [],
       },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 
@@ -234,6 +235,7 @@ describe("createGenerationSubgraph", () => {
     const fakeSession = { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" };
     const fakePersonaOverlay = { max_nsfw_level: "moderate", escalation_rule: "escalate", out_of_scope_chapter_behavior: "deflect" };
     const fakePromptContext = {
+      systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
       conversationHistory: [
         { role: "user" as const, content: "Earlier message" },
         { role: "assistant" as const, content: "Earlier reply" },
@@ -270,6 +272,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: fakePersonaOverlay,
+        overlayId: "main",
         voiceHints: "formal, restrained",
       },
       _signal: fakeSignal,
@@ -310,7 +313,7 @@ describe("createGenerationSubgraph", () => {
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
         personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
-        voiceHints: "formal, restrained",
+             overlayId: "main", voiceHints: "formal, restrained",
       },
     });
 

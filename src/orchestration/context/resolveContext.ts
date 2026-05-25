@@ -108,6 +108,7 @@ import {
   shouldProbeStructMemMotif,
   buildMotifQueries,
 } from "./detectMotifSignal";
+import { z } from "zod";
 import type { MotifSignal, StructMemMotifProbeSummary } from "./motifTypes";
 
 export interface ResolvedContext {
@@ -139,6 +140,32 @@ export interface ResolvedContext {
   /** True when there are no prior roleplay messages for this session. */
   isFirstUserTurn: boolean;
 }
+
+/** Runtime Zod schema for ResolvedContext — structural check on required top-level keys.
+ * Full recursive validation of nested types (RetrievedMemory, etc.) is out of scope;
+ * .passthrough() allows optional fields (motifSignal, rerankOutput, etc.). */
+export const ResolvedContextSchema = z.object({
+  memories: z.array(z.unknown()),
+  canonChunks: z.array(z.unknown()),
+  canonScenes: z.array(z.unknown()),
+  recentTurns: z.array(z.unknown()),
+  derivedState: z.record(z.unknown()),
+  queryEmbedding: z.array(z.number()),
+  canonQueryEmbedding: z.array(z.number()),
+  sessionSummary: z.unknown(),
+  sessionRecall: z.array(z.unknown()),
+  structMemEntries: z.array(z.unknown()),
+  structMemEntryContextExpansions: z.array(z.unknown()),
+  structMemConsolidations: z.array(z.unknown()),
+  openThreads: z.array(z.unknown()),
+  memoryCorrections: z.array(z.unknown()),
+  latestTurnDelta: z.unknown(),
+  queryRewrite: z.record(z.unknown()),
+  retrievalPlan: z.record(z.unknown()),
+  turnType: z.string(),
+  recallThoughtContext: z.record(z.unknown()),
+  isFirstUserTurn: z.boolean(),
+}).passthrough() as unknown as z.ZodType<ResolvedContext>;
 
 /**
  * Pre-rerank retrieval context: everything built before the rerank/deterministic

@@ -1,4 +1,5 @@
-﻿import type {
+﻿import { z } from "zod";
+import type {
   CharacterDefaults,
   PersonaOverlayDefaults,
 } from "../../character/characterDefaults";
@@ -47,6 +48,24 @@ export interface PromptContext {
   /** Reranker-selected memory sources for validator plumbing. */
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
 }
+
+/** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
+export const PromptContextSchema = z.object({
+  systemPrompt: z.string(),
+  conversationHistory: z.array(
+    z.object({ role: z.enum(["user", "assistant"]), content: z.string() }),
+  ),
+  retrievedCanonNarrative: z.string().optional(),
+  selectedMemorySources: z
+    .array(
+      z.object({
+        source: z.string(),
+        relevance: z.string(),
+        usageInstruction: z.string(),
+      }),
+    )
+    .optional(),
+});
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
 

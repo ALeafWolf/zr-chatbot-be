@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   loadCharacterDefaults,
   loadPersonaOverlay,
@@ -24,6 +25,16 @@ export interface LoadRoleplayCharacterContextOutput {
   personaOverlay: PersonaOverlayDefaults;
   voiceHints: string;
 }
+
+/** Runtime Zod schema for LoadRoleplayCharacterContextOutput.
+ * CharacterDefaults and PersonaOverlayDefaults are large types with complex nesting;
+ * keep those as z.custom() to avoid duplicating their full schemas. */
+export const LoadRoleplayCharacterContextOutputSchema = z.object({
+  characterDefaults: z.custom<CharacterDefaults>(),
+  overlayId: z.string(),
+  personaOverlay: z.custom<PersonaOverlayDefaults>(),
+  voiceHints: z.string(),
+});
 
 export interface ResolveRoleplayContextInput {
   session: ChatSession;
