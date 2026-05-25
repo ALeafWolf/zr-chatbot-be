@@ -37,6 +37,7 @@ export function createRoleplayPreGenerationGraph(
     try {
       return { session: await deps.loadSession(state.sessionId) };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/loadSession] error:", err);
       return { errors: [{ stage: "loadSession", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -46,6 +47,7 @@ export function createRoleplayPreGenerationGraph(
     try {
       return { characterContext: await deps.loadCharacterContext({ session: state.session }) };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/loadCharacterContext] error:", err);
       return { errors: [{ stage: "loadCharacterContext", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -57,6 +59,7 @@ export function createRoleplayPreGenerationGraph(
     try {
       return { preRerankContext: await fn({ session: state.session!, userMessage: state.userMessage, characterDefaults: state.characterContext!.characterDefaults }) };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/buildPreRerankContext] error:", err);
       return { errors: [{ stage: "buildPreRerankContext", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -116,6 +119,7 @@ export function createRoleplayPreGenerationGraph(
         };
       }
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/rerank] error:", err);
       return { errors: [{ stage: "rerank", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -127,6 +131,7 @@ export function createRoleplayPreGenerationGraph(
     try {
       return { resolvedContext: await fn(state.preRerankContext as any, state.rerankResult as any) };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/assembleResolvedContext] error:", err);
       return { errors: [{ stage: "assembleResolvedContext", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -136,6 +141,7 @@ export function createRoleplayPreGenerationGraph(
     try {
       return { promptContext: await deps.buildPromptContext({ characterDefaults: state.characterContext.characterDefaults, personaOverlay: state.characterContext.personaOverlay, session: state.session, resolvedContext: state.resolvedContext, userMessage: state.userMessage }) };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/buildPrompt] error:", err);
       return { errors: [{ stage: "buildPrompt", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -230,6 +236,7 @@ export function createRoleplayPreGenerationGraph(
         },
       };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/deterministicContextSelector] error:", err);
       return { errors: [{ stage: "deterministicContextSelector", message: err instanceof Error ? err.message : String(err) }] };
     }
   }
@@ -280,6 +287,7 @@ export function createRoleplayPreGenerationGraph(
         },
       };
     } catch (err) {
+      console.error("[roleplayPreGenerationGraph/hybridScoreRerank] error:", err);
       return { errors: [{ stage: "hybridScoreRerank", message: err instanceof Error ? err.message : String(err) }] };
     }
   }

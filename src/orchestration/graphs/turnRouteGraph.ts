@@ -65,6 +65,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
       const session = await deps.loadSession(state.sessionId);
       return { session };
     } catch (err) {
+      console.error("[turnRouteGraph/loadSession] error:", err);
       return {
         errors: [
           {
@@ -88,6 +89,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
       });
       return { routeIntent };
     } catch (err) {
+      console.error("[turnRouteGraph/classifyTurnRoute] error:", err);
       return {
         errors: [
           {
@@ -119,6 +121,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
       });
       return { result };
     } catch (err) {
+      console.error("[turnRouteGraph/roleplayTurn] error:", err);
       return {
         errors: [
           {
@@ -140,6 +143,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
       });
       return { result };
     } catch (err) {
+      console.error("[turnRouteGraph/appCommand] error:", err);
       return {
         errors: [
           {
@@ -161,6 +165,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
       });
       return { result };
     } catch (err) {
+      console.error("[turnRouteGraph/unsupportedTurn] error:", err);
       return {
         errors: [
           {
@@ -177,7 +182,7 @@ export function createTurnRouteGraph(deps: RouteGraphDeps = defaultRouteGraphDep
   function errorSinkNode(
     _state: TurnRouteGraphState,
   ): Partial<TurnRouteGraphState> {
-    // Terminal â€” no-op. The error was already recorded upstream.
+    // Terminal â€?no-op. The error was already recorded upstream.
     return {};
   }
 

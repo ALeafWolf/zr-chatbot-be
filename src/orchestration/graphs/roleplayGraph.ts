@@ -126,7 +126,7 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
  * Create a coarse roleplay graph that includes generation, validation,
  * deflection, persistence, and wake-post-turn nodes.
  *
- * ⚠️ DEV/SMOKE-ONLY — NOT the production stream path.
+ * ⚠️ DEV/SMOKE-ONLY �?NOT the production stream path.
  *
  * This graph is useful for development and smoke testing, but it is NOT
  * behavior-equivalent to the production stream path (direct generation or
@@ -137,8 +137,8 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
  * Known gaps vs the production stream path:
  * - Fresh thought caches/arrays (`_cache`, `_thoughtsAcc`) instead of shared
  *   per-request instances.
- * - Hardcoded `isFirstUserTurn: false` — does not detect first-turn metadata.
- * - Persistence uses `thoughts: []` — recall thoughts are not accumulated.
+ * - Hardcoded `isFirstUserTurn: false` �?does not detect first-turn metadata.
+ * - Persistence uses `thoughts: []` �?recall thoughts are not accumulated.
  * - Drained generation via `runGeneration()` without stream event semantics.
  * - Validation context now uses the shared `buildValidatorContext()` helper
  *   (fixed in Task Group 2), which closes the original parity gap.
@@ -170,6 +170,7 @@ function createRoleplayGraphImpl(
       const session = await deps.loadSession(state.sessionId);
       return { session };
     } catch (err) {
+      console.error("[roleplayGraph/loadSession] error:", err);
       return {
         errors: [{ stage: "loadSession", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -184,6 +185,7 @@ function createRoleplayGraphImpl(
       const characterContext = await deps.loadCharacterContext({ session: state.session });
       return { characterContext };
     } catch (err) {
+      console.error("[roleplayGraph/loadCharacterContext] error:", err);
       return {
         errors: [{ stage: "loadCharacterContext", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -202,6 +204,7 @@ function createRoleplayGraphImpl(
       });
       return { resolvedContext };
     } catch (err) {
+      console.error("[roleplayGraph/resolveContext] error:", err);
       return {
         errors: [{ stage: "resolveContext", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -222,6 +225,7 @@ function createRoleplayGraphImpl(
       });
       return { promptContext };
     } catch (err) {
+      console.error("[roleplayGraph/buildPrompt] error:", err);
       return {
         errors: [{ stage: "buildPrompt", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -273,6 +277,7 @@ function createRoleplayGraphImpl(
       if (draft) return { draft };
       return {};
     } catch (err) {
+      console.error("[roleplayGraph/generateDraft] error:", err);
       const toolLoopExceeded = err != null && typeof err === "object" && "name" in err && (err as Error).name === "ToolLoopExceededError";
       return {
         errors: [{ stage: "generateDraft", message: err instanceof Error ? err.message : String(err), ...(toolLoopExceeded ? { toolLoopExceeded: true } : {}) }],
@@ -316,6 +321,7 @@ function createRoleplayGraphImpl(
       if (attempt === 1) return { validation1Result: result };
       return { validation2Result: result };
     } catch (err) {
+      console.error("[roleplayGraph/validateDraft] error:", err);
       return {
         errors: [{ stage: "validateDraft", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -368,6 +374,7 @@ function createRoleplayGraphImpl(
       if (rewriteDraft) return { rewriteDraft };
       return {};
     } catch (err) {
+      console.error("[roleplayGraph/runRewriteDraft] error:", err);
       const toolLoopExceeded = err != null && typeof err === "object" && "name" in err && (err as Error).name === "ToolLoopExceededError";
       return {
         errors: [{ stage: "runRewriteDraft", message: err instanceof Error ? err.message : String(err), ...(toolLoopExceeded ? { toolLoopExceeded: true } : {}) }],
@@ -410,6 +417,7 @@ function createRoleplayGraphImpl(
       if (result) return { generationResult: result };
       return { generationResult: { content: safeText, validatorResult: { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false }, wasRewritten: false, wasDeflected: true, inputTokens: 0, outputTokens: 0 } as any };
     } catch (err) {
+      console.error("[roleplayGraph/safeDeflection] error:", err);
       return {
         errors: [{ stage: "safeDeflection", message: err instanceof Error ? err.message : String(err) }],
       };
@@ -485,6 +493,7 @@ function createRoleplayGraphImpl(
       });
       return { persistedRoute, persisted };
     } catch (err) {
+      console.error("[roleplayGraph/persistTurn] error:", err);
       return {
         errors: [{ stage: "persistTurn", message: err instanceof Error ? err.message : String(err) }],
       };
