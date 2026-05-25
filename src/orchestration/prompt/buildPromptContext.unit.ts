@@ -474,4 +474,91 @@ describe("buildPromptContext structured query label rules", () => {
       ),
     );
   });
+
+  // -------------------------------------------------------------------------
+  // CHARACTER INTERNAL LOGIC block
+  // -------------------------------------------------------------------------
+
+  it("CHARACTER INTERNAL LOGIC block renders when internal_logic is provided", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        core_belief: "真正的在意必须通过可靠的行动来证明。",
+        core_motivation: "以可靠的方式守护所珍视的人。",
+        core_fear: "辜负他人，造成无法弥补的后果。",
+        defense_mechanism: "当他感到压力时会先沉默或转移话题。",
+        transition_rule: "克制 → 停顿 → 回避 → 被追问 → 松动。",
+        growth_environment: "在严格的环境中成长，习惯以克制应对压力。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should render when internal_logic is provided",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC block is omitted when internal_logic is undefined", () => {
+    const input = baseInput();
+    // Ensure no internal_logic field
+    const defaults = { ...input.characterDefaults };
+    delete (defaults as any).internal_logic;
+    input.characterDefaults = defaults as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should be absent when internal_logic is undefined",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC block is omitted when all internal_logic fields are empty", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        growth_environment: "",
+        core_belief: "",
+        core_motivation: "",
+        core_fear: "",
+        defense_mechanism: "",
+        transition_rule: "",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should be absent when all fields are empty",
+    );
+  });
+
+  it("block ordering: BASE PERSONA < CHARACTER INTERNAL LOGIC < CONTINUITY OVERLAY", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        core_belief: "真正的在意必须通过可靠的行动来证明。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const basePersonaIdx = prompt.indexOf("[BASE PERSONA]");
+    const internalLogicIdx = prompt.indexOf("[CHARACTER INTERNAL LOGIC]");
+    const continuityIdx = prompt.indexOf("[CONTINUITY OVERLAY]");
+
+    assert.ok(basePersonaIdx >= 0, "[BASE PERSONA] should exist");
+    assert.ok(internalLogicIdx >= 0, "[CHARACTER INTERNAL LOGIC] should exist");
+    assert.ok(continuityIdx >= 0, "[CONTINUITY OVERLAY] should exist");
+    assert.ok(
+      basePersonaIdx < internalLogicIdx,
+      "[BASE PERSONA] should come before [CHARACTER INTERNAL LOGIC]",
+    );
+    assert.ok(
+      internalLogicIdx < continuityIdx,
+      "[CHARACTER INTERNAL LOGIC] should come before [CONTINUITY OVERLAY]",
+    );
+  });
 });

@@ -1,4 +1,5 @@
 ﻿import { z } from "zod";
+import { formatInternalLogic } from "../../character/psychology/formatInternalLogic";
 import type {
   CharacterDefaults,
   PersonaOverlayDefaults,
@@ -192,6 +193,13 @@ ${hardRules}
     ),
 
     buildBlock("BASE PERSONA", basePersonaBody),
+
+    // CHARACTER INTERNAL LOGIC — inserted between BASE PERSONA and CONTINUITY OVERLAY
+    // for high salience. Renders only when internal_logic data is present.
+    ...(characterDefaults.internal_logic &&
+    Object.values(characterDefaults.internal_logic).some((v) => v?.trim())
+      ? [buildBlock("CHARACTER INTERNAL LOGIC", formatInternalLogic(characterDefaults.internal_logic))]
+      : []),
 
     buildBlock(
       "CONTINUITY OVERLAY",
