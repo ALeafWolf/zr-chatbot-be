@@ -8,6 +8,10 @@ import { createPostTurnMemoryGraph } from "../orchestration/graphs/postTurnMemor
 import type { PostTurnMemoryGraphDeps } from "../orchestration/graphs/postTurnMemoryGraph";
 import type { PostTurnJobPayloadV1, PostTurnStepName, PostTurnStepStatus } from "./postTurnJobPayload";
 import { INITIAL_POST_TURN_STEP_STATUS, markStepCompleted } from "./postTurnJobPayload";
+import {
+  createAgentEvalCapture,
+  withAgentEvalCapture,
+} from "../eval/evalSnapshots";
 
 // NOTE: No mock.module is used here because it is globally scoped and would
 // break other test suites that need the real db client. Instead, all DB-bound
@@ -73,8 +77,8 @@ class TestPostTurnRunner extends PostTurnRunner {
   }
 
   /** Expose protected runClaimedJob for tests. */
-  async callRunClaimedJob(job: PostTurnJobRow): Promise<void> {
-    await (this as any).runClaimedJob(job);
+  async callRunClaimedJob(job: PostTurnJobRow): Promise<boolean> {
+    return await (this as any).runClaimedJob(job);
   }
 
   /** Override the eval load/claim seam so runJobByIdForEval doesn't need DB. */
@@ -84,6 +88,18 @@ class TestPostTurnRunner extends PostTurnRunner {
     return {
       job: job({ status: "pending", payload: PAYLOAD_WITH_SIG }) as PostTurnJobRow,
     };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MissingJobRunner — for Test B (missing job throws)
+// ---------------------------------------------------------------------------
+
+class MissingJobRunner extends TestPostTurnRunner {
+  override async loadAndClaimEvalJob(
+    _jobId: string,
+  ): Promise<{ job: PostTurnJobRow } | { missing: boolean; completed: boolean }> {
+    return { missing: true, completed: false };
   }
 }
 
@@ -200,8 +216,10 @@ describe("PostTurnRunner behavior (TG2 round 3)", () => {
 
     await r.runJobByIdForEval("existing-job");
 
-    assert.strictEqual(r.completeCalls.length, 1,
-      `completeCalls should have 1 entry, got ${JSON.stringify(r.completeCalls)}`);
+    // completeJob is called twice: once by the graph's completeJobFn, once by
+    // runJobByIdForEval (to force "completed" and prevent FK violations).
+    assert.strictEqual(r.completeCalls.length, 2,
+      `completeCalls should have 2 entries, got ${JSON.stringify(r.completeCalls)}`);
     assert.strictEqual(r.fJobCalls.length, 0,
       `failJob should NOT have been called, got ${JSON.stringify(r.fJobCalls)}`);
   });
@@ -225,5 +243,55 @@ describe("PostTurnRunner behavior (TG2 round 3)", () => {
       `expected tags to include "graph:postTurnMemoryGraph", got ${JSON.stringify(r.lastInvokeConfig.tags)}`);
     assert.ok(r.lastInvokeConfig.metadata, "config should contain metadata");
     assert.strictEqual(r.lastInvokeConfig.metadata.postTurnJobId, "j1");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG2: Eval failure propagation
+  // ---------------------------------------------------------------------------
+
+  // A. Eval failure propagation
+  it("A. runJobByIdForEval throws when graph fails", async () => {
+    const r = new TestPostTurnRunner();
+    r.setFactory(() =>
+      new StateGraph(PostTurnGraphStateSchema)
+        .addNode("e", async () => ({ errors: [{ stage: "s", message: "graph error" }] }))
+        .addEdge(START, "e")
+        .compile() as any,
+    );
+
+    const capture = createAgentEvalCapture({ scenarioId: "test", evalSessionId: "s" });
+    let threw = false;
+    await withAgentEvalCapture(capture, async () => {
+      try {
+        await r.runJobByIdForEval("test-job");
+      } catch {
+        threw = true;
+      }
+    });
+
+    assert.strictEqual(threw, true, "runJobByIdForEval should throw when graph fails");
+    assert.strictEqual(r.completeCalls.length, 1,
+      "completeJob should still be called to prevent FK violation");
+    assert.strictEqual(capture.memoryWrite.status, "failed",
+      "capture status should be failed");
+  });
+
+  // B. Missing job throws
+  it("B. runJobByIdForEval throws when job is missing", async () => {
+    const r = new MissingJobRunner();
+    const capture = createAgentEvalCapture({ scenarioId: "test", evalSessionId: "s" });
+    let threw = false;
+    await withAgentEvalCapture(capture, async () => {
+      try {
+        await r.runJobByIdForEval("nonexistent-job");
+      } catch {
+        threw = true;
+      }
+    });
+
+    assert.strictEqual(threw, true, "should throw when job is missing");
+    assert.strictEqual(capture.memoryWrite.status, "failed");
+    assert.strictEqual(r.completeCalls.length, 0,
+      "completeJob should NOT be called for a missing job");
   });
 });

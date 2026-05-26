@@ -632,11 +632,29 @@ describe("buildPromptContext structured query label rules", () => {
   // Anti-sycophancy correction instruction
   // -------------------------------------------------------------------------
 
-  it("anti-sycophancy instruction appears in SYSTEM block", () => {
+  it("[纠正方式] appears in BASE PERSONA when canon_correction is set", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      canon_correction: "如果用户提出错误前提，角色会平静地纠正。",
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[纠正方式]"),
+      "[纠正方式] should appear when canon_correction is set",
+    );
+    assert.ok(
+      prompt.includes("如果用户提出错误前提"),
+      "canon_correction body text should be present",
+    );
+  });
+
+  it("[纠正方式] is absent when canon_correction is not set", () => {
     const prompt = buildPromptContext(baseInput()).systemPrompt;
     assert.ok(
-      prompt.includes("不会为了迎合而顺着错误前提说下去"),
-      "anti-sycophancy instruction must be present in system prompt",
+      !prompt.includes("[纠正方式]"),
+      "[纠正方式] should be absent when canon_correction is not set",
     );
   });
 
