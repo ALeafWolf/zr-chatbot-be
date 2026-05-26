@@ -129,16 +129,13 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
     eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
-      continuity_scope: "main_relationship",
+      continuity_scope: "main_married",
       continuity_family: "main_world",
       writeback_policy: "no_writeback",
     },
     messages: [
-      { role: "user", content: "你还记不记得我们第一次见面的时候，是你主动来找我说话的？", turnIndex: 0 },
+      { role: "user", content: "左然，你还记得我们第一次去枫河露营公园的民宿时，你给我写的信吗？", turnIndex: 0 },
     ],
-    configOverrides: {
-      canonReferenceIds: ["first_meeting_scene"],
-    },
     assertions: [],
   },
 

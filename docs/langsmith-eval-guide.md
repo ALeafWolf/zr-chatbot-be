@@ -28,7 +28,7 @@ Metrics captured in agent-turn mode include retrieval (including **memory rerank
 ### What's not yet implemented
 
 - CI integration, online feedback, and multi-dataset milestone automation.
-- Variant guardrails for context planner (`no_rewrite`) and validator (`lightweight`) — these are recognized but fail fast with a clear error until implemented.
+- Variant guardrails for context planner (`no_rewrite`, `structured_query`) and validator (`lightweight`) — these are recognized but fail fast with a clear error until implemented.
 
 ## Prerequisites
 
@@ -51,6 +51,9 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 # Required for eval experiments
 LANGSMITH_EVAL_DATASET=zuoran-phase1-eval
 
+# Experiment naming prefix (default: "zuoran")
+# LANGSMITH_EXPERIMENT_PREFIX=zuoran
+
 # Trace metadata (auto-attached to every run)
 TRACE_ENVIRONMENT=development   # or staging / production
 APP_VERSION=dev                 # your app version tag
@@ -65,6 +68,12 @@ MEMORY_RERANK_TIMEOUT_MS=30000
 
 # Tier-4 attribution judge scenarios (optional)
 # VALIDATOR_STRICT_ATTRIBUTION=1
+
+# LLM judge evaluation (optional, default: disabled)
+# EVAL_ENABLE_LLM_JUDGE=0
+
+# Attribution judge model (optional, defaults to extractor model)
+# VALIDATOR_ATTRIBUTION_JUDGE_MODEL=deepseek:deepseek-chat
 ```
 
 Verify your config works:
@@ -430,23 +439,26 @@ npm run eval:langsmith
 `src/eval/runLangSmithExperiment.ts`:
 
 1. Reads the dataset named by `LANGSMITH_EVAL_DATASET`.
-2. Dispatches each example:
+   - **Cannot filter by scenario ID** — it always runs every example in the dataset. To run a subset, push to a dedicated dataset and set `LANGSMITH_EVAL_DATASET` accordingly, or use `npm run eval:agent -- --scenario <id>` for local single-turn runs.
+2. The experiment name is prefixed with `LANGSMITH_EXPERIMENT_PREFIX` (default: `"zuoran"`). Use this env var to distinguish experiment series.
+3. Dispatches each example:
    - `eval_mode: "agent_turn"` → `runAgentEval()` (full isolated turn)
    - `eval_mode: "retrieval"` → `runRetrievalEvalForScenario()`
    - `input_draft` present → validator-only
    - otherwise → `mode: "skipped"`
-3. Runs evaluators:
+4. Runs evaluators:
    - `assertionsEvaluator` — deterministic assertion checks (incl. rerank for `agent_turn` rows)
    - `retrievalQualityEvaluator` — anchor counts and needle hits (retrieval mode only)
    - `rerankSelectionPrecision`, `rerankSelectionRecall`, `rerankRejectionAccuracy`, `rerankContextModeAccuracy`, `rerankCompositeScore` — rerank metrics
-4. Exits with code 1 if any row fails `all_assertions_pass`.
+5. Flushes pending LangSmith traces via `flushLangSmithClient()` before exit (ensures all telemetry is submitted even on error).
+6. Exits with code 1 if any row fails `all_assertions_pass`.
 
 **Terminal output example:**
 
 ```
 no_ai_claim  all_assertions_pass=false  ...
 tier3_scene_query  all_assertions_pass=true  All assertions passed.
-Experiment: zuoran-phase1-abc123
+Experiment: zuoran-eval-abc123
  Rows processed: 15, failed: 2
 ```
 
@@ -490,9 +502,23 @@ The `validateExperimentVariants()` function in `src/eval/experimentVariants.ts` 
 - `RETRIEVAL_VARIANT=motif_probe_enabled` requires `STRUCTMEM_MOTIF_PROBE_ENABLED=1`
 - `VALIDATOR_VARIANT=strict_attribution` requires `VALIDATOR_STRICT_ATTRIBUTION=1`
 - `CONTEXT_PLANNER_VARIANT=no_rewrite` — not yet implemented, fails fast
+- `CONTEXT_PLANNER_VARIANT=structured_query` — not yet implemented, fails fast
 - `VALIDATOR_VARIANT=lightweight` — not yet implemented, fails fast
 
 Validation runs at experiment startup; misconfigured variants produce clear error messages before any model calls or traces.
+
+#### Variant alias shortcuts
+
+The `RERANK_VARIANT` env var accepts shorthand aliases in addition to full variant names:
+
+| Full value | Alias |
+|------------|-------|
+| `llm_rerank_v1` | `llm_v1` |
+| `llm_rerank_smaller_model` | `smaller_model` |
+| `hybrid_score` | `hybrid` |
+| `deterministic_only` | `deterministic` |
+
+These are resolved in `experimentVariants.ts`. Other variant env vars (`RETRIEVAL_VARIANT`, `VALIDATOR_VARIANT`, `CONTEXT_PLANNER_VARIANT`) do not currently have aliases.
 
 ### Running Probe Experiments (before/after gate)
 
@@ -714,6 +740,13 @@ RETRIEVAL_VARIANT=hyde_enabled CANON_QUERY_HYDE=1 npm run eval:langsmith
 VALIDATOR_VARIANT=strict_attribution VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval:langsmith
 ```
 
+### Select graph version
+
+```bash
+# Select specific experiment graph version (default: turnGraph.v1; alias: v1)
+LANGSMITH_EXPERIMENT_GRAPH_VERSION=v1 npm run eval:langsmith
+```
+
 Scenario `configOverrides` take precedence when wired through agent-turn input normalization.
 
 ## Unit Tests and Variant Safety
@@ -796,6 +829,7 @@ console.log(JSON.stringify(result, null, 2));
 | `src/orchestration/context/resolveContext.ts` | Records retrieval + rerank snapshots |
 | `src/orchestration/retrieval/memoryRerank.ts` | Memory rerank LLM stage |
 | `src/observability/langsmithTracing.ts` | Tracing + usage capture |
+| `src/eval/evalProcessDrain.ts` | LangSmith client flush helper (submits pending traces before exit) |
 | `src/eval/experimentVariants.ts` | Variant metadata helper, guardrails, run matrix |
 | `src/eval/runAgentEvalCli.ts` | Full-turn agent eval CLI |
 | `src/eval/agentEvalCliHelpers.ts` | CLI argument/validation helpers |
