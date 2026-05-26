@@ -536,7 +536,7 @@ describe("buildPromptContext structured query label rules", () => {
     );
   });
 
-  it("block ordering: BASE PERSONA < CHARACTER INTERNAL LOGIC < CONTINUITY OVERLAY", () => {
+  it("block ordering: CHARACTER INTERNAL LOGIC < BASE PERSONA < CONTINUITY OVERLAY", () => {
     const input = baseInput();
     input.characterDefaults = {
       ...input.characterDefaults,
@@ -546,20 +546,20 @@ describe("buildPromptContext structured query label rules", () => {
     } as unknown as CharacterDefaults;
 
     const prompt = buildPromptContext(input).systemPrompt;
-    const basePersonaIdx = prompt.indexOf("[BASE PERSONA]");
     const internalLogicIdx = prompt.indexOf("[CHARACTER INTERNAL LOGIC]");
+    const basePersonaIdx = prompt.indexOf("[BASE PERSONA]");
     const continuityIdx = prompt.indexOf("[CONTINUITY OVERLAY]");
 
-    assert.ok(basePersonaIdx >= 0, "[BASE PERSONA] should exist");
     assert.ok(internalLogicIdx >= 0, "[CHARACTER INTERNAL LOGIC] should exist");
+    assert.ok(basePersonaIdx >= 0, "[BASE PERSONA] should exist");
     assert.ok(continuityIdx >= 0, "[CONTINUITY OVERLAY] should exist");
     assert.ok(
-      basePersonaIdx < internalLogicIdx,
-      "[BASE PERSONA] should come before [CHARACTER INTERNAL LOGIC]",
+      internalLogicIdx < basePersonaIdx,
+      "[CHARACTER INTERNAL LOGIC] should come before [BASE PERSONA]",
     );
     assert.ok(
-      internalLogicIdx < continuityIdx,
-      "[CHARACTER INTERNAL LOGIC] should come before [CONTINUITY OVERLAY]",
+      basePersonaIdx < continuityIdx,
+      "[BASE PERSONA] should come before [CONTINUITY OVERLAY]",
     );
   });
 
@@ -645,6 +645,76 @@ describe("buildPromptContext structured query label rules", () => {
     assert.ok(
       !prompt.includes("当你不确定"),
       "hedge-on-uncertainty instruction must NOT be present",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // propagate-yaml-v2 TG2: core_traits, format_resistance, relationship_scope_gate
+  // -------------------------------------------------------------------------
+
+  it("[核心特征] is absent when core_traits is not set (TG2 Test A)", () => {
+    const input = baseInput();
+    // Remove core_traits from the stub
+    const defaults = { ...input.characterDefaults };
+    delete (defaults as any).core_traits;
+    input.characterDefaults = defaults as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[核心特征]"),
+      "[核心特征] should be absent when core_traits is undefined",
+    );
+  });
+
+  it("[核心特征] is absent when core_traits is empty array (TG2 Test A)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      core_traits: [],
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[核心特征]"),
+      "[核心特征] should be absent when core_traits is empty",
+    );
+  });
+
+  it("[格式抗性] appears in BASE PERSONA when format_resistance is set (TG2 Test B)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      format_resistance: "角色不会为了配合用户请求的格式而改变回复结构。",
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[格式抗性]"),
+      "[格式抗性] should appear when format_resistance is set",
+    );
+    assert.ok(
+      prompt.includes("配合用户请求的格式"),
+      "format_resistance body text should be present",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC contains 关系阶段门控 when relationship_scope_gate is set (TG2 Test C)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        relationship_scope_gate: "在非亲密关系中，防御机制深度不超出表层克制。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("关系阶段门控"),
+      "关系阶段门控 should appear in CHARACTER INTERNAL LOGIC",
+    );
+    assert.ok(
+      prompt.includes("防御机制深度"),
+      "relationship_scope_gate body text should be present",
     );
   });
 });

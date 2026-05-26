@@ -27,6 +27,8 @@ export function formatInternalLogic(
   push("核心恐惧", internalLogic.core_fear);
   push("防御机制", internalLogic.defense_mechanism);
   push("状态转换规则", internalLogic.transition_rule);
+  push("关系阶段门控", internalLogic.relationship_scope_gate);
+  push("表达约束", internalLogic.expression_constraint);
 
   if (lines.length === 0) return "";
 

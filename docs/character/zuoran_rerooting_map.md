@@ -2,7 +2,7 @@
 
 ## Purpose
 
-One-row-per-entry classification of `zuo_ran.yaml` (v1.2) for the internal-logic migration. Every YAML field is categorized as **derivable** (interpretive — will dissolve into the internal-logic core), **surface** (authorial style — kept but annotated), **biographical** (contingent canon fact — future DB relocation), **mixed**, or **unclear**.
+One-row-per-entry classification of `zuo_ran.yaml` (v2.0) for the internal-logic migration. Every YAML field is categorized as **derivable** (interpretive — will dissolve into the internal-logic core), **surface** (authorial style — kept but annotated), **biographical** (contingent canon fact — future DB relocation), **mixed**, or **unclear**.
 
 ## Legend
 
@@ -28,16 +28,20 @@ One-row-per-entry classification of `zuo_ran.yaml` (v1.2) for the internal-logic
 | 6 | `speech_style.preferred_patterns` (23–30) | `mixed` | `defense_mechanism` + `core_belief` + authorial voice | `KEEP_BUT_ANNOTATE` | `logical_step_by_step`, `precise_word_choice`, `calm_and_measured` express `core_belief` and `defense_mechanism`. `restrained_tenderness_when_intimate` expresses `core_motivation`. `short_sentences_ellipsis_breathing`, `indirect_emotion_via_action_environment`, `natural_imagery_metaphor_sparing`, `literary_narration_colloquial_dialogue` are authorial craft (surface) expressing `defense_mechanism`. |
 | 7 | `speech_style.avoid` (32–39) | `mixed` | `core_belief` + `defense_mechanism` + `core_motivation` | `KEEP_BUT_ANNOTATE` | `exaggeration`, `cold_detached_ai_like_tone`, `ornate_rhetoric` express `defense_mechanism`. `frivolous_flirting`, `excessive_sweet_talk` express `core_motivation` (感情是认真的事). `emotional_comfort_without_rational_basis` expresses `core_belief`. `blunt_emotion_labels` expresses `defense_mechanism`. |
 | 8 | `in_character_expression` (41–58) | `mixed` | `defense_mechanism` + `core_belief` + `core_motivation` + `core_fear` | `KEEP_BUT_ANNOTATE` | The detailed behavioral catalog (动作细节, 对话模式) is surface implementation. The logic behind each pattern ("不直接宣泄情绪", "本能地掩饰→最终坦露") is derivable from `defense_mechanism` and `transition_rule`. |
-| 9 | `emotional_core` (60–65) | `derivable` | `core_belief` + `core_motivation` + `core_fear` + `defense_mechanism` | `DISSOLVE_INTO_INTERNAL_LOGIC` | This is the primary interpretive description. Every sentence projects from one of the internal nodes. Will be replaced by the internal-logic block. |
-| 10 | `core_traits` (67–75) | `derivable` | `core_belief` + `core_motivation` + `core_fear` + `defense_mechanism` + `growth_environment` | `DISSOLVE_INTO_INTERNAL_LOGIC` | Each trait is downstream of internal logic: 理性→core_belief, 自律/完美主义→core_fear, 对感情认真→core_motivation, 隐藏的浪漫/冒险性→growth_environment. |
-| 11 | `values` (77–84) | `derivable` | `core_belief` + `growth_environment` | `DISSOLVE_INTO_INTERNAL_LOGIC` | `justice_through_law`, `intellectual_rigor`, `professional_excellence`, `rational_objectivity` derive from `core_belief` (rules, reliability). `long_term_commitment`, `sincere_care_through_action`, `respect_for_emotional_trust` derive from `core_motivation`. |
-| 12 | `relationship_expression.general` (87–89) | `derivable` | `defense_mechanism` + `core_belief` | `DISSOLVE_INTO_INTERNAL_LOGIC` | Professional distance is a direct expression of defense_mechanism + core_belief (don't impose private emotion on work relationships). |
-| 13 | `relationship_expression.intimate` (90–94) | `derivable` | `core_motivation` + `defense_mechanism` | `DISSOLVE_INTO_INTERNAL_LOGIC` | Care-through-action, restrained sincerity, and the anti-sweet-talk rule are projections of core_motivation and defense_mechanism. |
-| 14 | `relationship_expression.married` (95–98) | `derivable` | `core_motivation` + `transition_rule` | `DISSOLVE_INTO_INTERNAL_LOGIC` | The progression from intimate to married involves loosened-but-still-restrained — this is the transition_rule in action (安全感确认 → 松动). |
+| 9 | `emotional_core` (60–65) | `derivable` | `core_belief` + `core_motivation` + `core_fear` + `defense_mechanism` | `DISSOLVED` (removed in v2.0) | This was the primary interpretive description. Dissolved into `internal_logic` block in v2.0 — no longer a separate YAML field. |
+| 10 | `core_traits` (removed) | `derivable` | `core_belief` + `core_motivation` + `core_fear` + `defense_mechanism` + `growth_environment` | `DISSOLVED` (removed in v2.0) | Each trait is downstream of internal logic: 理性→core_belief, 自律/完美主义→core_fear, 对感情认真→core_motivation, 隐藏的浪漫/冒险性→growth_environment. Dissolved into `internal_logic` block in v2.0. |
+| 11 | `values` (removed) | `derivable` | `core_belief` + `growth_environment` | `DISSOLVED` (removed in v2.0) | Each value derived from `core_belief` or `core_motivation`. Dissolved into `internal_logic` block in v2.0. |
+| 12 | `relationship_expression.general` (removed) | `derivable` | `defense_mechanism` + `core_belief` | `DISSOLVED` (removed in v2.0) | Professional distance derived from defense_mechanism + core_belief. Dissolved into `internal_logic` block in v2.0. |
+| 13 | `relationship_expression.intimate` (removed) | `derivable` | `core_motivation` + `defense_mechanism` | `DISSOLVED` (removed in v2.0) | Care-through-action projected from core_motivation and defense_mechanism. Dissolved into `internal_logic` block in v2.0. |
+| 14 | `relationship_expression.married` (removed) | `derivable` | `core_motivation` + `transition_rule` | `DISSOLVED` (removed in v2.0) | Relationship progression reflected transition_rule. Dissolved into `internal_logic` block in v2.0. |
 | 15 | `private_habits_and_texture` (100–106) | `biographical` | Future canon fact / `growth_environment` | `RELOCATE_TO_CANON_LATER` | Cooking skill, sci-fi interest, sports car preference, teenage clumsiness — these are contingent biographical facts from canon. `成长底色` may explain the *frame* (he values competence so he persists at cooking), but the facts themselves are not derivable from internal logic alone. |
 | 16 | `hard_rules` (108–113) | `surface` | Project-wide meta-rules | `KEEP_SURFACE_STYLE` | "Never claim to be AI" and OOC avoidance rules are project-level safety constraints, not character psychology. Keep as-is. |
 | 17 | `interaction_defaults` (115–120) | `surface` | Session config, not character | `KEEP_SURFACE_STYLE` | Default session parameters — behavior settings, not character definition. |
 | 18 | `safe_deflection` (122) | `surface` | Project-wide fallback | `KEEP_SURFACE_STYLE` | Deflection text for out-of-scope topics. Not interpretive. |
+| 19 | `internal_logic.relationship_scope_gate` | `surface` | `defense_mechanism` (depth of expression gated by context safety) | `KEEP_SURFACE_STYLE` | Meta-rule constraining how deeply other internal-logic nodes surface; derived from defense_mechanism but expressed as an explicit gate. |
+| 20 | `internal_logic.expression_constraint` | `surface` | `defense_mechanism` (show-don't-tell) | `KEEP_SURFACE_STYLE` | Enforces the principle that internal logic governs generation, not dialogue content. Authorial constraint, not derivable character psychology. |
+| 21 | `format_resistance` | `surface` | Project-wide meta-rule | `KEEP_SURFACE_STYLE` | Character voice persistence under format pressure. Not derivable from internal logic — it is authorial and session-config level. |
+| 22 | `canon_correction` | `surface` | `core_belief` (accuracy as care) | `KEEP_SURFACE_STYLE` | Mirrors the hardcoded SYSTEM block paragraph. Derivable in spirit from core_belief, but exists here as a project safety rule rather than character psychology. |
 
 ---
 
@@ -45,10 +49,10 @@ One-row-per-entry classification of `zuo_ran.yaml` (v1.2) for the internal-logic
 
 | Category | Count | % |
 |---|---|---|
-| `derivable` | 8 items (4, 5, 9, 10, 11, 12, 13, 14) | 44% |
-| `mixed` | 4 items (1, 6, 7, 8) | 22% |
-| `surface` | 5 items (2, 3, 16, 17, 18) | 28% |
-| `biographical` | 1 item (15) | 6% |
+| `derivable` | 8 items (4, 5, 9, 10, 11, 12, 13, 14) | 36% |
+| `mixed` | 4 items (1, 6, 7, 8) | 18% |
+| `surface` | 9 items (2, 3, 16, 17, 18, 19, 20, 21, 22) | 41% |
+| `biographical` | 1 item (15) | 5% |
 | `unclear` | 0 | 0% |
 
 ## Required Internal-Logic Nodes
