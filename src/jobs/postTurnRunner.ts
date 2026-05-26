@@ -23,6 +23,7 @@ import {
 } from "./postTurnJobPayload";
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
 import {
+  getAgentEvalCapture,
   recordMemoryWriteSnapshot,
 } from "../eval/evalSnapshots";
 import { defaultPostTurnMemoryGraphDeps, createPostTurnMemoryGraph } from "../orchestration/graphs/postTurnMemoryGraph";
@@ -107,12 +108,21 @@ export class PostTurnRunner extends BackgroundRunner {
           status: "failed",
           error: `post_turn_job_not_found:${jobId}`,
         });
-      } else {
-        recordMemoryWriteSnapshot({ status: "completed" });
+        throw new Error(`post_turn_job_not_found:${jobId}`);
       }
+      recordMemoryWriteSnapshot({ status: "completed" });
       return;
     }
-    await this.runClaimedJob(result.job);
+    const succeeded = await this.runClaimedJob(result.job);
+    // Force "completed" so the live PostTurnRunner never re-claims this eval job.
+    // runClaimedJob marks the job completed on graph success; on failure it marks
+    // it "retry", which the live runner would then pick up after cleanupEvalSession
+    // has already deleted the eval session — causing an FK violation in structmem_events.
+    await this.completeJob(result.job.id);
+    if (!succeeded) {
+      const error = getAgentEvalCapture()?.memoryWrite.error ?? "post_turn_job_failed";
+      throw new Error(error);
+    }
   }
 
   private async claimNextJob(): Promise<PostTurnJobRow | null> {
@@ -223,7 +233,7 @@ export class PostTurnRunner extends BackgroundRunner {
     console.error(`[postTurnRunner] job ${job.id} failed:`, err);
   }
 
-  protected async runClaimedJob(job: PostTurnJobRow): Promise<void> {
+  protected async runClaimedJob(job: PostTurnJobRow): Promise<boolean> {
     try {
       recordMemoryWriteSnapshot({
         postTurnJobId: job.id,
@@ -296,12 +306,14 @@ export class PostTurnRunner extends BackgroundRunner {
           recordMemoryWriteSnapshot({ status: "completed" });
         },
       );
+      return true;
     } catch (err) {
       await this.failJob(job, err);
       recordMemoryWriteSnapshot({
         status: "failed",
         error: err instanceof Error ? err.message : String(err),
       });
+      return false;
     }
   }
 }

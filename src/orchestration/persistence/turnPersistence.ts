@@ -193,8 +193,8 @@ async function persistCompletedTurnImpl(
       .where(eq(chatSessions.sessionId, sessionId));
 
     let jobId: string | null = null;
-    if (shouldRunPostTurn && input.derivedState) {
-      const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
+    if (shouldRunPostTurn && input.derivedState && session.writebackPolicy !== "no_writeback") {
+      const shouldWriteMemory = true;
       jobId = newPostTurnJobId();
       const payload: PostTurnJobPayloadV1 = {
         version: 1,

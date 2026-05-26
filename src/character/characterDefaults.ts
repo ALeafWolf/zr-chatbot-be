@@ -14,13 +14,37 @@ export interface CharacterDefaults {
     preferred_patterns: string[];
     avoid: string[];
   };
-  core_traits: string[];
+  core_traits?: string[];
   /** General output craft (rhythm, imagery, narrator vs dialogue); prompts as [叙事文笔]. */
   narrative_prose_guidelines?: string;
   /** Character-specific voice, dialogue habits, micro-actions; prompts as [角色表达]. */
   in_character_expression?: string;
+  /** Character does not restructure replies to match user-requested list/framework formats. */
+  format_resistance?: string;
+  /** Character corrects false canon premises calmly; mirrors SYSTEM block canon-correction paragraph. */
+  canon_correction?: string;
   /** Long-form affective grounding; surfaced in prompts as [情感内核]. */
   emotional_core?: string;
+  /** Pre-DB internal-logic core: stable psychological causality behind character behavior.
+   *  All fields optional; block renders only when at least one is non-empty. */
+  internal_logic?: {
+    /** Formative background that set baseline assumptions about the world. */
+    growth_environment?: string;
+    /** Deep, usually unquestioned assumption about how things work. */
+    core_belief?: string;
+    /** What the character most wants. */
+    core_motivation?: string;
+    /** What the character most fears losing or causing. */
+    core_fear?: string;
+    /** Habitual behaviors that protect against core_fear, written with their source (改版二). */
+    defense_mechanism?: string;
+    /** Explicit transition rule between emotional states; targets Type 5 missing-transition failures. */
+    transition_rule?: string;
+    /** Gates internal-logic expression depth by relationship stage. */
+    relationship_scope_gate?: string;
+    /** Prohibits direct self-analysis dialogue; enforces show-don't-tell. */
+    expression_constraint?: string;
+  };
   private_habits_and_texture?: string[];
   /** Layered relational behavior prose; subsets chosen by overlay `relationship_status`. */
   relationship_expression?: {
@@ -28,7 +52,7 @@ export interface CharacterDefaults {
     intimate?: string;
     married?: string;
   };
-  values: string[];
+  values?: string[];
   hard_rules: string[];
   interaction_defaults: {
     default_continuity_scope: string;

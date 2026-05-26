@@ -27,7 +27,7 @@ export interface Scenario {
     continuity_family: string;
     writeback_policy?: string;
   };
-  messages?: Array<{ role: string; content: string }>;
+  messages?: Array<{ role: "user" | "assistant"; content: string; turnIndex?: number; turn_index?: number; id?: string }>;
   primed_memories?: unknown[];
   sessionSeed?: unknown;
   recentMessages?: unknown[];

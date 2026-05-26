@@ -1,4 +1,5 @@
 ﻿import { z } from "zod";
+import { formatInternalLogic } from "../../character/psychology/formatInternalLogic";
 import type {
   CharacterDefaults,
   PersonaOverlayDefaults,
@@ -154,15 +155,19 @@ export function buildPromptContext(input: {
     : "";
 
   const hardRules = (characterDefaults.hard_rules ?? []).join("\n");
-  const coreTraits = (characterDefaults.core_traits ?? []).join("\n- ");
+  const coreTraits = (characterDefaults.core_traits ?? [])
+    .map((t) => String(t).trim())
+    .filter(Boolean)
+    .join("\n- ");
   const basePersonaParts: string[] = [
-    `${characterDefaults.identity}
-
-[核心特征]
-- ${coreTraits}`,
+    coreTraits
+      ? `${characterDefaults.identity}\n\n[核心特征]\n- ${coreTraits}`
+      : characterDefaults.identity,
     subsection("叙事文笔", characterDefaults.narrative_prose_guidelines),
     subsection("沟通风格", formatSpeechStyle(characterDefaults.speech_style)),
     subsection("角色表达", characterDefaults.in_character_expression),
+    subsection("格式抗性", characterDefaults.format_resistance),
+    subsection("纠正方式", characterDefaults.canon_correction),
     subsection("情感内核", characterDefaults.emotional_core),
     subsection("价值观", bulletsBlock(characterDefaults.values, "- ")),
     subsection(
@@ -188,8 +193,15 @@ ${hardRules}
 
 冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > MEMORY CORRECTIONS > LATEST TURN DELTA > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
-工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
+ 工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
     ),
+
+    // CHARACTER INTERNAL LOGIC — before BASE PERSONA so Layer 1 (why) precedes
+    // Layer 2 surface content (how). Renders only when internal_logic data is present.
+    ...(characterDefaults.internal_logic &&
+    Object.values(characterDefaults.internal_logic).some((v) => v?.trim())
+      ? [buildBlock("CHARACTER INTERNAL LOGIC", formatInternalLogic(characterDefaults.internal_logic))]
+      : []),
 
     buildBlock("BASE PERSONA", basePersonaBody),
 
@@ -310,7 +322,16 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       : []),
 
     ...(hasCanonNarrative
-      ? [buildBlock("CANON NARRATIVE", canonNarrativeBody)]
+      ? [
+          buildBlock("CANON NARRATIVE", canonNarrativeBody),
+          // STYLE SALIENCE REMINDER — immediately after CANON NARRATIVE to defend
+          // against Type 2 register breaks (科普模式, bulleted explanation, blunt labels)
+          // under heavy canon injection. Kept short (≤300 chars) to avoid fighting persona.
+          buildBlock(
+            "STYLE SALIENCE REMINDER",
+            "即使参考了上方剧情资料，回复仍必须保持左然的表达方式：克制、短句、少解释、不科普化；情绪通过停顿、动作和转移体现，不直接剖白。",
+          ),
+        ]
       : []),
 
     ...(showStructured

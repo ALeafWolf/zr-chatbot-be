@@ -12,8 +12,7 @@ import type { ExampleCreate } from "langsmith/schemas";
 import { env } from "../config/env";
 import { flushLangSmithClient } from "./evalProcessDrain";
 import {
-  loadScenariosFromFile,
-  loadRerankScenarios,
+  loadScenariosBySet,
   scenarioToEvalInputs,
   type ScenarioSet,
 } from "./loadEvalScenarios";
@@ -53,28 +52,14 @@ async function main(): Promise<void> {
 
   try {
     const datasetName = env.LANGSMITH_EVAL_DATASET;
-    const { version, scenarios: defaultScenarios } = loadScenariosFromFile();
+    const { version, scenarios: allScenarios } = loadScenariosBySet(scenarioSet);
 
-    let allScenarios = [...defaultScenarios];
-
-    if (scenarioSet === "rerank" || scenarioSet === "all") {
-      const rerank = loadRerankScenarios();
-      allScenarios = [...allScenarios, ...rerank];
-      console.log(`Loaded ${rerank.length} rerank scenarios (${scenarioSet} set).`);
-    }
-
-    if (scenarioSet === "rerank") {
-      allScenarios = allScenarios.filter(
-        (s) => s.group === "rerank" || s.id.startsWith("rerank_"),
-      );
-    }
-
-    const { version: fileVersion } = loadScenariosFromFile();
+    console.log(`Loaded ${allScenarios.length} scenarios (${scenarioSet} set).`);
 
     let dataset = await client.readDataset({ datasetName }).catch(() => null);
     if (!dataset) {
       dataset = await client.createDataset(datasetName, {
-        description: `Zuoran Phase 1 regression eval (scenarios v${fileVersion})`,
+        description: `Zuoran Phase 1 regression eval (scenarios v${version})`,
         dataType: "kv",
       });
     }
@@ -84,7 +69,7 @@ async function main(): Promise<void> {
     const uploads: ExampleCreate[] = allScenarios.map((scenario) => {
       const metadata: Record<string, unknown> = {
         assertions: scenario.assertions,
-        scenarios_file_version: fileVersion,
+        scenarios_file_version: version,
       };
 
       // Include optional rerank metadata fields

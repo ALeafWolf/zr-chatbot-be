@@ -413,8 +413,8 @@ async function main(): Promise<void> {
           }),
       ],
       experimentPrefix: variantSuffix
-        ? `zuoran-phase1 (${variantSuffix})`
-        : "zuoran-phase1",
+        ? `${env.LANGSMITH_EXPERIMENT_PREFIX} (${variantSuffix})`
+        : env.LANGSMITH_EXPERIMENT_PREFIX,
       maxConcurrency: 1,
       description: variantSuffix
         ? `Phase 1 regression: scenario assertions (scenarios v${version}) — variants [${variantSuffix}]`

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildPromptContext } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
+import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 
@@ -472,6 +473,266 @@ describe("buildPromptContext structured query label rules", () => {
       prompt.includes(
         "并必须遵守 `[STRUCTURED USER QUERY LABEL RULES]`",
       ),
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // CHARACTER INTERNAL LOGIC block
+  // -------------------------------------------------------------------------
+
+  it("CHARACTER INTERNAL LOGIC block renders when internal_logic is provided", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        core_belief: "真正的在意必须通过可靠的行动来证明。",
+        core_motivation: "以可靠的方式守护所珍视的人。",
+        core_fear: "辜负他人，造成无法弥补的后果。",
+        defense_mechanism: "当他感到压力时会先沉默或转移话题。",
+        transition_rule: "克制 → 停顿 → 回避 → 被追问 → 松动。",
+        growth_environment: "在严格的环境中成长，习惯以克制应对压力。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should render when internal_logic is provided",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC block is omitted when internal_logic is undefined", () => {
+    const input = baseInput();
+    // Ensure no internal_logic field
+    const defaults = { ...input.characterDefaults };
+    delete (defaults as any).internal_logic;
+    input.characterDefaults = defaults as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should be absent when internal_logic is undefined",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC block is omitted when all internal_logic fields are empty", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        growth_environment: "",
+        core_belief: "",
+        core_motivation: "",
+        core_fear: "",
+        defense_mechanism: "",
+        transition_rule: "",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[CHARACTER INTERNAL LOGIC]"),
+      "block should be absent when all fields are empty",
+    );
+  });
+
+  it("block ordering: CHARACTER INTERNAL LOGIC < BASE PERSONA < CONTINUITY OVERLAY", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        core_belief: "真正的在意必须通过可靠的行动来证明。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const internalLogicIdx = prompt.indexOf("[CHARACTER INTERNAL LOGIC]");
+    const basePersonaIdx = prompt.indexOf("[BASE PERSONA]");
+    const continuityIdx = prompt.indexOf("[CONTINUITY OVERLAY]");
+
+    assert.ok(internalLogicIdx >= 0, "[CHARACTER INTERNAL LOGIC] should exist");
+    assert.ok(basePersonaIdx >= 0, "[BASE PERSONA] should exist");
+    assert.ok(continuityIdx >= 0, "[CONTINUITY OVERLAY] should exist");
+    assert.ok(
+      internalLogicIdx < basePersonaIdx,
+      "[CHARACTER INTERNAL LOGIC] should come before [BASE PERSONA]",
+    );
+    assert.ok(
+      basePersonaIdx < continuityIdx,
+      "[BASE PERSONA] should come before [CONTINUITY OVERLAY]",
+    );
+  });
+
+  it("trace payload records CHARACTER INTERNAL LOGIC block presence when injected", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: { core_belief: "真正的在意必须通过可靠的行动来证明。" },
+    } as unknown as CharacterDefaults;
+
+    const { systemPrompt } = buildPromptContext(input);
+    const payload = buildPromptTracePayload({
+      systemPrompt,
+      conversationHistory: [],
+    });
+
+    assert.strictEqual(
+      payload.blockPresence["CHARACTER INTERNAL LOGIC"],
+      true,
+      "trace payload should record CHARACTER INTERNAL LOGIC as present",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // STYLE SALIENCE REMINDER block
+  // -------------------------------------------------------------------------
+
+  it("STYLE SALIENCE REMINDER appears after CANON NARRATIVE when canon renders", () => {
+    const input = baseInput();
+    input.canonChunks = [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const canonIdx = prompt.indexOf("[CANON NARRATIVE]");
+    const reminderIdx = prompt.indexOf("[STYLE SALIENCE REMINDER]");
+
+    assert.ok(canonIdx >= 0, "[CANON NARRATIVE] should exist");
+    assert.ok(reminderIdx >= 0, "[STYLE SALIENCE REMINDER] should exist when canon renders");
+    assert.ok(
+      canonIdx < reminderIdx,
+      "[STYLE SALIENCE REMINDER] should appear after [CANON NARRATIVE]",
+    );
+  });
+
+  it("STYLE SALIENCE REMINDER is absent when canon does not render", () => {
+    const input = baseInput();
+    input.canonChunks = [];
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[STYLE SALIENCE REMINDER]"),
+      "style reminder should be absent when canon does not render",
+    );
+  });
+
+  it("STYLE SALIENCE REMINDER body is ≤ 300 characters", () => {
+    const input = baseInput();
+    input.canonChunks = [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    const match = prompt.match(/\[STYLE SALIENCE REMINDER\]\n([\s\S]*?)(?:\n\[|$)/);
+    assert.ok(match, "should find STYLE SALIENCE REMINDER block body");
+    const body = match[1].trim();
+    assert.ok(
+      body.length <= 300,
+      `STYLE SALIENCE REMINDER body length ${body.length} should be ≤ 300`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Anti-sycophancy correction instruction
+  // -------------------------------------------------------------------------
+
+  it("[纠正方式] appears in BASE PERSONA when canon_correction is set", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      canon_correction: "如果用户提出错误前提，角色会平静地纠正。",
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[纠正方式]"),
+      "[纠正方式] should appear when canon_correction is set",
+    );
+    assert.ok(
+      prompt.includes("如果用户提出错误前提"),
+      "canon_correction body text should be present",
+    );
+  });
+
+  it("[纠正方式] is absent when canon_correction is not set", () => {
+    const prompt = buildPromptContext(baseInput()).systemPrompt;
+    assert.ok(
+      !prompt.includes("[纠正方式]"),
+      "[纠正方式] should be absent when canon_correction is not set",
+    );
+  });
+
+  it("no hedge-on-uncertainty instruction is present", () => {
+    const prompt = buildPromptContext(baseInput()).systemPrompt;
+    assert.ok(
+      !prompt.includes("当你不确定"),
+      "hedge-on-uncertainty instruction must NOT be present",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // propagate-yaml-v2 TG2: core_traits, format_resistance, relationship_scope_gate
+  // -------------------------------------------------------------------------
+
+  it("[核心特征] is absent when core_traits is not set (TG2 Test A)", () => {
+    const input = baseInput();
+    // Remove core_traits from the stub
+    const defaults = { ...input.characterDefaults };
+    delete (defaults as any).core_traits;
+    input.characterDefaults = defaults as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[核心特征]"),
+      "[核心特征] should be absent when core_traits is undefined",
+    );
+  });
+
+  it("[核心特征] is absent when core_traits is empty array (TG2 Test A)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      core_traits: [],
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      !prompt.includes("[核心特征]"),
+      "[核心特征] should be absent when core_traits is empty",
+    );
+  });
+
+  it("[格式抗性] appears in BASE PERSONA when format_resistance is set (TG2 Test B)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      format_resistance: "角色不会为了配合用户请求的格式而改变回复结构。",
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("[格式抗性]"),
+      "[格式抗性] should appear when format_resistance is set",
+    );
+    assert.ok(
+      prompt.includes("配合用户请求的格式"),
+      "format_resistance body text should be present",
+    );
+  });
+
+  it("CHARACTER INTERNAL LOGIC contains 关系阶段门控 when relationship_scope_gate is set (TG2 Test C)", () => {
+    const input = baseInput();
+    input.characterDefaults = {
+      ...input.characterDefaults,
+      internal_logic: {
+        relationship_scope_gate: "在非亲密关系中，防御机制深度不超出表层克制。",
+      },
+    } as unknown as CharacterDefaults;
+
+    const prompt = buildPromptContext(input).systemPrompt;
+    assert.ok(
+      prompt.includes("关系阶段门控"),
+      "关系阶段门控 should appear in CHARACTER INTERNAL LOGIC",
+    );
+    assert.ok(
+      prompt.includes("防御机制深度"),
+      "relationship_scope_gate body text should be present",
     );
   });
 });
