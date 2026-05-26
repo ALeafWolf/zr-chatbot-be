@@ -193,7 +193,7 @@ ${hardRules}
 
 冲突时优先级（更高者优先）：RECENT CHAT（含当前用户消息）> DERIVED STATE > ACTIVE OPEN THREADS > MEMORY CORRECTIONS > LATEST TURN DELTA > SESSION SUMMARY > RELEVANT SESSION RECALL > STRUCTURED EVENT MEMORY > STRUCTURED MEMORY SYNTHESIS > INTERACTIVE MEMORY > CANON NARRATIVE。较近来源视为更可信；会话级检索块可能早于近期对白，请以 RECENT CHAT 与用户当前消息消解冲突。
 
- 工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
+工具：web_search 可用于查证公开实时信息（天气、新闻等），请少用且保持入戏。`,
     ),
 
     // CHARACTER INTERNAL LOGIC — before BASE PERSONA so Layer 1 (why) precedes
