@@ -60,24 +60,33 @@ export function isScopeCompatible(
   }
 
   const sa = scopeApplicability as Record<string, unknown>;
+  const currentScope = continuityScope ?? undefined;
 
-  // continuityScopes: if present, require current scope to be in the list
+  // continuityScopes: if present, require current scope to be in the list.
+  // Fail closed when current scope is missing or unrecognized.
   const cs = sa.continuityScopes;
-  if (Array.isArray(cs) && cs.length > 0 && continuityScope) {
-    if (!cs.includes(continuityScope)) return false;
+  if (Array.isArray(cs) && cs.length > 0) {
+    if (!currentScope) return false;
+    if (!cs.includes(currentScope)) return false;
   }
 
-  // minContinuityScope: if present, require current scope to be at or above
+  // minContinuityScope: if present and recognized, require current scope
+  // to be at or above the minimum. Fail closed when current scope is
+  // missing or unrecognized for a recognized min scope.
   const minScope = sa.minContinuityScope;
-  if (typeof minScope === "string" && continuityScope) {
+  if (typeof minScope === "string") {
     const minIdx = SCOPE_ORDER[minScope];
-    const curIdx = SCOPE_ORDER[continuityScope];
-    if (minIdx !== undefined && curIdx !== undefined && curIdx < minIdx) {
-      return false;
+    if (minIdx !== undefined) {
+      if (!currentScope) return false;
+      const curIdx = SCOPE_ORDER[currentScope];
+      if (curIdx === undefined) return false;
+      if (curIdx < minIdx) return false;
     }
+    // Unknown minContinuityScope is ignored (fail-open) per design.
   }
 
-  // arcKeys: if present and arc hints are available, require overlap
+  // arcKeys: if present and arc hints are available, require overlap.
+  // arc-key filtering remains fail-open when runtime arc hints are absent.
   const saArcKeys = sa.arcKeys;
   if (Array.isArray(saArcKeys) && saArcKeys.length > 0 && arcKeys && arcKeys.length > 0) {
     const hasOverlap = saArcKeys.some((ak: string) => arcKeys.includes(ak));
@@ -110,6 +119,17 @@ export function computeFinalScore(cosineSimilarity: number, confidenceScore: num
  *
  * Results are sorted by finalScore descending and capped at limit.
  */
+/**
+ * Compute the fetch cap for over-fetching before post-query scope filtering.
+ *
+ * Post-query filtering can reject incompatible rows, so we over-fetch to
+ * avoid under-filled results. The cap ensures we don't fetch unbounded
+ * sets while still leaving room for filtering.
+ */
+export function computeFetchCap(limit: number): number {
+  return Math.min(40, Math.max(limit * 5, 16));
+}
+
 export async function searchInternalLogicEvidence(input: {
   characterId: string;
   queryEmbedding: number[];
@@ -129,6 +149,10 @@ export async function searchInternalLogicEvidence(input: {
 
   if (!env.INTERNAL_LOGIC_EVIDENCE_ENABLED) return [];
   if (queryEmbedding.length === 0) return [];
+
+  // Over-fetch before post-query scope filtering so we don't lose
+  // compatible rows that fall below the initial SQL LIMIT.
+  const fetchCap = computeFetchCap(limit);
 
   const embeddingStr = `[${queryEmbedding.join(",")}]`;
 
@@ -155,7 +179,7 @@ export async function searchInternalLogicEvidence(input: {
       AND embedding IS NOT NULL
       AND (1 - (embedding <=> ${embeddingStr}::vector)) >= ${minScore}::float
     ORDER BY embedding <=> ${embeddingStr}::vector ASC
-    LIMIT ${limit}
+    LIMIT ${fetchCap}
   `);
 
   const hits: InternalLogicEvidenceHit[] = [];

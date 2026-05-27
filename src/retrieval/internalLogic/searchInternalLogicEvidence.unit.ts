@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   isScopeCompatible,
   computeFinalScore,
+  computeFetchCap,
 } from "./searchInternalLogicEvidence";
 
 // ---------------------------------------------------------------------------
@@ -32,10 +33,15 @@ describe("isScopeCompatible", () => {
     assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
   });
 
-  it("passes when no continuityScope is provided", () => {
+  it("fails closed when continuityScopes is set but continuityScope is missing", () => {
     const sa = { continuityScopes: ["main_married"] };
-    assert.equal(isScopeCompatible(sa, null, undefined), true);
-    assert.equal(isScopeCompatible(sa, undefined, undefined), true);
+    assert.equal(isScopeCompatible(sa, null, undefined), false);
+    assert.equal(isScopeCompatible(sa, undefined, undefined), false);
+  });
+
+  it("fails closed when continuityScopes is set but continuityScope is unrecognized", () => {
+    const sa = { continuityScopes: ["main_married"] };
+    assert.equal(isScopeCompatible(sa, "unknown_scope", undefined), false);
   });
 
   it("passes when current scope meets minContinuityScope", () => {
@@ -51,9 +57,21 @@ describe("isScopeCompatible", () => {
     assert.equal(isScopeCompatible(sa, "main_relationship", undefined), false);
   });
 
-  it("passes when minContinuityScope is not a recognized scope", () => {
+  it("fails closed when recognized minContinuityScope is set but continuityScope is missing", () => {
+    const sa = { minContinuityScope: "main_married" };
+    assert.equal(isScopeCompatible(sa, null, undefined), false);
+    assert.equal(isScopeCompatible(sa, undefined, undefined), false);
+  });
+
+  it("fails closed when recognized minContinuityScope is set but continuityScope is unrecognized", () => {
+    const sa = { minContinuityScope: "main_married" };
+    assert.equal(isScopeCompatible(sa, "unknown_scope", undefined), false);
+  });
+
+  it("passes when minContinuityScope is not a recognized scope (fail-open)", () => {
     const sa = { minContinuityScope: "unknown_scope" };
     assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
+    assert.equal(isScopeCompatible(sa, null, undefined), true); // also pass when missing
   });
 
   it("passes when arcKeys overlap", () => {
@@ -69,7 +87,7 @@ describe("isScopeCompatible", () => {
     assert.equal(isScopeCompatible(sa, "main_married", ["main_weiming"]), false);
   });
 
-  it("passes when no arcKeys are provided for filtering", () => {
+  it("passes when no arcKeys are provided for filtering (fail-open)", () => {
     const sa = { arcKeys: ["main_zhiai"] };
     assert.equal(isScopeCompatible(sa, "main_married", undefined), true);
     assert.equal(isScopeCompatible(sa, "main_married", []), true);
@@ -90,11 +108,41 @@ describe("isScopeCompatible", () => {
     assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
     assert.equal(isScopeCompatible(sa, "main_pre_relationship", undefined), false);
   });
+
+  it("fails closed with combined restrictions and missing scope", () => {
+    const sa = {
+      continuityScopes: ["main_married"],
+      minContinuityScope: "main_relationship",
+    };
+    assert.equal(isScopeCompatible(sa, null, undefined), false);
+  });
 });
 
 // ---------------------------------------------------------------------------
 // computeFinalScore
 // ---------------------------------------------------------------------------
+describe("computeFetchCap", () => {
+  it("returns expected cap for default limit (4)", () => {
+    // limit=4: max(4*5=20, 16) = 20, min(40, 20) = 20
+    assert.equal(computeFetchCap(4), 20);
+  });
+
+  it("returns expected cap for limit=1", () => {
+    // limit=1: max(1*5=5, 16) = 16, min(40, 16) = 16
+    assert.equal(computeFetchCap(1), 16);
+  });
+
+  it("returns expected cap for limit=8", () => {
+    // limit=8: max(8*5=40, 16) = 40, min(40, 40) = 40
+    assert.equal(computeFetchCap(8), 40);
+  });
+
+  it("never exceeds 40", () => {
+    assert.equal(computeFetchCap(10), 40);
+    assert.equal(computeFetchCap(100), 40);
+  });
+});
+
 describe("computeFinalScore", () => {
   it("returns cosineSimilarity when confidenceScore is null", () => {
     assert.equal(computeFinalScore(0.5, null), 0.5);
