@@ -60,6 +60,20 @@ describe("ZUO_RAN_EVIDENCE_SEEDS", () => {
     }
   });
 
+  it("every seed has a valid applyStatus (active or candidate)", () => {
+    for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
+      assert.ok(
+        seed.applyStatus === `active` || seed.applyStatus === `candidate`,
+        `seed ${seed.seedId} has invalid applyStatus: ${seed.applyStatus}`,
+      );
+    }
+  });
+
+  it("has at least one active (applyable) seed", () => {
+    const active = ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `active`);
+    assert.ok(active.length >= 1, `Expected at least 1 active seed, got ${active.length}`);
+  });
+
   it("every seed has at least one validation query", () => {
     for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
       assert.ok(

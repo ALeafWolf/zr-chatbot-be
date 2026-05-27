@@ -38,6 +38,12 @@ export interface InternalLogicEvidenceSeed {
     notes?: string;
   };
   confidenceScore?: number;
+  /**
+   * Apply status for the seed script:
+   * - "active": canon/source-grounded; included in --apply writes.
+   * - "candidate": YAML-derived or prompt-rule-based; NOT written by --apply.
+   */
+  applyStatus: "active" | "candidate";
   /** Curated query texts used to validate retrieval quality. */
   validationQueries: string[];
   /** Human-readable provenance note. */
@@ -70,13 +76,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       minContinuityScope: `main_relationship`,
     },
     confidenceScore: 0.9,
+    applyStatus: `active`,
     validationQueries: [
       `左然为什么不敢要棉花糖`,
       `左然小时候的自我压制`,
       `钢笔和棉花糖的故事`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.core_fear + private_habits_and_texture`,
+      `Canon-grounded: zuo_ran.yaml internal_logic.core_fear explicitly references the cotton-candy-vs-pen birthday story. This is a specific canon biographical anecdote, not a prompt rule.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -96,18 +103,19 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       minContinuityScope: `main_married`,
     },
     confidenceScore: 0.85,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然怎么表达关心`,
       `行李箱里的礼物`,
       `副驾驶的垫子和香水`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.core_motivation + private_habits_and_texture`,
+      `YAML-derived: zuo_ran.yaml internal_logic.core_motivation + private_habits_and_texture. These are specific behavioral anecdotes but lack a direct canon-DB scene reference. Marked candidate until canon-DB provenance is verified.`,
   },
 
   // ---------------------------------------------------------------------------
   // core_motivation: 恶意信件之后的亲笔回信 (letter after malice)
-  // Source: zuo_ran.yaml private_habits_and_texture, jin_shu_feng_hui canon
+  // Source: jin_shu_feng_hui canon Episode 6
   // ---------------------------------------------------------------------------
   {
     seedId: `zuo_ran_core_motivation_02`,
@@ -125,13 +133,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       arcKeys: [`main_zhiai`],
     },
     confidenceScore: 0.8,
+    applyStatus: `active`,
     validationQueries: [
       `左然写给用户的信`,
       `恶意信件之后的亲笔信`,
       `左然怎么处理恶意`,
     ],
     provenanceNote:
-      `jin_shu_feng_hui Episode 6: malicious letters packaged by radio, Zuo Ran writes his own letter`,
+      `Canon-grounded: jin_shu_feng_hui Episode 6 - malicious letters were packaged as radio submissions; Zuo Ran writes his own letter in response. Directly referenced in zuo_ran.yaml private_habits_and_texture.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -151,13 +160,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityScopes: [`main_relationship`, `main_married`],
     },
     confidenceScore: 0.85,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然紧张时会做什么`,
       `左然的防御机制`,
       `左然怎么处理情绪`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.defense_mechanism + private_habits_and_texture`,
+      `Prompt-rule-derived: zuo_ran.yaml internal_logic.defense_mechanism describes behavioral patterns. The evidence text combines the prompt rule with private_habits examples. Marked candidate because the claim and evidence text are behavioral descriptions rather than specific canon events.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -176,13 +186,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityFamily: `main_world`,
     },
     confidenceScore: 0.9,
+    applyStatus: `active`,
     validationQueries: [
       `左然的家庭环境`,
       `左然小时候和母亲的关系`,
       `糖醋里脊的故事`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.growth_environment + private_habits_and_texture`,
+      `Canon-grounded: zuo_ran.yaml internal_logic.growth_environment describes Zuo Ran's family background. The sweet-and-sour rib anecdote is a specific canon biographical detail referenced in both growth_environment and private_habits_and_texture.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -201,13 +212,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityFamily: `main_world`,
     },
     confidenceScore: 0.8,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然为什么重视规则`,
       `左然的职业信念`,
       `左然为什么纠正回忆细节`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.core_belief + canon_correction`,
+      `Prompt-rule-derived: zuo_ran.yaml internal_logic.core_belief + canon_correction. The claim and evidence are character-belief descriptions rather than specific canon events. Marked candidate.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -227,13 +239,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityScopes: [`main_relationship`, `main_married`],
     },
     confidenceScore: 0.85,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然从克制到打开心扉的过程`,
       `左然表达感受的方式`,
       `左然什么时候才会坦露自己`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.transition_rule + private_habits_and_texture`,
+      `Prompt-rule-derived: zuo_ran.yaml internal_logic.transition_rule describes an internal behavioral process. The ring-twirling detail from private_habits_and_texture is a specific canon detail, but the core claim is a behavioral rule. Marked candidate pending canon-DB verification of specific transition instances.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -252,13 +265,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityFamily: `main_world`,
     },
     confidenceScore: 0.85,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然对不同人的态度`,
       `左然为什么在陌生人面前很克制`,
       `左然的专业形象`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.relationship_scope_gate + identity description`,
+      `Prompt-rule-derived: zuo_ran.yaml internal_logic.relationship_scope_gate is a meta-rule about when the character reveals deeper layers. Marked candidate because it is a behavioral instruction rather than a specific canon-evidenced claim.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -277,17 +291,18 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityFamily: `main_world`,
     },
     confidenceScore: 0.9,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然被追问感受时会怎么反应`,
       `左然会不会分析自己的性格`,
       `左然怎么回应情感问题`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.expression_constraint + in_character_expression`,
+      `Prompt-rule-derived: zuo_ran.yaml internal_logic.expression_constraint is a meta-writing instruction that constrains how the character can express himself. This is a prompt rule, not canon evidence. Marked candidate and should remain candidate unless canon-DB can provide specific scenes showing this pattern.`,
   },
 
   // ---------------------------------------------------------------------------
-  // defense_mechanism: 少年时期的顽皮一面 (teenage mischief)
+  // defense_mechanism: 少年时期的顽皮一面 (teenage mischief counterpoint)
   // Source: zuo_ran.yaml private_habits_and_texture
   // ---------------------------------------------------------------------------
   {
@@ -302,13 +317,14 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       continuityFamily: `main_world`,
     },
     confidenceScore: 0.8,
+    applyStatus: `candidate`,
     validationQueries: [
       `左然高中时是什么样的`,
       `左然少年时期的趣事`,
       `左然埋情书的故事`,
     ],
     provenanceNote:
-      `zuo_ran.yaml private_habits_and_texture \u2014\u2014\u5C11\u5E74\u611F/\u7B28\u62D9 section`,
+      `YAML-derived: zuo_ran.yaml private_habits_and_texture contains specific canon biographical anecdotes (rooftop lunch, buried love letter, medicine theft). These are specific events but lack a direct canon-DB scene reference. Marked candidate pending canon-DB verification.`,
   },
 
   // ---------------------------------------------------------------------------
@@ -331,12 +347,13 @@ export const ZUO_RAN_EVIDENCE_SEEDS: InternalLogicEvidenceSeed[] = [
       arcKeys: [`main_zhiai`],
     },
     confidenceScore: 0.75,
+    applyStatus: `active`,
     validationQueries: [
       `左然在害怕什么`,
       `左然为什么总是考虑很多`,
       `左然的补救行动`,
     ],
     provenanceNote:
-      `zuo_ran.yaml internal_logic.core_fear, interpreted through jin_shu_feng_hui Episode 6 letter`,
+      `Canon-grounded: jin_shu_feng_hui Episode 6 letter scene provides the concrete action (suitcase letter after malicious broadcast) that demonstrates Zuo Ran's core fear of inadequacy and protective response. Directly tied to canon plot events.`,
   },
 ];

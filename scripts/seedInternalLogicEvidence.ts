@@ -91,11 +91,17 @@ async function runDryRun(): Promise<void> {
     existingRows.map((r) => (r.metadata as { seedId?: string }).seedId),
   );
 
+  const activeSeeds = ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `active`);
+  const candidateSeeds = ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `candidate`);
+
   for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
     const exists = existingSeedIds.has(seed.seedId);
-    const action = exists ? "UPDATE (row exists)" : "INSERT";
+    const action = seed.applyStatus === `active`
+      ? (exists ? "UPDATE (row exists)" : "INSERT")
+      : "SKIP (candidate)";
     console.log(`  [${action}] ${seed.seedId}`);
     console.log(`    node:          ${seed.node}`);
+    console.log(`    status:        ${seed.applyStatus}`);
     console.log(`    claimText:     ${seed.claimText.slice(0, 80)}...`);
     console.log(`    provenance:    ${seed.provenanceNote ?? "none"}`);
     console.log(`    scope:         ${JSON.stringify(seed.scopeApplicability)}`);
@@ -105,8 +111,7 @@ async function runDryRun(): Promise<void> {
 
   const total = ZUO_RAN_EVIDENCE_SEEDS.length;
   const existing = existingRows.length;
-  const newSeeds = total - existingSeedIds.size;
-  console.log(`Summary: ${total} seeds, ${existing} existing in DB, ${newSeeds > 0 ? newSeeds : 0} new.`);
+  console.log(`Summary: ${total} seeds (${activeSeeds.length} active, ${candidateSeeds.length} candidate), ${existing} existing in DB.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,8 +157,13 @@ async function runApply(): Promise<void> {
 
   let inserted = 0;
   let updated = 0;
+  let failed = 0;
+  const errors: string[] = [];
 
-  for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
+  const activeSeeds = ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `active`);
+  console.log(`Processing ${activeSeeds.length} active seeds (${ZUO_RAN_EVIDENCE_SEEDS.length - activeSeeds.length} candidates skipped).\n`);
+
+  for (const seed of activeSeeds) {
     const existing = seedIdToRows.get(seed.seedId);
     const evidenceText = seed.evidenceText;
 
@@ -161,7 +171,10 @@ async function runApply(): Promise<void> {
     console.log(`  Embedding "${seed.seedId}"...`);
     const embedding = await computeEmbedding(evidenceText);
     if (!embedding) {
-      console.log(`    Skipping ${seed.seedId} due to embedding failure.`);
+      const msg = `Failed to embed seed ${seed.seedId}: embedding returned null`;
+      errors.push(msg);
+      console.error(`  [FAIL] ${msg}`);
+      failed++;
       continue;
     }
 
@@ -190,23 +203,38 @@ async function runApply(): Promise<void> {
       },
     };
 
-    if (existing && existing.length === 1) {
-      // Update existing row
-      await db
-        .update(internalLogicEvidence)
-        .set({ ...rowData, updatedAt: new Date() })
-        .where(eq(internalLogicEvidence.id, existing[0].id));
-      updated++;
-      console.log(`  ✓ Updated ${seed.seedId}`);
-    } else {
-      // Insert new row
-      await db.insert(internalLogicEvidence).values(rowData);
-      inserted++;
-      console.log(`  ✓ Inserted ${seed.seedId}`);
+    try {
+      if (existing && existing.length === 1) {
+        // Update existing row
+        await db
+          .update(internalLogicEvidence)
+          .set({ ...rowData, updatedAt: new Date() })
+          .where(eq(internalLogicEvidence.id, existing[0].id));
+        updated++;
+        console.log(`  ✓ Updated ${seed.seedId}`);
+      } else {
+        // Insert new row
+        await db.insert(internalLogicEvidence).values(rowData);
+        inserted++;
+        console.log(`  ✓ Inserted ${seed.seedId}`);
+      }
+    } catch (err) {
+      const msg = `DB write failed for ${seed.seedId}: ${(err as Error).message}`;
+      errors.push(msg);
+      console.error(`  [FAIL] ${msg}`);
+      failed++;
     }
   }
 
-  console.log(`\nDone. Inserted: ${inserted}, Updated: ${updated}, Failed: ${ZUO_RAN_EVIDENCE_SEEDS.length - inserted - updated}`);
+  console.log(`\nDone. Inserted: ${inserted}, Updated: ${updated}, Failed: ${failed}`);
+
+  if (failed > 0) {
+    console.error(`\n${failed} seed(s) failed. Errors:`);
+    for (const e of errors) {
+      console.error(`  - ${e}`);
+    }
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +243,7 @@ async function runApply(): Promise<void> {
 async function runValidate(): Promise<void> {
   console.log(`\n[VALIDATE] Running retrieval quality checks\n`);
 
-  // Fetch all active seeded rows with embeddings
+  // Fetch only seeded rows (identified by metadata.source) with embeddings
   const activeRows = await db
     .select()
     .from(internalLogicEvidence)
@@ -223,27 +251,23 @@ async function runValidate(): Promise<void> {
       and(
         eq(internalLogicEvidence.characterId, "zuo_ran"),
         eq(internalLogicEvidence.status, "active"),
+        sql`metadata->>'source' = 'internal_logic_seed'`,
         sql`embedding IS NOT NULL`,
       ),
     );
 
   if (activeRows.length === 0) {
-    console.log("No active seeded rows with embeddings found. Run --apply first.");
+    console.log("No seeded rows with embeddings found. Run --apply first.");
     return;
   }
 
-  console.log(`Found ${activeRows.length} active seeded rows.\n`);
+  console.log(`Found ${activeRows.length} seeded rows (filtered by metadata.source='internal_logic_seed').\n`);
 
-  // Build a lookup from expected seedIds to their seed definition
-  const seedDefs = new Map<string, InternalLogicEvidenceSeed>();
-  for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
-    seedDefs.set(seed.seedId, seed);
-  }
-
-  // Collect unique validation queries across all seeds
+  // Collect unique validation queries from active (applyStatus) seeds only
   const seenQueries = new Set<string>();
   const queryToSeedIds = new Map<string, string[]>();
-  for (const seed of ZUO_RAN_EVIDENCE_SEEDS) {
+  const activeApplySeeds = ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `active`);
+  for (const seed of activeApplySeeds) {
     for (const q of seed.validationQueries) {
       if (seenQueries.has(q)) continue;
       seenQueries.add(q);
