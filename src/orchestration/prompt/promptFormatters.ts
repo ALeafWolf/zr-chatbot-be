@@ -202,7 +202,18 @@ export function formatCanonScenes(scenes: RetrievedCanonScene[]): string {
 
     const render = () => {
       const head = `[场景 ${i + 1}] 章节《${s.chapterName}》 ${s.episodeLabel} / 场景：${s.sceneTitle?.trim() || "—"}`;
-      let t = `${head}\n摘要：${(s.sceneSummary ?? "").trim() || "—"}\n`;
+      // Opening context from Scene1 of the same episode (bounded raw unit text)
+      const openingUnits = s.episodeOpeningUnits ?? [];
+      const openingText = openingUnits.length > 0
+        ? openingUnits.map((u) => u.textContent).join(" ").trim().slice(0, 300)
+        : "";
+      const episodeSummaryText = (s.episodeSummary ?? "").trim();
+      const sceneSummaryText = (s.sceneSummary ?? "").trim();
+      const showEpisodeBlock = episodeSummaryText.length > 0 && episodeSummaryText !== sceneSummaryText;
+      let t = head;
+      if (openingText) t += `\n开场背景：${openingText}`;
+      if (showEpisodeBlock) t += `\n章节背景：${episodeSummaryText}`;
+      t += `\n摘要：${sceneSummaryText || "—"}\n`;
       if (facts.length > 0) {
         t += `关键事实：\n${facts
           .map((f) =>
@@ -278,7 +289,16 @@ export function formatCanonScenesCompact(
         : "[FACTS] (无)";
 
     const head = `[场景 ${i + 1}] 《${s.chapterName}》 ${s.episodeLabel} / ${s.sceneTitle?.trim() || "—"}`;
-    const summaryLine = `摘要：${(s.sceneSummary ?? "").trim() || "—"}`;
+    const openingUnits = s.episodeOpeningUnits ?? [];
+    const openingText = openingUnits.length > 0
+      ? openingUnits.map((u) => u.textContent).join(" ").trim().slice(0, 300)
+      : "";
+    const episodeSummaryText = (s.episodeSummary ?? "").trim();
+    const sceneSummaryText = (s.sceneSummary ?? "").trim();
+    const showEpisodeBlock = episodeSummaryText.length > 0 && episodeSummaryText !== sceneSummaryText;
+    const openingLine = openingText ? `开场背景：${openingText}` : undefined;
+    const episodeLine = showEpisodeBlock ? `章节背景：${episodeSummaryText}` : undefined;
+    const summaryLine = `摘要：${sceneSummaryText || "—"}`;
     const unitLines = units
       .map(
         (u) =>
@@ -286,7 +306,7 @@ export function formatCanonScenesCompact(
       )
       .join("\n");
 
-    const block = [head, summaryLine, factsLine, "片段：", unitLines].join("\n");
+    const block = [head, openingLine, episodeLine, summaryLine, factsLine, "片段：", unitLines].filter(Boolean).join("\n");
 
     if (total + block.length + 2 > maxTotalChars) {
       const room = maxTotalChars - total - 2;

@@ -138,7 +138,7 @@ const fakeResolvedContext = {
 };
 
 const fakePromptContext = {
-  systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+  systemPrompt: "[SYSTEM]\n你是左然",
   conversationHistory: [],
 };
 

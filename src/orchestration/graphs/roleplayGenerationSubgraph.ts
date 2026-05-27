@@ -98,6 +98,7 @@ export function createGenerationSubgraph(deps: RoleplayGraphDeps) {
           conversationHistory: state.promptContext?.conversationHistory ?? [],
           retrievedCanonNarrative: state.promptContext?.retrievedCanonNarrative,
           selectedMemorySources: state.promptContext?.selectedMemorySources,
+          canonTruthMode: state.promptContext?.canonTruthMode,
         },
         userMessage: state.userMessage,
         signal: (state as any)._signal,

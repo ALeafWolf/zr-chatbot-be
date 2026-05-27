@@ -126,7 +126,7 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
  * Create a coarse roleplay graph that includes generation, validation,
  * deflection, persistence, and wake-post-turn nodes.
  *
- * ⚠️ DEV/SMOKE-ONLY �?NOT the production stream path.
+ * ⚠️ DEV/SMOKE-ONLY — NOT the production stream path.
  *
  * This graph is useful for development and smoke testing, but it is NOT
  * behavior-equivalent to the production stream path (direct generation or
@@ -137,8 +137,8 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
  * Known gaps vs the production stream path:
  * - Fresh thought caches/arrays (`_cache`, `_thoughtsAcc`) instead of shared
  *   per-request instances.
- * - Hardcoded `isFirstUserTurn: false` �?does not detect first-turn metadata.
- * - Persistence uses `thoughts: []` �?recall thoughts are not accumulated.
+ * - Hardcoded `isFirstUserTurn: false` — does not detect first-turn metadata.
+ * - Persistence uses `thoughts: []` — recall thoughts are not accumulated.
  * - Drained generation via `runGeneration()` without stream event semantics.
  * - Validation context now uses the shared `buildValidatorContext()` helper
  *   (fixed in Task Group 2), which closes the original parity gap.
@@ -312,6 +312,7 @@ function createRoleplayGraphImpl(
           conversationHistory: state.promptContext?.conversationHistory ?? [],
           retrievedCanonNarrative: state.promptContext?.retrievedCanonNarrative,
           selectedMemorySources: state.promptContext?.selectedMemorySources,
+          canonTruthMode: state.promptContext?.canonTruthMode,
         },
         userMessage: state.userMessage,
         signal: (state as any)._signal,

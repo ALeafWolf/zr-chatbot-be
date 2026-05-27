@@ -2,6 +2,9 @@ import { db } from "../../db/client";
 import { sql } from "drizzle-orm";
 import type { FusedAnchorScene } from "./fuseAnchors";
 
+/** How many raw opening units to fetch from Scene 1 for episode context. */
+export const EPISODE_OPENING_MAX_UNITS = 3;
+
 export interface ExpandedSceneRow {
   sceneId: string;
   chapterId: string;
@@ -9,12 +12,27 @@ export interface ExpandedSceneRow {
   arcKey: string;
   chapterName: string;
   episodeLabel: string;
+  episodeSummary: string | null;
   sceneTitle: string | null;
   sceneSummary: string | null;
+  sceneOrder: number | null;
   unitIndex: number;
   speaker: string | null;
   contentType: string;
   textContent: string;
+}
+
+export interface EpisodeOpeningRow {
+  episodeId: string;
+  episodeSummary: string | null;
+  episodeLabel: string;
+  chapterName: string;
+  units: Array<{
+    unitIndex: number;
+    speaker: string | null;
+    contentType: string;
+    textContent: string;
+  }>;
 }
 
 export async function expandAnchorScenes(input: {
@@ -25,6 +43,7 @@ export async function expandAnchorScenes(input: {
   maxTotalUnits: number;
 }): Promise<{
   rows: ExpandedSceneRow[];
+  episodeOpeningUnits: EpisodeOpeningRow[];
   factsByScene: Map<
     string,
     Array<{
@@ -38,7 +57,7 @@ export async function expandAnchorScenes(input: {
   const { characterId, arcKeys, anchors, maxUnitsPerScene, maxTotalUnits } =
     input;
   if (anchors.length === 0 || arcKeys.length === 0) {
-    return { rows: [], factsByScene: new Map() };
+    return { rows: [], episodeOpeningUnits: [], factsByScene: new Map() };
   }
 
   const sceneIds = anchors.map((a) => a.sceneId);
@@ -54,8 +73,10 @@ export async function expandAnchorScenes(input: {
       ra.arc_key,
       sc.chapter_name,
       se.episode_label,
+      se.summary AS episode_summary,
       ss.scene_title,
       ss.scene_summary,
+      ss.scene_order,
       su.unit_index,
       su.speaker,
       su.content_type,
@@ -79,8 +100,10 @@ export async function expandAnchorScenes(input: {
       arcKey: r.arc_key as string,
       chapterName: r.chapter_name as string,
       episodeLabel: r.episode_label as string,
+      episodeSummary: r.episode_summary as string | null,
       sceneTitle: r.scene_title as string | null,
       sceneSummary: r.scene_summary as string | null,
+      sceneOrder: r.scene_order as number | null,
       unitIndex: r.unit_index as number,
       speaker: r.speaker as string | null,
       contentType: r.content_type as string,
@@ -106,6 +129,108 @@ export async function expandAnchorScenes(input: {
     perSceneUnitCount.set(r.sceneId, n);
     globalUsed++;
     rows.push(r);
+  }
+
+  // Identify episodes where a later scene was retrieved but Scene 1 was not.
+  // Use sceneOrder from expanded rows (may be null if schema lacks it).
+  const retrievedEpisodeIds = new Set(rows.map((r) => r.episodeId));
+  const episodeHasScene1 = new Set<string>();
+  const episodeNeedsOpening = new Set<string>();
+  for (const r of rows) {
+    if (r.sceneOrder === 1) episodeHasScene1.add(r.episodeId);
+  }
+  for (const r of rows) {
+    if (
+      r.sceneOrder != null &&
+      r.sceneOrder !== 1 &&
+      !episodeHasScene1.has(r.episodeId)
+    ) {
+      episodeNeedsOpening.add(r.episodeId);
+    }
+  }
+
+  let episodeOpeningUnits: EpisodeOpeningRow[] = [];
+  if (episodeNeedsOpening.size > 0) {
+    const epIdList = sql.join(
+      [...episodeNeedsOpening].map((id) => sql`${id}::uuid`),
+      sql`, `,
+    );
+    const openingRows = await db.execute(sql`
+      SELECT
+        opened.season_episode_id AS episode_id,
+        opened.season_episode_summary AS episode_summary,
+        opened.season_episode_label AS episode_label,
+        opened.season_chapter_name AS chapter_name,
+        opened.unit_index,
+        opened.speaker,
+        opened.content_type,
+        opened.text_content
+      FROM (
+        SELECT
+          se.id AS season_episode_id,
+          se.summary AS season_episode_summary,
+          se.episode_label AS season_episode_label,
+          sc.chapter_name AS season_chapter_name,
+          su.unit_index,
+          su.speaker,
+          su.content_type,
+          su.text_content,
+          ROW_NUMBER() OVER (
+            PARTITION BY se.id
+            ORDER BY su.unit_index ASC
+          ) AS rn
+        FROM story_units su
+        JOIN story_scenes ss ON su.scene_id = ss.id
+        JOIN story_chapters sc ON ss.chapter_id = sc.id
+        JOIN story_episodes se ON ss.episode_id = se.id
+        JOIN relationship_arcs ra ON sc.relationship_arc_id = ra.id
+        WHERE su.character_id = ${characterId}
+          AND ra.arc_key = ANY(ARRAY[${arcKeysSql}]::text[])
+          AND se.id = ANY(ARRAY[${epIdList}]::uuid[])
+          AND ss.scene_order = 1
+      ) opened
+      WHERE opened.rn <= ${EPISODE_OPENING_MAX_UNITS}
+      ORDER BY opened.season_episode_id, opened.unit_index
+    `);
+
+    const openingByEpisode = new Map<
+      string,
+      {
+        episodeSummary: string | null;
+        episodeLabel: string;
+        chapterName: string;
+        unitList: EpisodeOpeningRow["units"];
+      }
+    >();
+    for (const or of openingRows.rows as unknown as Record<string, unknown>[]) {
+      const epId = or.episode_id as string;
+      let entry = openingByEpisode.get(epId);
+      if (!entry) {
+        entry = {
+          episodeSummary: or.episode_summary as string | null,
+          episodeLabel: or.episode_label as string,
+          chapterName: or.chapter_name as string,
+          unitList: [],
+        };
+        openingByEpisode.set(epId, entry);
+      }
+      entry.unitList.push({
+        unitIndex: or.unit_index as number,
+        speaker: or.speaker as string | null,
+        contentType: or.content_type as string,
+        textContent: or.text_content as string,
+      });
+    }
+
+    episodeOpeningUnits = [...openingByEpisode.entries()].map(
+      ([episodeId, entry]) => ({
+        episodeId,
+        episodeSummary: entry.episodeSummary,
+        episodeLabel: entry.episodeLabel,
+        chapterName: entry.chapterName,
+        units: entry.unitList,
+      }),
+    );
   }
 
   const factRows = await db.execute(sql`
@@ -138,5 +263,5 @@ export async function expandAnchorScenes(input: {
     factsByScene.set(sid, list);
   }
 
-  return { rows, factsByScene };
+  return { rows, episodeOpeningUnits, factsByScene };
 }

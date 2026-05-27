@@ -805,7 +805,7 @@ export async function buildPreRerankContext(input: {
   const latestTurnDeltaText = latestTurnDelta ? formatTurnDelta(latestTurnDelta) : undefined;
   const selectorStartedAt = Date.now();
   const shortlist = buildPromptContextCandidates({
-    memories, sessionRecall, structMemEntries, structMemConsolidations, openThreads, canonChunks, recentTurns,
+    memories, sessionRecall, structMemEntries, structMemConsolidations, openThreads, canonChunks, canonScenes, recentTurns,
     sessionSummaryText: sessionSummary?.summaryText ?? undefined, latestTurnDeltaText, memoryCorrections, motifProbeText,
     openThreadTopK: retrievalPlan.openThreadTopK, maxCandidates: env.MEMORY_RERANK_MAX_CANDIDATES,
   });

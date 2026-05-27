@@ -16,6 +16,7 @@ export type ContextCandidateSource =
   | "structmem_entry"
   | "structmem_consolidation"
   | "interactive_memory"
+  | "canon_fact"
   | "canon_chunk"
   | "motif_probe"
   | "memory_correction";
@@ -54,6 +55,7 @@ const SOURCE_CAPS: Partial<Record<ContextCandidateSource, number>> = {
   structmem_entry: 6,
   structmem_consolidation: 4,
   interactive_memory: 4,
+  canon_fact: 6,
   canon_chunk: 4,
   motif_probe: 3,
 };
@@ -70,6 +72,7 @@ const SOURCE_PRIORITY: Record<ContextCandidateSource, number> = {
   motif_probe: 6,
   session_chunk: 7,
   interactive_memory: 8,
+  canon_fact: 8,
   canon_chunk: 9,
 };
 
@@ -101,6 +104,14 @@ function truncateText(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 1)}…`;
 }
 
+/**
+ * Build a stable candidate ID for a canon fact.
+ * Used in candidate construction, filtering, and prompt safety filtering.
+ */
+export function canonFactCandidateId(sceneId: string, factIndex: number): string {
+  return `fact_${sceneId}_${factIndex}`;
+}
+
 interface BuildCandidatesInput {
   memories: RetrievedMemory[];
   sessionRecall: RetrievedSessionMemoryChunk[];
@@ -108,6 +119,8 @@ interface BuildCandidatesInput {
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
   canonChunks: RetrievedCanonChunk[];
+  /** Tier 3 canon scenes with facts, used to build canon_fact candidates. */
+  canonScenes?: RetrievedCanonScene[];
   recentTurns: ConversationTurn[];
   sessionSummaryText?: string | null;
   latestTurnDeltaText?: string | null;
@@ -257,6 +270,33 @@ export function buildPromptContextCandidates(
     });
   }
 
+  // Canon facts (from Tier 3 scenes)
+  const canonScenes = input.canonScenes ?? [];
+  let factCount = 0;
+  const factCap = SOURCE_CAPS.canon_fact!;
+  for (const scene of canonScenes) {
+    if (factCount >= factCap) break;
+    for (let fi = 0; fi < scene.facts.length; fi++) {
+      if (factCount >= factCap) break;
+      const f = scene.facts[fi];
+      const text = (f.textForm ?? "").trim();
+      if (!text) continue;
+      factCount++;
+      all.push({
+        id: canonFactCandidateId(scene.sceneId, fi),
+        source: "canon_fact",
+        text: truncateText(text, 300),
+        score: scene.rankScore,
+        turnStart: null,
+        turnEnd: null,
+        metadata: { sceneId: scene.sceneId, factIndex: fi },
+      });
+    }
+  }
+  if (factCount > 0) {
+    retrievedBySource["canon_fact"] = factCount;
+  }
+
   // Motif probe
   if (input.motifProbeText?.trim()) {
     retrievedBySource["motif_probe"] = 1;
@@ -363,6 +403,33 @@ export function applyCandidateSelection(
 }
 
 /**
+ * Preserve the original fact index inside a kept fact so downstream code
+ * (prompt rendering, recall thought context) can still derive the correct
+ * stable candidate ID (`canonFactCandidateId(sceneId, originalFactIndex)`).
+ *
+ * The extra property is internal to the filtering chain and never serialized.
+ */
+type CanonSceneFact = RetrievedCanonScene["facts"][number];
+
+interface KeptFact extends CanonSceneFact {
+  originalFactIndex: number;
+}
+
+/** Filter a scene's facts to only selected ones, preserving original indices. */
+function keepSelectedFacts(
+  scene: RetrievedCanonScene,
+  selectedFactSet: Set<string>,
+): KeptFact[] {
+  const kept: KeptFact[] = [];
+  for (let fi = 0; fi < scene.facts.length; fi++) {
+    if (selectedFactSet.has(canonFactCandidateId(scene.sceneId, fi))) {
+      kept.push({ ...scene.facts[fi]!, originalFactIndex: fi });
+    }
+  }
+  return kept;
+}
+
+/**
  * Filter canon chunks and scenes to only those selected by the reranker.
  *
  * When no canon candidate is selected, both arrays are emptied.
@@ -370,17 +437,52 @@ export function applyCandidateSelection(
  * re-expanding a selected chunk into the whole scene via formatCanonScenes.
  *
  * @param selectedCanonChunkIds IDs of canon_chunk candidates the reranker selected (may be empty).
+ * @param selectedCanonFactIds IDs of canon_fact candidates the reranker selected (may be empty).
  */
 export function filterCanonBySelection(
   canonChunks: RetrievedCanonChunk[],
   canonScenes: RetrievedCanonScene[],
   selectedCanonChunkIds: string[],
+  selectedCanonFactIds: string[] = [],
 ): { canonChunks: RetrievedCanonChunk[]; canonScenes: RetrievedCanonScene[] } {
-  const selectedIdSet = new Set(selectedCanonChunkIds);
+  const selectedChunkSet = new Set(selectedCanonChunkIds);
+  const selectedFactSet = new Set(selectedCanonFactIds);
+
+  // No selection at all — clear everything
+  if (selectedChunkSet.size === 0 && selectedFactSet.size === 0) {
+    return { canonChunks: [], canonScenes: [] };
+  }
+
+  // Only facts selected — keep only fact parent scenes with selected facts, no chunks
+  if (selectedChunkSet.size === 0 && selectedFactSet.size > 0) {
+    const keptScenes: RetrievedCanonScene[] = [];
+    for (const scene of canonScenes) {
+      const keptFacts = keepSelectedFacts(scene, selectedFactSet);
+      if (keptFacts.length > 0) {
+        keptScenes.push({ ...scene, facts: keptFacts as unknown as RetrievedCanonScene["facts"] });
+      }
+    }
+    return { canonChunks: [], canonScenes: keptScenes };
+  }
+
+  // Only chunks selected — keep selected chunks, clear scenes (existing behavior)
+  if (selectedFactSet.size === 0) {
+    return {
+      canonChunks: canonChunks.filter((c) => selectedChunkSet.has(c.id)),
+      canonScenes: [],
+    };
+  }
+
+  // Both chunks and facts selected — keep selected chunks, and also keep selected fact scenes with only selected facts
+  const keptScenes: RetrievedCanonScene[] = [];
+  for (const scene of canonScenes) {
+    const keptFacts = keepSelectedFacts(scene, selectedFactSet);
+    if (keptFacts.length > 0) {
+      keptScenes.push({ ...scene, facts: keptFacts as RetrievedCanonScene["facts"] });
+    }
+  }
   return {
-    canonChunks: canonChunks.filter((c) => selectedIdSet.has(c.id)),
-    // Clear scenes to prevent re-expanding a selected chunk into the whole scene;
-    // formatCanon(chunks) is used instead when scenes are empty.
-    canonScenes: [],
+    canonChunks: canonChunks.filter((c) => selectedChunkSet.has(c.id)),
+    canonScenes: keptScenes,
   };
 }

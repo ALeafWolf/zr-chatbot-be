@@ -28,7 +28,7 @@ describe("createGenerationSubgraph", () => {
     const state = await (graph.invoke as any)({
       sessionId: "sess_test",
       userMessage: "hello",
-      promptContext: { systemPrompt: "[SYSTEM]\nYou are Zuo Ran.", conversationHistory: [] },
+      promptContext: { systemPrompt: "[SYSTEM]\n你是左然", conversationHistory: [] },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
       characterContext: {
         characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "I am not sure." },
@@ -142,7 +142,7 @@ describe("createGenerationSubgraph", () => {
       sessionId: "sess_test",
       userMessage: "What happened in chapter 3?",
       promptContext: {
-        systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+        systemPrompt: "[SYSTEM]\n你是左然",
         conversationHistory: [
           { role: "user", content: "Hello" },
           { role: "assistant", content: "Hi there" },
@@ -184,7 +184,7 @@ describe("createGenerationSubgraph", () => {
       sessionId: "sess_test",
       userMessage: "Hi",
       promptContext: {
-        systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+        systemPrompt: "[SYSTEM]\n你是左然",
         conversationHistory: [],
         retrievedCanonNarrative: "Short",
         selectedMemorySources: [],
@@ -216,7 +216,7 @@ describe("createGenerationSubgraph", () => {
       sessionId: "sess_test",
       userMessage: "Hi",
       promptContext: {
-        systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+        systemPrompt: "[SYSTEM]\n你是左然",
         conversationHistory: [],
       },
       session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" },
@@ -235,7 +235,7 @@ describe("createGenerationSubgraph", () => {
     const fakeSession = { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" };
     const fakePersonaOverlay = { max_nsfw_level: "moderate", escalation_rule: "escalate", out_of_scope_chapter_behavior: "deflect" };
     const fakePromptContext = {
-      systemPrompt: "[SYSTEM]\nYou are Zuo Ran.",
+      systemPrompt: "[SYSTEM]\n你是左然",
       conversationHistory: [
         { role: "user" as const, content: "Earlier message" },
         { role: "assistant" as const, content: "Earlier reply" },
@@ -323,5 +323,37 @@ describe("createGenerationSubgraph", () => {
     assert.strictEqual((rwError as any).toolLoopExceeded, true, "rewrite toolLoopExceeded must be preserved");
     assert.ok(state.generationResult, "generationResult should be produced via safeDeflection from rewrite tool loop");
     assert.strictEqual((state.generationResult as any).wasDeflected, true);
+  });
+
+  it("propagates canonTruthMode from promptContext to validator input via subgraph", async () => {
+    let receivedCanonTruthMode: string | undefined;
+    const deps = makeMinDeps();
+    deps.validateDraftFn = (async (_draft: string, vi: any) => {
+      receivedCanonTruthMode = vi.canonTruthMode;
+      return { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false };
+    }) as any;
+
+    const { graph } = createGenerationSubgraph(deps);
+    await (graph.invoke as any)({
+      sessionId: "sess_test",
+      userMessage: "还记得那封信吗？",
+      promptContext: {
+        systemPrompt: "[SYSTEM]\n你是左然",
+        conversationHistory: [],
+        retrievedCanonNarrative: "章节背景：秋季结束前我们又去了回枫河。",
+        selectedMemorySources: [{ source: "canon_fact", relevance: "required", usageInstruction: "must_use" }],
+        canonTruthMode: "strict_canon_recall",
+      },
+      session: { sessionId: "sess_test", characterId: "zuo_ran", continuityScope: "main", continuityFamily: "main_world", mode: "canonical_live", memoryNamespace: "main" } as any,
+      characterContext: {
+        characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran", safe_deflection: "..." },
+        personaOverlay: { max_nsfw_level: "none", escalation_rule: "", out_of_scope_chapter_behavior: "" },
+        overlayId: "main", voiceHints: "formal",
+      },
+      draft: { content: "test draft" },
+    } as any);
+
+    assert.equal(receivedCanonTruthMode, "strict_canon_recall",
+      "canonTruthMode should propagate from promptContext through subgraph to validator input");
   });
 });

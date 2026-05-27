@@ -1,9 +1,10 @@
 import {
   runResponseValidator,
   VALIDATOR_FAIL_OPEN,
-  type ValidatorInput,
   type ValidationResult,
+  type ValidatorInput,
 } from "../../llm/validation/runResponseValidator";
+import type { CanonTruthMode } from "../prompt/buildPromptContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../../character/characterDefaults";
@@ -860,6 +861,7 @@ export function buildValidatorContext(input: {
     conversationHistory?: Array<{ role: string; content: string }>;
     retrievedCanonNarrative?: string;
     selectedMemorySources?: Array<unknown>;
+    canonTruthMode?: string;
   };
   userMessage: string;
   signal?: AbortSignal;
@@ -889,6 +891,7 @@ export function buildValidatorContext(input: {
     wasCanonInjected:
       (input.promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
     selectedMemorySources: (input.promptContext.selectedMemorySources ?? []) as any,
+    canonTruthMode: input.promptContext.canonTruthMode as CanonTruthMode | undefined,
     signal: input.signal,
   };
 }

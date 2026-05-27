@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { __testing, generateDraft, validateDraft, rewriteDraft, safeDeflection } from "./generateAndValidate";
+import { __testing, generateDraft, validateDraft, rewriteDraft, safeDeflection, buildValidatorContext } from "./generateAndValidate";
 
 describe("decorateUserMessageForGeneration", () => {
   it("returns content and marker metadata as an object regardless of injection", () => {
@@ -342,5 +342,34 @@ describe("message builder decoration", () => {
       assert.equal(typeof result.markerInjected, "boolean");
       assert.equal(typeof result.markerReason, "string");
     });
+  });
+});
+
+describe("buildValidatorContext canonTruthMode propagation", () => {
+  it("passes canonTruthMode from promptContext to validator input", () => {
+    const ctx = buildValidatorContext({
+      session: { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" },
+      personaOverlay: { max_nsfw_level: "medium", escalation_rule: "none", out_of_scope_chapter_behavior: "deflect" },
+      promptContext: {
+        conversationHistory: [],
+        retrievedCanonNarrative: "Some canon narrative about Fenghe.",
+        selectedMemorySources: [],
+        canonTruthMode: "strict_canon_recall",
+      },
+      userMessage: "你还记得那封信吗？",
+    });
+    assert.equal(ctx.canonTruthMode, "strict_canon_recall");
+  });
+
+  it("defaults canonTruthMode to undefined when not set in promptContext", () => {
+    const ctx = buildValidatorContext({
+      session: { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" },
+      personaOverlay: { max_nsfw_level: "medium", escalation_rule: "none", out_of_scope_chapter_behavior: "deflect" },
+      promptContext: {
+        conversationHistory: [],
+      },
+      userMessage: "你好",
+    });
+    assert.equal(ctx.canonTruthMode, undefined);
   });
 });

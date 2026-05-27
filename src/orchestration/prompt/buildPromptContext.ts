@@ -20,9 +20,9 @@ import type { RetrievedOpenThread } from "../../retrieval/memory/retrieveOpenThr
 import type { StructMemEntryContextExpansion } from "../../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "../context/motifTypes";
 import type { MemoryRerankOutput } from "../retrieval/memoryRerank";
+import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 import { env } from "../../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "../annotations/userMessageAnnotations";
-import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 import {
   annotationHeuristicFallback,
   shouldUseAnnotationFallback,
@@ -41,6 +41,60 @@ import {
   getAttachedTracePayload,
 } from "../../observability/tracePayloads";
 
+/**
+ * Canon truth mode controls how strictly the model must adhere to injected
+ * canon when responding to user prompts about story history.
+ *
+ * - `strict_canon_recall`: The user is explicitly asking about canon history.
+ *   Unsupported concrete story-history claims must be rejected.
+ * - `canon_blend`: Canon is injected as helpful background, but the turn is
+ *   a live/current interaction. Harmless roleplay embellishment is allowed.
+ * - `open_roleplay`: No canon was injected. Normal behavior.
+ */
+export type CanonTruthMode =
+  | "strict_canon_recall"
+  | "canon_blend"
+  | "open_roleplay";
+
+/**
+ * Deterministically derive the canon truth mode for the current turn.
+ *
+ * Returns `open_roleplay` when no canon is injected.
+ * Returns `strict_canon_recall` when canon is injected and the user is asking
+ * about concrete canon history (attribution intent, or canon sources marked
+ * "required"/"must_use" with recall cues in the user message).
+ * Returns `canon_blend` for all other canon-injected turns.
+ */
+export function deriveCanonTruthMode(input: {
+  userMessage: string;
+  queryRewrite?: QueryRewriteResult | null;
+  hasCanonNarrative: boolean;
+  selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
+}): CanonTruthMode {
+  if (!input.hasCanonNarrative) return "open_roleplay";
+
+  // Attribution intent always triggers strict mode
+  if (input.queryRewrite?.intent === "attribution") return "strict_canon_recall";
+
+  // Check for canon sources marked as required/must_use with recall cues
+  const hasStrictCanonSource = (input.selectedMemorySources ?? []).some(
+    (s) =>
+      (s.source === "canon_fact" || s.source === "canon_chunk") &&
+      (s.relevance === "required" || s.usageInstruction === "must_use"),
+  );
+  if (hasStrictCanonSource) {
+    const msg = input.userMessage.toLowerCase();
+    const recallCues = [
+      "记得", "第一次", "第二次", "剧情", "原作", "那封信",
+      "民宿", "谁", "哪里", "什么时候", "为什么",
+    ];
+    const hasRecallCue = recallCues.some((c) => msg.includes(c));
+    if (hasRecallCue) return "strict_canon_recall";
+  }
+
+  return "canon_blend";
+}
+
 export interface PromptContext {
   systemPrompt: string;
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
@@ -48,6 +102,8 @@ export interface PromptContext {
   retrievedCanonNarrative?: string;
   /** Reranker-selected memory sources for validator plumbing. */
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
+  /** Canon truth mode for this turn. */
+  canonTruthMode?: CanonTruthMode;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -66,6 +122,7 @@ export const PromptContextSchema = z.object({
       }),
     )
     .optional(),
+  canonTruthMode: z.enum(["strict_canon_recall", "canon_blend", "open_roleplay"]).optional(),
 });
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -132,22 +189,87 @@ export function buildPromptContext(input: {
     structuredBlock.length > 0 && queryRewrite?.parseOk === true;
   const showAnnotations = useAnnotationFallback;
 
-  // Filter canon to only include reranker-selected items when available
-  const selectedCanonIds = memoryRerank?.selected
+  // Filter canon to only include reranker-selected items when available.
+  // The canonScenes received here are already filtered by filterCanonBySelection()
+  // (called in rerankContext). We still re-check against memoryRerank as a safety
+  // guard: when the reranker ran but selected no canon, clear everything.
+  const hasRerank = memoryRerank?.selected != null;
+  const selectedCanonChunkIds = hasRerank
     ? new Set(
-        memoryRerank.selected
-          .filter((s) => (s.source as string) === "canon_scene" || (s.source as string) === "canon_chunk")
+        memoryRerank!.selected
+          .filter((s) => (s.source as string) === "canon_chunk")
           .map((s) => s.id),
       )
     : null;
-  const filteredCanonScenes = selectedCanonIds
-    ? canonScenes.filter((s) => selectedCanonIds.has(s.sceneId))
-    : canonScenes;
-  const filteredCanonChunks = selectedCanonIds
-    ? canonChunks.filter((c) => selectedCanonIds.has(c.id))
-    : canonChunks;
+  const selectedCanonFactIds = hasRerank
+    ? new Set(
+        memoryRerank!.selected
+          .filter((s) => (s.source as string) === "canon_fact")
+          .map((s) => s.id),
+      )
+    : null;
+
+  let filteredCanonChunks: RetrievedCanonChunk[];
+  let filteredCanonScenes: RetrievedCanonScene[];
+
+  if (!hasRerank) {
+    // No reranker — trust whatever was passed in
+    filteredCanonChunks = canonChunks;
+    filteredCanonScenes = canonScenes;
+  } else if (selectedCanonChunkIds!.size === 0 && selectedCanonFactIds!.size === 0) {
+    // Reranker exists but selected no canon — clear all canon (safety: never
+    // re-inject unselected canon beyond what the reranker chose)
+    filteredCanonChunks = [];
+    filteredCanonScenes = [];
+  } else {
+    // Reranker selected some canon
+    filteredCanonChunks = selectedCanonChunkIds!.size > 0
+      ? canonChunks.filter((c) => selectedCanonChunkIds!.has(c.id))
+      : [];
+
+    if (selectedCanonFactIds!.size > 0) {
+      // Keep only scenes referenced by selected fact IDs, and within each
+      // kept scene filter facts to only selected ones. This handles both:
+      // - already-filtered scenes from resolveContext (facts have
+      //   originalFactIndex at runtime);
+      // - unfiltered scenes where the local array index matches the stable ID.
+      filteredCanonScenes = [];
+      for (const scene of canonScenes) {
+        let sceneHasSelectedFact = false;
+        for (const fid of selectedCanonFactIds!) {
+          if (fid.startsWith(`fact_${scene.sceneId}_`)) {
+            sceneHasSelectedFact = true;
+            break;
+          }
+        }
+        if (!sceneHasSelectedFact) continue;
+
+        // Filter facts to only selected ones, using originalFactIndex when
+        // present (from filterCanonBySelection) and local index otherwise.
+        const keptFacts = scene.facts.filter((f, fi) => {
+          const ff = f as { originalFactIndex?: number };
+          const origIdx = ff.originalFactIndex ?? fi;
+          return selectedCanonFactIds!.has(`fact_${scene.sceneId}_${origIdx}`);
+        });
+        filteredCanonScenes.push({ ...scene, facts: keptFacts });
+      }
+    } else {
+      // Only chunks selected — clear scenes to prevent re-expansion
+      filteredCanonScenes = [];
+    }
+  }
   const hasCanonNarrative =
     filteredCanonScenes.length > 0 || filteredCanonChunks.length > 0;
+  const canonTruthMode = deriveCanonTruthMode({
+    userMessage,
+    queryRewrite,
+    hasCanonNarrative,
+    selectedMemorySources: memoryRerank?.selected?.map((s) => ({
+      source: s.source,
+      relevance: s.relevance,
+      usageInstruction: s.usageInstruction,
+    })),
+  });
   const canonNarrativeBody = hasCanonNarrative
     ? filteredCanonScenes.length > 0
       ? promptFormatters.formatCanonScenes(filteredCanonScenes)
@@ -324,9 +446,28 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     ...(hasCanonNarrative
       ? [
           buildBlock("CANON NARRATIVE", canonNarrativeBody),
-          // STYLE SALIENCE REMINDER — immediately after CANON NARRATIVE to defend
-          // against Type 2 register breaks (科普模式, bulleted explanation, blunt labels)
-          // under heavy canon injection. Kept short (≤300 chars) to avoid fighting persona.
+          // TEMPORAL PREMISE HANDLING — immediately after CANON NARRATIVE to
+          // instruct the model on resolving temporal/sequence false premises
+          // (e.g. user says "第一次去枫河" but canon proves it's a return visit).
+          buildBlock(
+            "TEMPORAL PREMISE HANDLING",
+            "时序前提处理规则（仅当上方 [CANON NARRATIVE] 存在时适用）：\n"
+            + "- 将用户消息中的时序/地点表述与 canon 的开场背景、章节背景、摘要、关键事实进行对比。\n"
+            + "- 如果用户消息包含「第一次」「首次」等首次访问表述，而已注入的 canon 中明确显示该事件/地点是再次访问（包含「再次」「又」「上回」「前次」「第二次」等线索），则用户的前提与 canon 直接矛盾。\n"
+            + "- 当 canon 直接矛盾时：回复的第一句话必须进行平静的纠正（例如「我记得不太一样，那应该是我们第二次去枫河了……」），然后再继续回应记忆内容。\n"
+            + "- 例外：当前对话（RECENT CHAT）中的明确信息优先于 canon；不要在没有直接矛盾的情况下强行纠正。\n"
+            + "- 不要因为不同章节的 canon 片段而合并时间线或过度推断。",
+          ),
+          ...(canonTruthMode === "strict_canon_recall"
+            ? [
+                buildBlock(
+                  "CANON TRUTH MODE",
+                  "当前问题是在询问具体剧情/过去事件。你可以用动作和语气自然回应，但凡涉及剧情事实、时间、地点、顺序、原因、信件内容、物品位置、谁做了什么，只能使用上方 canon 或 RECENT CHAT 明确支持的信息。纠正用户前提后，不要补写第一次行程、第一封信、服务区、枕头底下等未提供细节；不确定时保持克制或略过。",
+                ),
+              ]
+            : []),
+          // STYLE SALIENCE REMINDER — after TEMPORAL PREMISE HANDLING, before
+          // canon-heavy blocks end, to defend against Type 2 register breaks.
           buildBlock(
             "STYLE SALIENCE REMINDER",
             "即使参考了上方剧情资料，回复仍必须保持左然的表达方式：克制、短句、少解释、不科普化；情绪通过停顿、动作和转移体现，不直接剖白。",
@@ -362,6 +503,7 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       relevance: s.relevance,
       usageInstruction: s.usageInstruction,
     })),
+    canonTruthMode,
   };
 }
 

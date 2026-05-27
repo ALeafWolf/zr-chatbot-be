@@ -252,6 +252,59 @@ describe("rerankContext", () => {
     assert.strictEqual(result.canonChunks[0]!.id, "canon_1");
   });
 
+  it("preserves selected canon_fact parent scene and selected fact", async () => {
+    const factId = "fact_scene_1_2"; // original fact index 2 (non-zero)
+    const sceneWithFacts = {
+      sceneId: "scene_1",
+      arcKey: "a",
+      chapterId: "ch1",
+      episodeId: "ep1",
+      chapterName: "Ch1",
+      episodeLabel: "Ep1",
+      sceneTitle: "Test Scene",
+      sceneSummary: "A test scene.",
+      units: [],
+      facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+        { subject: "C", predicate: "has", object: "D", textForm: "C has D." },
+        { subject: "E", predicate: "loves", object: "F", textForm: "E loves F." },
+      ],
+      rankScore: 0.9,
+      provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null },
+    } as unknown as RetrievedCanonScene;
+
+    const input = makeDefaultInput({
+      canonScenes: [sceneWithFacts],
+      candidates: [
+        fakeCandidate,
+        {
+          id: factId,
+          source: "canon_fact",
+          text: "E loves F.",
+          score: 0.9,
+        } as ContextCandidate,
+      ],
+    });
+
+    const result = await rerankContext(input, {
+      rerankCandidates: async () =>
+        makeSuccessResult([{
+          id: factId,
+          source: "canon_fact",
+          relevance: "required",
+          usageInstruction: "must_use",
+          reasonCode: "canon_required",
+        }]),
+    });
+
+    assert.strictEqual(result.rerankFallbackUsed, false);
+    assert.strictEqual(result.canonScenes.length, 1, "parent scene should be kept");
+    assert.strictEqual(result.canonScenes[0]!.facts.length, 1, "only selected fact should remain");
+    assert.strictEqual(result.canonScenes[0]!.facts[0]!.textForm, "E loves F.",
+      "selected fact (index 2) should be preserved");
+    assert.strictEqual(result.canonChunks.length, 0, "no chunks should be kept for facts-only selection");
+  });
+
   it("falls back to deterministic selector when reranker fails", async () => {
     let deterministicCalled = false;
 
