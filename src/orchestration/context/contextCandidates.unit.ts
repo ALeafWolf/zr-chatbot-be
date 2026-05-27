@@ -456,3 +456,198 @@ describe("buildPromptContextCandidates maxCandidates cap", () => {
     assert.ok(result.candidates.length <= 5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildPromptContextCandidates — internal-logic evidence
+// ---------------------------------------------------------------------------
+describe("buildPromptContextCandidates internal_logic_evidence", () => {
+  const evidenceHits = [
+    {
+      id: "ev_001",
+      characterId: "zuo_ran",
+      node: "core_fear",
+      claimText: "左然害怕暴露不成熟的一面。",
+      evidenceText: "六年级生日想要棉花糖却说要钢笔。",
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: { continuityFamily: "main_world" },
+      sourceKind: "canon", confidenceScore: 0.9, metadata: {},
+      cosineSimilarity: 0.5, finalScore: 0.5 + 0.9 * 0.05,
+    },
+    {
+      id: "ev_002",
+      characterId: "zuo_ran",
+      node: "core_motivation",
+      claimText: "行动先于语言的预判式浪漫。",
+      evidenceText: "出差会在行李箱留出空间放礼物。",
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: { continuityFamily: "main_world" },
+      sourceKind: "canon", confidenceScore: null, metadata: {},
+      cosineSimilarity: 0.4, finalScore: 0.4,
+    },
+    {
+      id: "ev_003",
+      characterId: "zuo_ran",
+      node: "growth_environment",
+      claimText: "温暖但严格的家庭。",
+      evidenceText: "母亲做糖醋里脊时偷吃会被数落。",
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: { continuityFamily: "main_world" },
+      sourceKind: "canon", confidenceScore: null, metadata: {},
+      cosineSimilarity: 0.3, finalScore: 0.3,
+    },
+  ];
+
+  it("creates internal_logic_evidence candidates with stable IDs and correct source", () => {
+    const result = buildPromptContextCandidates({
+      memories: [], sessionRecall: [], structMemEntries: [],
+      structMemConsolidations: [], openThreads: [], canonChunks: [],
+      recentTurns: [],
+      internalLogicEvidence: evidenceHits as any,
+    });
+    const evidenceCandidates = result.candidates.filter(
+      (c) => c.source === "internal_logic_evidence",
+    );
+    assert.equal(evidenceCandidates.length, 3);
+    assert.equal(evidenceCandidates[0]!.id, "internal_logic_evidence_ev_001");
+    assert.equal(evidenceCandidates[1]!.id, "internal_logic_evidence_ev_002");
+    assert.equal(evidenceCandidates[2]!.id, "internal_logic_evidence_ev_003");
+  });
+
+  it("candidate text includes node, claim, and evidence text", () => {
+    const result = buildPromptContextCandidates({
+      memories: [], sessionRecall: [], structMemEntries: [],
+      structMemConsolidations: [], openThreads: [], canonChunks: [],
+      recentTurns: [],
+      internalLogicEvidence: [evidenceHits[0]!] as any,
+    });
+    const candidate = result.candidates.find(
+      (c) => c.source === "internal_logic_evidence",
+    );
+    assert.ok(candidate, "evidence candidate should exist");
+    assert.ok(candidate!.text.includes("[core_fear]"), "text should contain node");
+    assert.ok(candidate!.text.includes("左然害怕暴露不成熟的一面"), "text should contain claimText");
+    assert.ok(candidate!.text.includes("六年级生日想要棉花糖却说要钢笔"), "text should contain evidenceText");
+  });
+
+  it("applies source cap for internal_logic_evidence (cap=4)", () => {
+    // Create 6 hits, only 4 should appear due to the cap
+    const manyHits = Array.from({ length: 6 }, (_, i) => ({
+      id: `ev_${i}`,
+      characterId: "zuo_ran", node: "core_fear",
+      claimText: `Claim ${i}`, evidenceText: `Evidence ${i}`,
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: {}, sourceKind: "canon",
+      confidenceScore: null, metadata: {},
+      cosineSimilarity: 0.5 - i * 0.05, finalScore: 0.5 - i * 0.05,
+    }));
+    const result = buildPromptContextCandidates({
+      memories: [], sessionRecall: [], structMemEntries: [],
+      structMemConsolidations: [], openThreads: [], canonChunks: [],
+      recentTurns: [],
+      internalLogicEvidence: manyHits as any,
+    });
+    const evidenceCandidates = result.candidates.filter(
+      (c) => c.source === "internal_logic_evidence",
+    );
+    assert.equal(evidenceCandidates.length, 4, "should cap at SOURCE_CAPS.internal_logic_evidence=4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyCandidateSelection — internal-logic evidence
+// ---------------------------------------------------------------------------
+describe("applyCandidateSelection internal_logic_evidence", () => {
+  const evidenceHits = [
+    {
+      id: "ev_001", characterId: "zuo_ran", node: "core_fear",
+      claimText: "Claim 1", evidenceText: "Evidence 1",
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: {}, sourceKind: "canon",
+      confidenceScore: null, metadata: {},
+      cosineSimilarity: 0.5, finalScore: 0.5,
+    },
+    {
+      id: "ev_002", characterId: "zuo_ran", node: "core_motivation",
+      claimText: "Claim 2", evidenceText: "Evidence 2",
+      arcKey: null, chapterKey: null, episodeLabel: null,
+      sceneOrder: null, unitIndex: null,
+      scopeApplicability: {}, sourceKind: "canon",
+      confidenceScore: null, metadata: {},
+      cosineSimilarity: 0.4, finalScore: 0.4,
+    },
+  ] as any;
+
+  it("maps selected evidence IDs back to typed InternalLogicEvidenceHit[]", () => {
+    const result = applyCandidateSelection({
+      shortlist: [
+        makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence"),
+        makeCandidate("internal_logic_evidence_ev_002", "internal_logic_evidence"),
+        makeCandidate("session_summary", "session_summary"),
+      ],
+      selectedIds: ["internal_logic_evidence_ev_001", "session_summary"],
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      internalLogicEvidence: evidenceHits,
+    });
+    assert.equal(result.internalLogicEvidence.length, 1, "should select 1 evidence hit");
+    assert.equal(result.internalLogicEvidence[0]!.id, "ev_001", "should map ev_001");
+    assert.equal(result.internalLogicEvidence[0]!.node, "core_fear");
+  });
+
+  it("unselected evidence is excluded from typed array", () => {
+    const result = applyCandidateSelection({
+      shortlist: [
+        makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence"),
+        makeCandidate("internal_logic_evidence_ev_002", "internal_logic_evidence"),
+      ],
+      selectedIds: ["internal_logic_evidence_ev_002"], // only ev_002 selected
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      internalLogicEvidence: evidenceHits,
+    });
+    assert.equal(result.internalLogicEvidence.length, 1, "should select only 1");
+    assert.equal(result.internalLogicEvidence[0]!.id, "ev_002", "unselected ev_001 should be excluded");
+  });
+
+  it("returns empty array when no evidence is selected", () => {
+    const result = applyCandidateSelection({
+      shortlist: [
+        makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence"),
+        makeCandidate("internal_logic_evidence_ev_002", "internal_logic_evidence"),
+        makeCandidate("session_summary", "session_summary"),
+      ],
+      selectedIds: ["session_summary"],
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      internalLogicEvidence: evidenceHits,
+    });
+    assert.equal(result.internalLogicEvidence.length, 0, "no evidence selected");
+  });
+
+  it("returns empty array when no evidence was provided as input", () => {
+    const result = applyCandidateSelection({
+      shortlist: [makeCandidate("session_summary", "session_summary")],
+      selectedIds: ["session_summary"],
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+    });
+    assert.deepEqual(result.internalLogicEvidence, []);
+  });
+});
