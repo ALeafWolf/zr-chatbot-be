@@ -198,6 +198,7 @@ async function runApply(): Promise<void> {
         source: "internal_logic_seed",
         seedId: seed.seedId,
         seedVersion: SEED_VERSION,
+        applyStatus: seed.applyStatus,
         validationQueries: seed.validationQueries,
         provenanceNote: seed.provenanceNote ?? null,
       },
@@ -226,7 +227,24 @@ async function runApply(): Promise<void> {
     }
   }
 
-  console.log(`\nDone. Inserted: ${inserted}, Updated: ${updated}, Failed: ${failed}`);
+  // Supersede any existing candidate-seed rows that may have been written
+  // by an earlier version of the script (before applyStatus was introduced).
+  const candidateSeedIds = new Set(
+    ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `candidate`).map((s) => s.seedId),
+  );
+  let superseded = 0;
+  for (const [sid, rows] of seedIdToRows) {
+    if (candidateSeedIds.has(sid) && rows.length === 1 && rows[0].status === `active`) {
+      await db
+        .update(internalLogicEvidence)
+        .set({ status: `superseded`, updatedAt: new Date() })
+        .where(eq(internalLogicEvidence.id, rows[0].id));
+      superseded++;
+      console.log(`  ~ Superseded stale candidate row: ${sid}`);
+    }
+  }
+
+  console.log(`\nDone. Inserted: ${inserted}, Updated: ${updated}, Superseded: ${superseded}, Failed: ${failed}`);
 
   if (failed > 0) {
     console.error(`\n${failed} seed(s) failed. Errors:`);
@@ -243,7 +261,18 @@ async function runApply(): Promise<void> {
 async function runValidate(): Promise<void> {
   console.log(`\n[VALIDATE] Running retrieval quality checks\n`);
 
-  // Fetch only seeded rows (identified by metadata.source) with embeddings
+  // Fetch only current active seeded rows. Filter by:
+  // - metadata.source = 'internal_logic_seed'
+  // - metadata.seedVersion = SEED_VERSION (avoids mixing seed versions)
+  // - seedId in current active seed ID set (excludes stale candidate rows)
+  // - non-null embedding
+  const currentActiveSeedIds = ZUO_RAN_EVIDENCE_SEEDS
+    .filter((s) => s.applyStatus === `active`)
+    .map((s) => s.seedId);
+  const activeIdFilter = currentActiveSeedIds.map(
+    (sid) => sql`metadata->>'seedId' = ${sid}`,
+  );
+
   const activeRows = await db
     .select()
     .from(internalLogicEvidence)
@@ -252,6 +281,8 @@ async function runValidate(): Promise<void> {
         eq(internalLogicEvidence.characterId, "zuo_ran"),
         eq(internalLogicEvidence.status, "active"),
         sql`metadata->>'source' = 'internal_logic_seed'`,
+        sql`metadata->>'seedVersion' = ${SEED_VERSION}`,
+        sql`(${sql.join(activeIdFilter, sql` OR `)})`,
         sql`embedding IS NOT NULL`,
       ),
     );
@@ -261,7 +292,7 @@ async function runValidate(): Promise<void> {
     return;
   }
 
-  console.log(`Found ${activeRows.length} seeded rows (filtered by metadata.source='internal_logic_seed').\n`);
+  console.log(`Found ${activeRows.length} seeded rows (filtered by metadata seed IDs + seedVersion=${SEED_VERSION}).\n`);
 
   // Collect unique validation queries from active (applyStatus) seeds only
   const seenQueries = new Set<string>();

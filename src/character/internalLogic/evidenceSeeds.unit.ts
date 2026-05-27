@@ -103,4 +103,28 @@ describe("ZUO_RAN_EVIDENCE_SEEDS", () => {
     const nodes = new Set(ZUO_RAN_EVIDENCE_SEEDS.map((s) => s.node));
     assert.ok(nodes.size >= 3, `Expected at least 3 distinct nodes, got ${nodes.size}: ${[...nodes].join(", ")}`);
   });
+
+  it("active seed IDs do not overlap with candidate seed IDs", () => {
+    const activeIds = ZUO_RAN_EVIDENCE_SEEDS
+      .filter((s) => s.applyStatus === `active`)
+      .map((s) => s.seedId);
+    const candidateIds = ZUO_RAN_EVIDENCE_SEEDS
+      .filter((s) => s.applyStatus === `candidate`)
+      .map((s) => s.seedId);
+    const overlap = activeIds.filter((id) => candidateIds.includes(id));
+    assert.equal(overlap.length, 0, `active and candidate seed IDs must not overlap: ${overlap.join(", ")}`);
+  });
+
+  it("active and candidate partition covers all seeds", () => {
+    const allIds = new Set(ZUO_RAN_EVIDENCE_SEEDS.map((s) => s.seedId));
+    const activeIds = new Set(
+      ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `active`).map((s) => s.seedId),
+    );
+    const candidateIds = new Set(
+      ZUO_RAN_EVIDENCE_SEEDS.filter((s) => s.applyStatus === `candidate`).map((s) => s.seedId),
+    );
+    const union = new Set([...activeIds, ...candidateIds]);
+    assert.equal(union.size, allIds.size, "every seed must be either active or candidate");
+    assert.equal(activeIds.size + candidateIds.size, allIds.size, "seeds must be partitioned into active + candidate with no overlap");
+  });
 });
