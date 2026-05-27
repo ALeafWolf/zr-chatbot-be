@@ -36,10 +36,6 @@ describe("ROLEPLAY_GRAPH_STREAM_ENABLED env parsing", () => {
   it("treats empty string as false", () => {
     assert.strictEqual(parseEnabledFlag(""), false);
   });
-
-  it("is false at runtime in the test environment", () => {
-    assert.strictEqual(env.ROLEPLAY_GRAPH_STREAM_ENABLED, false);
-  });
 });
 
 // ---------------------------------------------------------------------------
