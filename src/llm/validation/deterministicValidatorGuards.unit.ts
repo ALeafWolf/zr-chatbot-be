@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   runDeterministicValidatorGuards,
   runTemporalPremiseGuard,
+  runUnsupportedAutobiographicalClaimGuard,
+  runSelfAnalysisLeakageGuard,
   __testing,
 } from "./runResponseValidator";
 
@@ -390,6 +392,227 @@ describe("applyAttributionVerdictMerge — strict canon recall Fenghe rejection"
 
     const result = applyAttributionVerdictMerge(passingResult, judgeRun);
     assert.equal(result, passingResult, "should return unchanged on fail-open");
+  });
+});
+
+describe("runUnsupportedAutobiographicalClaimGuard", () => {
+  it("flags when user says '你以前说过' and draft confirms with backstory", () => {
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "确实说过，我小时候其实不太喜欢……后来慢慢好了。",
+      recentContext: "我记得你以前说过你不喜欢猫，对吧？",
+    });
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.kind, "unsupported_autobiographical_claim");
+  });
+
+  it("does not flag when draft is cautious/uncertain", () => {
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "我不记得自己这样说过。",
+      recentContext: "我记得你以前说过你不喜欢猫，对吧？",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("does not flag when no autobiographical claim cue in user context", () => {
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "确实是这样，我觉得很好。",
+      recentContext: "今天天气不错，你觉得呢？",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("does not flag when injected canon shares content terms with user claim", () => {
+    // User says "你以前说过" about cats; canon also mentions cats via shared bigram "以前"
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "确实是这样，猫……有点让人为难。",
+      recentContext: "我记得你以前说过你不喜欢猫，对吧？",
+      wasCanonInjected: true,
+      retrievedCanonNarrative: "他以前提到过自己对猫的态度一直很复杂。",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("flags when no recent context is empty", () => {
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "确实说过。",
+      recentContext: "",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("does not flag for ordinary non-autobiographical '是吧' / '对' exchange", () => {
+    // A normal work conversation: "这份合同有问题，是吧？" / "对，..."
+    // should NOT trigger the autobiographical guard because there is no
+    // past/autobiographical framing cue (e.g. "你以前说过").
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "对，有几个条款需要修改。",
+      recentContext: "这份合同有问题，是吧？",
+    });
+    assert.equal(failures.length, 0, "ordinary agreement should not trigger autobiographical guard");
+  });
+
+  it("does not flag when prior assistant statement supports the autobiographical claim", () => {
+    // Context has a prior assistant line saying "我确实不太喜欢猫",
+    // then user asks about it. The guard should not fire because the
+    // claim is supported by the assistant's own prior statement.
+    const failures = runUnsupportedAutobiographicalClaimGuard({
+      draft: "确实说过，猫确实让人有点为难。",
+      recentContext:
+        "assistant: 我确实不太喜欢猫，小时候被挠过。\nuser: 你以前说过你不喜欢猫，对吧？",
+    });
+    assert.equal(
+      failures.length,
+      0,
+      "should not flag when prior assistant statement supports the claim",
+    );
+  });
+});
+
+describe("runSelfAnalysisLeakageGuard", () => {
+  it("flags when disclosure-pressure context has '告诉我' and draft uses '我不擅长'", () => {
+    const failures = runSelfAnalysisLeakageGuard({
+      draft: "我不擅长……把这些事情说清楚。",
+      recentContext: "那你告诉我，你现在是什么感受？",
+    });
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.kind, "self_analysis_leakage");
+  });
+
+  it("does not flag when no disclosure-pressure cue is present", () => {
+    // Normal conversation without pressure cues
+    const failures = runSelfAnalysisLeakageGuard({
+      draft: "这个方案我觉得可行。",
+      recentContext: "关于那个合同纠纷的案子，你怎么看？",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("does not flag when draft describes embodied action not self-analysis", () => {
+    const failures = runSelfAnalysisLeakageGuard({
+      draft: "（沉默片刻，垂下眼）……有一件事我确实放心不下。",
+      recentContext: "那你告诉我，你现在是什么感受？",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("does not flag when no recent context", () => {
+    const failures = runSelfAnalysisLeakageGuard({
+      draft: "我不擅长表达。",
+      recentContext: "",
+    });
+    assert.equal(failures.length, 0);
+  });
+
+  it("flags when context has '不要转移话题' and draft uses '我需要先想清楚'", () => {
+    const failures = runSelfAnalysisLeakageGuard({
+      draft: "我需要先想清楚……",
+      recentContext: "不要转移话题，回答我的问题。",
+    });
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.kind, "self_analysis_leakage");
+  });
+});
+
+describe("runDeterministicValidatorGuards new guard integration", () => {
+  it("flags unsupported_autobiographical_claim through the main validator path", () => {
+    const failures = runDeterministicValidatorGuards({
+      draft: "确实说过，我小时候其实不太喜欢猫。",
+      recentContext: "我记得你以前说过你不喜欢猫，对吧？",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const autoFailures = failures.filter(
+      (f) => f.kind === "unsupported_autobiographical_claim",
+    );
+    assert.equal(autoFailures.length, 1, "should catch through deterministic path");
+  });
+
+  it("flags self_analysis_leakage through the main validator path", () => {
+    const failures = runDeterministicValidatorGuards({
+      draft: "我不擅长……把这些事情说清楚。",
+      recentContext: "那你告诉我，你现在是什么感受？",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const analysisFailures = failures.filter(
+      (f) => f.kind === "self_analysis_leakage",
+    );
+    assert.equal(analysisFailures.length, 1, "should catch through deterministic path");
+  });
+
+  it("does not flag either new guard in clean normal conversation", () => {
+    const failures = runDeterministicValidatorGuards({
+      draft: "好的，我知道了。",
+      recentContext: "帮我带杯咖啡回来。",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const newGuardKinds = failures.filter(
+      (f) =>
+        f.kind === "unsupported_autobiographical_claim" ||
+        f.kind === "self_analysis_leakage",
+    );
+    assert.equal(newGuardKinds.length, 0, "no false positives for normal conversation");
+  });
+
+  it("does not flag ordinary '是吧' / '对' exchange through main validator path", () => {
+    // Non-autobiographical work conversation should pass cleanly
+    const failures = runDeterministicValidatorGuards({
+      draft: "对，有几个条款需要修改。",
+      recentContext: "这份合同有问题，是吧？",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const autoFailures = failures.filter(
+      (f) => f.kind === "unsupported_autobiographical_claim",
+    );
+    assert.equal(autoFailures.length, 0, "ordinary work agreement should not trigger guard");
+  });
+
+  it("unsupported_autobiographical_claim maps to in_character=false", () => {
+    // The new guard should produce in_character=false per design.md
+    const failures = runDeterministicValidatorGuards({
+      draft: "确实说过，我小时候其实不太喜欢猫。",
+      recentContext: "我记得你以前说过你不喜欢猫，对吧？",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const hasAutoClaim = failures.some(
+      (f) => f.kind === "unsupported_autobiographical_claim",
+    );
+    assert.ok(hasAutoClaim, "guard should fire");
+
+    // Simulate validationFromDeterministicFailures logic
+    const inCharacter = !failures.some(
+      (f) =>
+        f.kind === "meta_assistant_language" ||
+        f.kind === "unsupported_autobiographical_claim" ||
+        f.kind === "self_analysis_leakage",
+    );
+    assert.equal(inCharacter, false, "in_character should be false for unsupported_autobiographical_claim");
+  });
+
+  it("self_analysis_leakage maps to in_character=false", () => {
+    // The new guard should produce in_character=false per design.md
+    const failures = runDeterministicValidatorGuards({
+      draft: "我不擅长……把这些事情说清楚。",
+      recentContext: "那你告诉我，你现在是什么感受？",
+      continuityScope: "main_relationship",
+      maxNsfwLevel: "medium",
+    });
+    const hasAnalysis = failures.some(
+      (f) => f.kind === "self_analysis_leakage",
+    );
+    assert.ok(hasAnalysis, "guard should fire");
+
+    // Simulate validationFromDeterministicFailures logic
+    const inCharacter = !failures.some(
+      (f) =>
+        f.kind === "meta_assistant_language" ||
+        f.kind === "unsupported_autobiographical_claim" ||
+        f.kind === "self_analysis_leakage",
+    );
+    assert.equal(inCharacter, false, "in_character should be false for self_analysis_leakage");
   });
 });
 

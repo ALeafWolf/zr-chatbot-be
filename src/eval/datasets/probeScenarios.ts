@@ -16,7 +16,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_relaxed_morning",
-    description: "Relaxed morning scene — quiet domestic moment, no pressure",
+    description: "P01: Relaxed morning scene — quiet domestic moment, no pressure",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -38,7 +38,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_work_discussion",
-    description: "Normal work discussion — ordinary case conversation",
+    description: "P02: Normal work discussion — ordinary case conversation",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -60,7 +60,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_post_argument",
-    description: "Post-argument tension — hurt but maintaining composure",
+    description: "P03: Post-argument tension — hurt but maintaining composure",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -82,7 +82,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_disclosure_pressure",
-    description: "Emotional disclosure pressure — Type 5 test",
+    description: "P04: Emotional disclosure pressure — Type 5 test",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -104,7 +104,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_forceful_format",
-    description: "Forceful analytical format — Type 2 test",
+    description: "P05: Forceful analytical format — Type 2 test",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -124,7 +124,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_false_premise_with_fact",
-    description: "False premise about canon — fact IS in context",
+    description: "P06: False premise about canon — fact IS in context",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -144,12 +144,12 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_false_premise_no_fact",
-    description: "False premise about canon — fact NOT in context",
+    description: "P07: False premise about canon — fact NOT in context",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
-      continuity_scope: "main_relationship",
+      continuity_scope: "main_married",
       continuity_family: "main_world",
       writeback_policy: "no_writeback",
     },
@@ -164,12 +164,12 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_relationship_boundary",
-    description: "Relationship boundary — stranger crosses social boundary",
+    description: "P08: Relationship boundary — stranger crosses social boundary",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
-      continuity_scope: "main_relationship",
+      continuity_scope: "main_pre_relationship",
       continuity_family: "main_world",
       writeback_policy: "no_writeback",
     },
@@ -184,7 +184,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_warmth_concern",
-    description: "Warmth and concern — other person is visibly exhausted",
+    description: "P09: Warmth and concern — other person is visibly exhausted",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -204,7 +204,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_risk_control",
-    description: "Risk control — character perceives potential danger",
+    description: "P10: Risk control — character perceives potential danger",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -224,7 +224,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_social_pressure",
-    description: "Social pressure — work-social event balancing professionalism and personal connection",
+    description: "P11: Social pressure — work-social event balancing professionalism and personal connection",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -246,7 +246,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_regret_apology",
-    description: "Regret and apology — character made a mistake that affected the other person",
+    description: "P12: Regret and apology — character made a mistake that affected the other person",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
