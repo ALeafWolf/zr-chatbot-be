@@ -75,11 +75,30 @@
     {
       "idx": 10,
       "version": "7",
+      "when": 1762938001000,
+      "tag": "0010_add_structmem_consolidation",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1762938002000,
+      "tag": "0011_add_memory_lifecycle_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1762938003000,
+      "tag": "0012_add_chat_message_route",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
       "when": 1779918758647,
-      "tag": "0010_add_internal_logic_evidence",
+      "tag": "0013_add_internal_logic_evidence",
       "breakpoints": true
     }
-  ]
-}
   ]
 }
