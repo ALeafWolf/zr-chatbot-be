@@ -17,6 +17,7 @@
     "eval:retrieval": "tsx src/eval/runRetrievalEvalCli.ts",
     "test:structural-parse": "tsx src/retrieval/structuralParse.fixtures.ts",
     "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts",
+    "seed:internal-logic": "tsx scripts/seedInternalLogicEvidence.ts",
     "test:unit": "tsx --import ./src/test/setup.ts --test --experimental-test-module-mocks \"src/**/*.unit.ts\""
   },
   "dependencies": {
