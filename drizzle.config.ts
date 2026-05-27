@@ -10,6 +10,7 @@ export default defineConfig({
     "./src/db/schema/persona.ts",
     "./src/db/schema/structmem.ts",
     "./src/db/schema/jobs.ts",
+    "./src/db/schema/internalLogic.ts",
   ],
   out: "./drizzle/migrations",
   dialect: "postgresql",

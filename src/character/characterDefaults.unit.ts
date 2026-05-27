@@ -20,7 +20,7 @@ describe("zuo_ran.yaml guardrail phrases", () => {
       "expression_constraint should contain P04 negative example: 我不知道该怎么表达这种情绪",
     );
     assert.ok(
-      ec.includes("沉默、移开目光、捏袖口"),
+      ec.includes("沉默、移开目光等细微动作"),
       "expression_constraint should contain P04 positive replacement pattern",
     );
   });
