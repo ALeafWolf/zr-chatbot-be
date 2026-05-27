@@ -162,8 +162,7 @@ export async function buildRoleplayPromptContext(
     structMemEntryContextExpansions: context.structMemEntryContextExpansions,
     structMemConsolidations: context.structMemConsolidations,
     motifProbe: context.motifProbe,
-    // internalLogicEvidence is not passed to buildPromptContext yet
-    // (Task Group 3 will add prompt rendering)
+    internalLogicEvidence: context.internalLogicEvidence,
     memoryRerank: context.rerankOutput,
     userMessage,
     queryRewrite: context.queryRewrite,

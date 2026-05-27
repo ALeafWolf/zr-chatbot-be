@@ -10,6 +10,7 @@ import type { RetrievedStructMemConsolidation } from "../../retrieval/memory/ret
 import type { RetrievedOpenThread } from "../../retrieval/memory/retrieveOpenThreads";
 import type { StructMemEntryContextExpansion } from "../../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "../context/motifTypes";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 
 
 const SESSION_RECALL_MAX_CHARS_PER_CHUNK = 1200;
@@ -360,4 +361,48 @@ export function formatStructMemMotifBlock(
   return full.length > STRUCTMEM_MOTIF_MAX_CHARS
     ? `${full.slice(0, STRUCTMEM_MOTIF_MAX_CHARS - 1)}…`
     : full;
+}
+
+// ---------------------------------------------------------------------------
+// Internal-logic evidence
+// ---------------------------------------------------------------------------
+
+const INTERNAL_LOGIC_EVIDENCE_MAX_CHARS = 2000;
+
+/**
+ * Format selected internal-logic evidence for the prompt.
+ *
+ * Renders a compact block with node, claim, evidence, and optional provenance,
+ * placed immediately after [CHARACTER INTERNAL LOGIC]. The block instructs that
+ * these are behavioral grounds, not lines to be spoken aloud.
+ */
+export function formatInternalLogicEvidence(
+  hits: InternalLogicEvidenceHit[],
+): string {
+  if (hits.length === 0) return "";
+
+  const parts: string[] = [];
+  let total = 0;
+
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i]!;
+    const provenance = [h.arcKey, h.chapterKey, h.episodeLabel]
+      .filter(Boolean)
+      .join(" / ");
+    const provenanceLine = provenance ? `\n出处：${provenance}` : "";
+
+    const block = `- 节点：${h.node}\n  逻辑：${h.claimText}\n  证据：${h.evidenceText}${provenanceLine}`;
+
+    if (total + block.length + 2 > INTERNAL_LOGIC_EVIDENCE_MAX_CHARS) {
+      const room = INTERNAL_LOGIC_EVIDENCE_MAX_CHARS - total - 2;
+      if (room < 48) break;
+      parts.push(`${block.slice(0, room - 1)}…`);
+      break;
+    }
+    parts.push(block);
+    total += block.length + 2;
+  }
+
+  const body = parts.join("\n\n");
+  return `${body}\n\n以上是生成行为的依据，不是角色需要直接解释给用户的内容。`;
 }

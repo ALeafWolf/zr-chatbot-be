@@ -48,6 +48,7 @@ const HYBRID_SOURCE_CAPS: Partial<Record<ContextCandidateSource, number>> = {
   structmem_consolidation: 2,
   session_chunk: 3,
   interactive_memory: 3,
+  internal_logic_evidence: 2,
   canon_fact: 3,
   canon_chunk: 2,
 };
@@ -188,17 +189,46 @@ export async function runHybridScoreRerank(
     structMemEntries: input.structMemEntries,
     structMemConsolidations: input.structMemConsolidations,
     openThreads: input.openThreads,
+    internalLogicEvidence: input.internalLogicEvidence,
   });
 
-  // Preserve critical context
-  const { filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
-    preserveCriticalContext(
-      input.sessionSummary,
-      input.latestTurnDelta,
-      input.memoryCorrections,
-    );
+  const appliedStartedAt = Date.now();
+  const rerankMs = appliedStartedAt - startedAt;
 
-  // Filter canon by selected canon IDs
+  const selectedContext: PromptMemoryContextSelection = {
+    memories: applied.memories,
+    sessionRecall: applied.sessionRecall,
+    structMemEntries: applied.structMemEntries,
+    structMemConsolidations: applied.structMemConsolidations,
+    openThreads: applied.openThreads,
+    internalLogicEvidence: applied.internalLogicEvidence,
+    diagnostics: {
+        retrievedCounts: {
+          interactive_memory: input.memories.length,
+          session_chunk: input.sessionRecall.length,
+          structmem_entry: input.structMemEntries.length,
+          structmem_consolidation: input.structMemConsolidations.length,
+          open_thread: input.openThreads.length,
+          internal_logic_evidence: input.internalLogicEvidence?.length ?? 0,
+        } as any,
+        injectedCounts: {
+          interactive_memory: applied.memories.length,
+          session_chunk: applied.sessionRecall.length,
+          structmem_entry: applied.structMemEntries.length,
+          structmem_consolidation: applied.structMemConsolidations.length,
+          open_thread: applied.openThreads.length,
+          internal_logic_evidence: applied.internalLogicEvidence.length,
+        } as any,
+      droppedDuplicateCount: 0,
+      droppedLowScoreCount: 0,
+      droppedCorrectionCount: 0,
+      droppedBudgetCount: 0,
+      topSources: [],
+      averageInjectedScore: null,
+    },
+  };
+
+  // Build outputs required by HybridScoreRerankOutput type
   const selectedCanonChunkIds = selected
     .filter((c) => c.source === "canon_chunk")
     .map((c) => c.id);
@@ -212,73 +242,25 @@ export async function runHybridScoreRerank(
     selectedCanonFactIds,
   );
 
-  // Determine final context mode
-  const hasCanon = selectedCanonChunkIds.length > 0 || selectedCanonFactIds.length > 0;
-  const hasMemory = applied.memories.length > 0 || applied.sessionRecall.length > 0 ||
-    applied.structMemEntries.length > 0 || applied.openThreads.length > 0;
-
-  let finalContextMode: string;
-  if (hasCanon && hasMemory) {
-    finalContextMode = "memory_and_canon";
-  } else if (hasCanon) {
-    finalContextMode = "selected_canon";
-  } else if (hasMemory) {
-    finalContextMode = "selected_memory";
-  } else {
-    finalContextMode = "recent_only";
-  }
-
-  const rerankOutput: MemoryRerankOutput = {
-    selected: selected.map((c) => ({
-      id: c.id,
-      source: c.source,
-      relevance: "useful" as const,
-      usageInstruction: "use_subtly" as const,
-      reasonCode: "direct_continuity" as const,
-    })),
-    rejected: [],
-    finalContextMode: finalContextMode as MemoryRerankOutput["finalContextMode"],
-    needsEvidenceFallback: false,
-  };
-
-  const selectedContext: PromptMemoryContextSelection = {
-    memories: applied.memories,
-    sessionRecall: applied.sessionRecall,
-    structMemEntries: applied.structMemEntries,
-    structMemConsolidations: applied.structMemConsolidations,
-    openThreads: applied.openThreads,
-    diagnostics: {
-      retrievedCounts: {
-        interactive_memory: input.memories.length,
-        session_chunk: input.sessionRecall.length,
-        structmem_entry: input.structMemEntries.length,
-        structmem_consolidation: input.structMemConsolidations.length,
-        open_thread: input.openThreads.length,
-      },
-      injectedCounts: {
-        interactive_memory: applied.memories.length,
-        session_chunk: applied.sessionRecall.length,
-        structmem_entry: applied.structMemEntries.length,
-        structmem_consolidation: applied.structMemConsolidations.length,
-        open_thread: applied.openThreads.length,
-      },
-      droppedDuplicateCount: 0,
-      droppedLowScoreCount: 0,
-      droppedCorrectionCount: 0,
-      droppedBudgetCount: 0,
-      topSources: [],
-      averageInjectedScore: null,
-    },
-  };
-
   return {
-    rerankOutput,
+    rerankOutput: {
+      selected: selected.map((c) => ({
+        id: c.id,
+        source: c.source,
+        relevance: "useful" as const,
+        usageInstruction: "use_subtly" as const,
+        reasonCode: "direct_continuity" as const,
+      })),
+      rejected: [],
+      finalContextMode: "selected_memory",
+      needsEvidenceFallback: false,
+    },
     selectedContext,
     canonChunks: filteredCanon.canonChunks,
     canonScenes: filteredCanon.canonScenes,
-    filteredSessionSummary,
-    filteredLatestTurnDelta,
-    filteredMemoryCorrections,
+    filteredSessionSummary: input.sessionSummary,
+    filteredLatestTurnDelta: input.latestTurnDelta,
+    filteredMemoryCorrections: input.memoryCorrections,
     hybridMs: Date.now() - startedAt,
     variantLabel: "hybrid_score",
     selectionMethod: "score_priority_hybrid",
