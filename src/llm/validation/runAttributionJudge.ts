@@ -33,7 +33,12 @@ const JudgeSchema = z.object({
 });
 
 const ATTRIBUTION_JUDGE_SYSTEM = `You are an attribution checker for Chinese character roleplay.
-From the draft, extract at most ONE subject-predicate-object claim about who did what (agency: who proposed a trip, who arranged an outing, who initiated, etc.). If there is no such claim, set has_attribution_claim to false.
+From the draft, extract at most ONE concrete claim about story history (agency, time/order, place, cause/motivation, object placement, letter content, who did what). If there is no such concrete claim about the story's canon/history, set has_attribution_claim to false.
+Examples of concrete canon-history claims: "第一次去的时候，民宿窗外正对着那片柿子林", "回程路上在服务区停了一会儿", "我在那里写了第一封信给你".
+
+IMPORTANT — Which claim to select:
+When the draft contains multiple concrete canon-history claims, prefer the one that is MOST SPECIFIC / HIGHEST-RISK / LEAST CLEARLY SUPPORTED by the canon or transcript. For example, if the draft contains both a supported correction ("那是第二次去枫河") and an unsupported elaboration ("第一次去的时候...服务区...第一封信"), prefer the unsupported elaboration because it has the highest risk of being a false premise. The goal is to catch invented details, not to find an already-supported claim.
+
 Decide if that claim is directly supported by the retrieved canon excerpt and/or the recent transcript. If unsupported or only guessed, set both supported_by_canon and supported_by_transcript to false as appropriate.
 Return ONLY valid JSON with keys: has_attribution_claim, optional claim {subject, predicate, object}, supported_by_canon, supported_by_transcript, optional fail_reason.`;
 

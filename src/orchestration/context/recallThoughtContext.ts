@@ -61,6 +61,7 @@ const FALLBACK_SOURCE_ORDER: ContextCandidateSource[] = [
   "motif_probe",
   "session_chunk",
   "interactive_memory",
+  "canon_fact",
   "canon_chunk",
 ];
 
@@ -209,7 +210,7 @@ function pushOpenThreadItem(
 function pushCanonExcerptItem(
   items: RecallThoughtContextItem[],
   excerpt: string,
-  source: "canon_chunk" | "canon_scene",
+  source: "canon_chunk" | "canon_scene" | "canon_fact",
   rerankMeta: MemoryRerankSelected | undefined,
 ): void {
   const mode = visibleModeFor(rerankMeta);
@@ -333,6 +334,21 @@ export function buildRecallThoughtContext(
     const canonChunkById = new Map<string, RetrievedCanonChunk>();
     for (const cc of input.canonChunks) canonChunkById.set(cc.id, cc);
 
+    // Build a lookup from stable fact ID to fact text for canon_fact resolution.
+    // After filterCanonBySelection each kept fact carries originalFactIndex at
+    // runtime so the stable ID matches the reranker output exactly.
+    const canonFactById = new Map<string, string>();
+    for (const scene of input.canonScenes) {
+      const facts = scene.facts ?? [];
+      for (const f of facts) {
+        const ff = f as { textForm?: string; originalFactIndex?: number };
+        const origIdx = ff.originalFactIndex;
+        if (origIdx == null) continue; // not a filtered fact, skip
+        const fid = `fact_${scene.sceneId}_${origIdx}`;
+        if (ff.textForm?.trim()) canonFactById.set(fid, ff.textForm);
+      }
+    }
+
     for (const selected of input.rerankOutput.selected) {
       const rerankMeta = lookup.get(selected.id);
       const source = selected.source;
@@ -356,6 +372,11 @@ export function buildRecallThoughtContext(
         const cc = canonChunkById.get(selected.id);
         if (cc) {
           pushCanonExcerptItem(items, cc.textContent, "canon_chunk", rerankMeta);
+        }
+      } else if (source === "canon_fact") {
+        const factText = canonFactById.get(selected.id);
+        if (factText) {
+          pushCanonExcerptItem(items, factText, "canon_fact", rerankMeta);
         }
       } else if (source === "session_summary" && input.sessionSummary?.summaryText) {
         pushSessionSummaryItem(items, input.sessionSummary.summaryText, rerankMeta);
@@ -390,6 +411,15 @@ export function buildRecallThoughtContext(
         for (const c of input.structMemConsolidations) pushStructMemConsolidationItem(items, c, undefined);
       } else if (source === "open_thread") {
         for (const t of input.openThreads) pushOpenThreadItem(items, t, undefined);
+      } else if (source === "canon_fact") {
+        for (const scene of input.canonScenes) {
+          const facts = scene.facts ?? [];
+          for (const f of facts) {
+            if (f.textForm?.trim()) {
+              pushCanonExcerptItem(items, f.textForm, "canon_fact", undefined);
+            }
+          }
+        }
       } else if (source === "canon_chunk") {
         for (const cc of input.canonChunks) {
           pushCanonExcerptItem(items, cc.textContent, "canon_chunk", undefined);

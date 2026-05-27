@@ -1,6 +1,6 @@
 import { CANON_TIER3, type CanonTier3Override } from "../../character/canonRules";
 import { traceStage } from "../../observability/langsmithTracing";
-import { expandAnchorScenes, type ExpandedSceneRow } from "./expandScenes";
+import { expandAnchorScenes, type ExpandedSceneRow, type EpisodeOpeningRow } from "./expandScenes";
 import {
   fuseAnchorScenes,
   rrfMergeTwo,
@@ -16,6 +16,13 @@ import {
 } from "./searchLexicalUnitScenes";
 import { sceneIdsFromUnitHits, searchUnitVectors } from "./searchUnitVectors";
 
+export interface CanonOpeningUnit {
+  unitIndex: number;
+  speaker: string | null;
+  contentType: string;
+  textContent: string;
+}
+
 export interface RetrievedCanonScene {
   sceneId: string;
   chapterId: string;
@@ -25,6 +32,8 @@ export interface RetrievedCanonScene {
   episodeLabel: string;
   sceneTitle: string | null;
   sceneSummary: string | null;
+  episodeSummary: string | null;
+  episodeOpeningUnits: CanonOpeningUnit[];
   units: Array<{
     unitIndex: number;
     speaker: string | null;
@@ -144,6 +153,7 @@ function groupExpandedToScenes(
       textForm: string;
     }>
   >,
+  episodeOpeningUnits: EpisodeOpeningRow[] = [],
 ): RetrievedCanonScene[] {
   const byScene = new Map<string, ExpandedSceneRow[]>();
   for (const r of expandedRows) {
@@ -152,19 +162,31 @@ function groupExpandedToScenes(
     byScene.set(r.sceneId, list);
   }
 
+  // Group opening units by episodeId for attachment.
+  const openingByEpisodeId = new Map<string, CanonOpeningUnit[]>();
+  for (const ep of episodeOpeningUnits) {
+    openingByEpisodeId.set(
+      ep.episodeId,
+      ep.units.map((u) => ({ ...u })),
+    );
+  }
+
   return anchors.map((a) => {
     const rows = byScene.get(a.sceneId) ?? [];
     const first = rows[0];
     const fs = factsByScene.get(a.sceneId) ?? [];
+    const epId = first?.episodeId ?? a.sceneId;
     return {
       sceneId: a.sceneId,
       chapterId: first?.chapterId ?? "",
-      episodeId: first?.episodeId ?? "",
+      episodeId: epId,
       arcKey: first?.arcKey ?? "",
       chapterName: first?.chapterName ?? "",
       episodeLabel: first?.episodeLabel ?? "",
       sceneTitle: first?.sceneTitle ?? null,
       sceneSummary: first?.sceneSummary ?? null,
+      episodeSummary: first?.episodeSummary ?? null,
+      episodeOpeningUnits: openingByEpisodeId.get(epId) ?? [],
       units: rows.map((u) => ({
         unitIndex: u.unitIndex,
         speaker: u.speaker,
@@ -375,7 +397,7 @@ async function runTier3Core(input: {
     weights: t3.canonProvenanceWeights,
   });
 
-  const { rows, factsByScene } = await tracedFineExpansion({
+  const { rows, episodeOpeningUnits, factsByScene } = await tracedFineExpansion({
     characterId,
     arcKeys,
     anchors: fused,
@@ -383,7 +405,7 @@ async function runTier3Core(input: {
     maxTotalUnits: t3.canonMaxTotalUnits,
   });
 
-  return groupExpandedToScenes(fused, rows, factsByScene);
+  return groupExpandedToScenes(fused, rows, factsByScene, episodeOpeningUnits);
 }
 
 export const retrieveCanonCoarseToFine = traceStage(

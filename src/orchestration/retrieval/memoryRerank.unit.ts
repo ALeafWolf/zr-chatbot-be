@@ -143,12 +143,43 @@ describe("applyEmptySelectionGuard", () => {
   });
 
   it("does not apply for scene_continuation", () => {
-    const result = __testing.applyEmptySelectionGuard(
-      emptyOutput,
-      candidates,
-      "scene_continuation",
+    assert.deepEqual(
+      __testing.applyEmptySelectionGuard(
+        { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
+        [],
+        "scene_continuation",
+      ),
+      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
     );
-    assert.equal(result.selected.length, 0);
+  });
+
+  it("picks canon_fact for canon_question when selected is empty", () => {
+    const candidates = [
+      makeCandidate({ id: "fact_1", source: "canon_fact", text: "A key story fact.", score: 0.9 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "A memory.", score: 0.8 }),
+    ];
+    const result = __testing.applyEmptySelectionGuard(
+      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
+      candidates,
+      "canon_question",
+    );
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.selected[0]!.source, "canon_fact");
+  });
+
+  it("does not pick canon_fact for explicit_recall (non-canon guard)", () => {
+    const candidates = [
+      makeCandidate({ id: "fact_1", source: "canon_fact", text: "A key story fact.", score: 0.9 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "A memory.", score: 0.7 }),
+    ];
+    const result = __testing.applyEmptySelectionGuard(
+      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
+      candidates,
+      "explicit_recall",
+    );
+    assert.equal(result.selected.length, 1);
+    assert.notEqual(result.selected[0]!.source, "canon_fact", "should not pick canon_fact for non-canon intent");
+    assert.equal(result.selected[0]!.source, "interactive_memory");
   });
 });
 

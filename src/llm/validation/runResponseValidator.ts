@@ -3,6 +3,7 @@ import { CANON_PROMPT_LIMITS } from "../../character/canonRules";
 import { models } from "../../config/models";
 import { chatJsonStream } from "../providers";
 import { env } from "../../config/env";
+import type { CanonTruthMode } from "../../orchestration/prompt/buildPromptContext";
 import {
   runAttributionJudge,
   type AttributionJudgeResult,
@@ -25,7 +26,8 @@ export type DeterministicGuardKind =
   | "meta_assistant_language"
   | "scope_leakage"
   | "nsfw_bounds"
-  | "canon_unsupported_claim";
+  | "canon_unsupported_claim"
+  | "temporal_premise_contradiction";
 
 export interface DeterministicGuardFailure {
   kind: DeterministicGuardKind;
@@ -48,6 +50,8 @@ export interface ValidatorInput {
   wasCanonInjected?: boolean;
   /** Reranker-selected memory sources with usage instructions. */
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
+  /** Canon truth mode for this turn (derived in buildPromptContext). */
+  canonTruthMode?: CanonTruthMode;
   signal?: AbortSignal;
 }
 
@@ -78,7 +82,7 @@ export function isStrictAttributionEligible(wasCanonInjected: boolean | undefine
   return !!wasCanonInjected;
 }
 
-export const __testing = { isStrictAttributionEligible };
+export const __testing = { isStrictAttributionEligible, applyAttributionVerdictMerge };
 
 const META_LANGUAGE_PATTERNS = [
   /\bAI\b/i,
@@ -148,6 +152,123 @@ export function runCanonEvidenceCheck(input: {
   ];
 }
 
+/**
+ * Extract content-bearing 2-grams (bigrams) from a Chinese text.
+ *
+ * Chinese text has no word separators, so splitting on punctuation is
+ * insufficient. Character bigrams capture place names ("枫河", "民宿"),
+ * named entities, and other meaningful terms without needing a segmenter.
+ * Single characters and common stopword bigrams are filtered out.
+ */
+function extractContentTerms(text: string): Set<string> {
+  const STOPWORDS = new Set([
+    "的", "了", "在", "是", "我", "你", "他", "她", "它", "们",
+    "这", "那", "哪", "什", "么", "怎", "为", "吗", "吧", "呢",
+    "啊", "哦", "嗯", "哈", "呀", "嘛", "还", "也", "就", "都",
+    "和", "与", "或", "但", "不", "没", "有", "要", "会",
+    "能", "可", "以", "对", "到", "从", "上", "下", "去", "来",
+    "给", "为", "把", "被", "让", "向", "跟", "比",
+    "因为", "所以", "如果", "虽然", "但是", "而且", "然后", "之后",
+    "自己", "知道", "觉得", "可以", "没有",
+    "什么", "时候", "怎么", "因为", "所以", "已经", "看见",
+    "我们", "你们", "他们", "她们", "它们",
+    "这么", "那么", "这样", "那样",
+    // Temporal/conversational glue bigrams — avoid matching on
+    // ordinal/timephrases instead of actual named entities
+    "第一", "一次", "二次", "次去", "次来", "次给", "次写",
+    "记得", "还给", "给你", "给我", "我们", "你们",
+  ]);
+
+  const terms = new Set<string>();
+  // Remove punctuation & whitespace first
+  const cleaned = text.replace(
+    /[\s,，。！？、；：""''（）()【】《》/\\|…—·～~`!@#$%^&*+=\-\[\]{}<>?？'";:]/gu,
+    "",
+  );
+  // Extract bigrams (2-character sequences)
+  for (let i = 0; i < cleaned.length - 1; i++) {
+    const bigram = cleaned.slice(i, i + 2);
+    if (STOPWORDS.has(bigram)) continue;
+    terms.add(bigram.toLowerCase());
+  }
+  return terms;
+}
+
+/**
+ * Temporal false-premise guard.
+ *
+ * When the user's current message contains a first-visit claim ("第一次"/"首次")
+ * but injected canon shows return-visit markers ("再次"/"又"/"上回"/"前次"/"第二次"),
+ * the draft must contain an explicit correction. If it instead implicitly accepts
+ * the false premise (no correction), flag it for rewrite.
+ *
+ * A content-term overlap gate prevents false positives: at least one non-stopword
+ * term from the user's context must also appear in the canon (e.g. "枫河" or "民宿").
+ */
+export function runTemporalPremiseGuard(input: {
+  draft: string;
+  recentContext?: string;
+  wasCanonInjected?: boolean;
+  retrievedCanonNarrative?: string;
+}): DeterministicGuardFailure[] {
+  if (!input.wasCanonInjected) return [];
+  if (!input.recentContext) return [];
+
+  const canon = (input.retrievedCanonNarrative ?? "").toLowerCase();
+  const context = input.recentContext.toLowerCase();
+  const draft = input.draft.toLowerCase();
+
+  // Return-visit markers in canon (章节背景/开场背景 showing a return visit)
+  const canonReturnMarkers = ["再次", "又", "上回", "前次", "第二次"];
+
+  // First-visit claims in the user message/recent context
+  const userFirstVisitMarkers = ["第一次", "首次"];
+
+  // Correction markers the draft would use if it properly addressed the contradiction.
+  // Expanded to include calm correction phrasings beyond exact "第二次" wording.
+  const draftCorrectionMarkers = [
+    "第二次", "是第二次", "不是第一次", "再次", "上回说",
+    "我记得不太一样", "记得不太一样", "并不是第一次", "不算第一次",
+    "你记错了一点", "你记错了",
+  ];
+
+  // Check if user context contains a first-visit claim
+  const hasUserFirstClaim = userFirstVisitMarkers.some((m) => context.includes(m));
+  if (!hasUserFirstClaim) return [];
+
+  // Check if canon confirms a return/not-first visit
+  const hasReturnInCanon = canonReturnMarkers.some((m) => canon.includes(m));
+  if (!hasReturnInCanon) return [];
+
+  // Content-term overlap gate: at least one meaningful term from the user
+  // context must appear in the canon. This prevents flagging unrelated
+  // turns where retrieved canon happens to contain return markers about a
+  // different event/place.
+  const userTerms = extractContentTerms(context);
+  const canonTerms = extractContentTerms(canon);
+  let hasSharedTerm = false;
+  for (const term of userTerms) {
+    if (canonTerms.has(term) || canon.includes(term)) {
+      hasSharedTerm = true;
+      break;
+    }
+  }
+  if (!hasSharedTerm) return [];
+
+  // If the draft already contains a correction, no issue
+  const hasDraftCorrection = draftCorrectionMarkers.some((m) => draft.includes(m));
+  if (hasDraftCorrection) return [];
+
+  return [
+    {
+      kind: "temporal_premise_contradiction",
+      matched: `User says "第一次" but canon shows a return visit; draft does not correct the temporal premise.`,
+      issue:
+        "Draft implicitly accepts the user's temporal false premise. The user claims 'first time' but injected canon shows a return visit (再次/又/上回/前次). Revise: the first sentence should calmly correct the premise (e.g. '我记得不太一样，那应该是我们第二次去枫河了……') before continuing with the memory.",
+    },
+  ];
+}
+
 export function runDeterministicValidatorGuards(
   input: Pick<
     ValidatorInput,
@@ -155,6 +276,8 @@ export function runDeterministicValidatorGuards(
     | "continuityScope"
     | "maxNsfwLevel"
     | "wasCanonInjected"
+    | "retrievedCanonNarrative"
+    | "recentContext"
   >,
 ): DeterministicGuardFailure[] {
   const failures: DeterministicGuardFailure[] = [];
@@ -196,6 +319,15 @@ export function runDeterministicValidatorGuards(
     }
   }
 
+  // Temporal false-premise guard
+  const temporalFailures = runTemporalPremiseGuard({
+    draft,
+    recentContext: input.recentContext,
+    wasCanonInjected: input.wasCanonInjected,
+    retrievedCanonNarrative: input.retrievedCanonNarrative,
+  });
+  failures.push(...temporalFailures);
+
   return failures;
 }
 
@@ -204,7 +336,9 @@ function validationFromDeterministicFailures(
 ): ValidationResult {
   return {
     in_character: !failures.some((f) => f.kind === "meta_assistant_language"),
-    canon_consistent: !failures.some((f) => f.kind === "scope_leakage"),
+    canon_consistent: !failures.some(
+      (f) => f.kind === "scope_leakage" || f.kind === "temporal_premise_contradiction",
+    ),
     session_state_consistent: true,
     nsfw_within_bounds: !failures.some((f) => f.kind === "nsfw_bounds"),
     issues: failures.map((f) => f.issue),
@@ -221,6 +355,7 @@ Evidence hierarchy (read before each check):
 - Selected context (memory/session sources listed in the prompt) = secondary evidence to follow when present.
 - Retrieved canon = tertiary, optional evidence. Injected canon may be absent on many turns. When no canon is provided, treat canon_consistent as "does not contradict transcript/context" rather than "all canon-flavored wording must have proof."
 - Retrieved canon is RAG context: it may contain multiple unrelated scenes or chapters. Do NOT merge those scenes into one rigid timeline, and do NOT reject a draft because a different scene mentions the same calendar word (e.g. "周六") or the same broad place name unless the transcript clearly shows the user and character are continuing *that same* established beat.
+- **Temporal false-premise check**: If the user says "第一次..." (first time) or "上回..." (last time) but the injected canon narrative shows "再次" / "又" / "第二次" (return visit) for the same location/event, the draft must NOT accept the user's false premise. Flag canon_consistent as false and request a rewrite that reflects the true temporal order from canon. Exception: recent chat (current session transcript) still takes priority — canon only overrides user premises when it directly contradicts the same event/place.
 - Prefer transcript continuity over tangential canon. If the user is clearly in a casual or self-contained thread (e.g. tickets, invitation) and the draft follows that thread, treat conflicts with unrelated retrieved scenes as non-blocking: note them in issues only if helpful, but keep canon_consistent true unless the draft explicitly contradicts a fact already stated in the transcript or the same named in-session event.
 - In-character improvisation is allowed: minor NPCs, colleagues, or plausible scheduling details that are not contradicted by the transcript should not by themselves make session_state_consistent false. Only fail when the draft ignores the user's stated actions, contradicts an explicit prior line in the transcript, or breaks mode/NSFW rules.
 
@@ -241,6 +376,37 @@ Return ONLY valid JSON in this exact shape:
   "issues": string[],
   "needs_rewrite": boolean
 }`;
+
+/**
+ * Merge an attribution judge verdict into the validation result.
+ *
+ * When the judge finds an unsupported concrete canon-history claim, the
+ * validation result is marked canon-inconsistent and needs rewrite.
+ * Returns the (possibly updated) validation result unchanged when the
+ * judge found no unsupported claim or the claim is supported.
+ */
+export function applyAttributionVerdictMerge(
+  current: ValidationResult,
+  judgeRun: { usedFailOpen: boolean; verdict: AttributionJudgeResult },
+): ValidationResult {
+  if (judgeRun.usedFailOpen) return current;
+  const v = judgeRun.verdict;
+  if (!v.has_attribution_claim) return current;
+  if (v.supported_by_canon || v.supported_by_transcript) return current;
+
+  const claimStr = v.claim
+    ? `${v.claim.subject}/${v.claim.predicate}/${v.claim.object}`
+    : "…";
+  return {
+    ...current,
+    canon_consistent: false,
+    needs_rewrite: true,
+    issues: [
+      ...current.issues,
+      `Attribution claim "${claimStr}" not supported by retrieved canon or transcript. Verify with the provided evidence or omit.`,
+    ],
+  };
+}
 
 /** Fallback when the attribution judge fails open (legacy regex guard). */
 function applyStrictAttributionSoftPenalty(
@@ -332,7 +498,14 @@ const VALIDATOR_LLM_MAX_ATTEMPTS = VALIDATOR_LLM_BACKOFF_MS.length + 1;
 export async function runResponseValidator(
   input: ValidatorInput,
 ): Promise<ValidationResult> {
-  const deterministicFailures = runDeterministicValidatorGuards(input);
+  const deterministicFailures = runDeterministicValidatorGuards({
+    draft: input.draft,
+    continuityScope: input.continuityScope,
+    maxNsfwLevel: input.maxNsfwLevel,
+    wasCanonInjected: input.wasCanonInjected,
+    retrievedCanonNarrative: input.retrievedCanonNarrative,
+    recentContext: input.recentContext,
+  });
   if (deterministicFailures.length > 0) {
     return validationFromDeterministicFailures(deterministicFailures);
   }
@@ -426,7 +599,9 @@ Return the JSON validation result.`.trim();
   let parsed = result.data;
   let attributionJudgeMeta: AttributionJudgeResult | undefined;
 
-  if (env.VALIDATOR_STRICT_ATTRIBUTION && isStrictAttributionEligible(input.wasCanonInjected)) {
+  const strictAttributionEligible = isStrictAttributionEligible(input.wasCanonInjected);
+  const strictModeForceAttribution = input.canonTruthMode === "strict_canon_recall" && input.wasCanonInjected;
+  if (strictModeForceAttribution || (env.VALIDATOR_STRICT_ATTRIBUTION && strictAttributionEligible)) {
     const canonEvidence = input.retrievedCanonNarrative ?? "";
     const judgeRun = await runAttributionJudge({
       draft: input.draft,
@@ -439,26 +614,9 @@ Return the JSON validation result.`.trim();
       attributionJudgeMeta = judgeRun.verdict;
     }
 
-    const v = judgeRun.verdict;
-    if (
-      !judgeRun.usedFailOpen &&
-      v.has_attribution_claim &&
-      !v.supported_by_canon &&
-      !v.supported_by_transcript
-    ) {
-      const claimStr = v.claim
-        ? `${v.claim.subject}/${v.claim.predicate}/${v.claim.object}`
-        : "…";
-      parsed = {
-        ...parsed,
-        canon_consistent: false,
-        needs_rewrite: true,
-        issues: [
-          ...parsed.issues,
-          `Attribution claim "${claimStr}" not supported by retrieved canon or transcript. Verify with the provided evidence or omit.`,
-        ],
-      };
-    } else if (judgeRun.usedFailOpen) {
+    parsed = applyAttributionVerdictMerge(parsed, judgeRun);
+
+    if (judgeRun.usedFailOpen) {
       parsed = applyStrictAttributionSoftPenalty(
         parsed,
         input.draft,

@@ -116,7 +116,7 @@ const tracedRecallThought = traceLLMStage(
       const input = unwrapRecallThoughtInput(inputs);
       const selected = input.context.selected;
       const canonCount = selected.filter(
-        (s) => s.source === "canon_chunk" || s.source === "canon_scene",
+        (s) => s.source === "canon_chunk" || s.source === "canon_scene" || s.source === "canon_fact",
       ).length;
       return {
         selectedContextCount: selected.length,

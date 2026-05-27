@@ -96,4 +96,14 @@ describe("hybridScoreSelect", () => {
     const { selected } = hybridScoreSelect(candidates, "canon_question");
     assert.ok(selected.some((c) => c.source === "canon_chunk"));
   });
+
+  it("selects canon_fact for canon_question intent", () => {
+    const candidates = [
+      makeCandidate("fact_1", "canon_fact", 0.8),
+      makeCandidate("mem_1", "interactive_memory", 0.9),
+    ];
+    const { selected } = hybridScoreSelect(candidates, "canon_question");
+    const factSelected = selected.some((c) => c.source === "canon_fact");
+    assert.ok(factSelected, "canon_fact should be selected for canon_question");
+  });
 });

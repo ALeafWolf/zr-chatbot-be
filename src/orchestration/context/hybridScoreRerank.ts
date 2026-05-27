@@ -35,6 +35,7 @@ const HYBRID_SOURCE_PRIORITY: Record<ContextCandidateSource, number> = {
   motif_probe: 6,
   session_chunk: 7,
   interactive_memory: 8,
+  canon_fact: 8,
   canon_chunk: 9,
 };
 
@@ -46,6 +47,7 @@ const HYBRID_SOURCE_CAPS: Partial<Record<ContextCandidateSource, number>> = {
   structmem_consolidation: 2,
   session_chunk: 3,
   interactive_memory: 3,
+  canon_fact: 3,
   canon_chunk: 2,
 };
 
@@ -62,7 +64,7 @@ const INTENT_REQUIRED_SOURCES: Record<
 > = {
   explicit_recall: ["interactive_memory", "session_chunk", "structmem_entry"],
   implicit_memory_callback: ["interactive_memory", "session_chunk"],
-  canon_question: ["canon_chunk"],
+  canon_question: ["canon_fact", "canon_chunk"],
   scene_continuation: [],
   relationship_state: ["interactive_memory", "structmem_consolidation"],
   mixed: [],
@@ -196,17 +198,21 @@ export async function runHybridScoreRerank(
     );
 
   // Filter canon by selected canon IDs
-  const selectedCanonIds = selected
+  const selectedCanonChunkIds = selected
     .filter((c) => c.source === "canon_chunk")
+    .map((c) => c.id);
+  const selectedCanonFactIds = selected
+    .filter((c) => c.source === "canon_fact")
     .map((c) => c.id);
   const filteredCanon = filterCanonBySelection(
     input.canonChunks,
     input.canonScenes,
-    selectedCanonIds,
+    selectedCanonChunkIds,
+    selectedCanonFactIds,
   );
 
   // Determine final context mode
-  const hasCanon = selectedCanonIds.length > 0;
+  const hasCanon = selectedCanonChunkIds.length > 0 || selectedCanonFactIds.length > 0;
   const hasMemory = applied.memories.length > 0 || applied.sessionRecall.length > 0 ||
     applied.structMemEntries.length > 0 || applied.openThreads.length > 0;
 

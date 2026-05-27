@@ -320,8 +320,8 @@ function applyEmptySelectionGuard(
   const best = candidates
     .filter((c) =>
       plannerIntent === "canon_question"
-        ? c.source === "canon_chunk"
-        : c.source !== "canon_chunk",
+        ? c.source === "canon_chunk" || c.source === "canon_fact"
+        : c.source !== "canon_chunk" && c.source !== "canon_fact",
     )
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
 

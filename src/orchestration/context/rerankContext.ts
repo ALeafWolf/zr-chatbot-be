@@ -215,12 +215,17 @@ export async function rerankContext(
         input.memoryCorrections,
       ));
 
+    const selectedCanonChunkIds = (rerankOutput.selected as { id: string; source: string }[])
+      .filter((s) => s.source === "canon_chunk")
+      .map((s) => s.id);
+    const selectedCanonFactIds = (rerankOutput.selected as { id: string; source: string }[])
+      .filter((s) => s.source === "canon_fact")
+      .map((s) => s.id);
     const filteredCanon = filterCanonBySelection(
       input.canonChunks,
       input.canonScenes,
-      (rerankOutput.selected as { id: string; source: string }[])
-        .filter((s) => s.source === "canon_chunk")
-        .map((s) => s.id),
+      selectedCanonChunkIds,
+      selectedCanonFactIds,
     );
     canonChunks = filteredCanon.canonChunks;
     canonScenes = filteredCanon.canonScenes;
@@ -352,12 +357,17 @@ export async function runLlmRerank(
   const { filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
     preserveCriticalContext(input.sessionSummary, input.latestTurnDelta, input.memoryCorrections);
 
+  const selectedCanonChunkIds = (rerankOutput.selected as { id: string; source: string }[])
+    .filter((s) => s.source === "canon_chunk")
+    .map((s) => s.id);
+  const selectedCanonFactIds = (rerankOutput.selected as { id: string; source: string }[])
+    .filter((s) => s.source === "canon_fact")
+    .map((s) => s.id);
   const filteredCanon = filterCanonBySelection(
     input.canonChunks,
     input.canonScenes,
-    (rerankOutput.selected as { id: string; source: string }[])
-      .filter((s) => s.source === "canon_chunk")
-      .map((s) => s.id),
+    selectedCanonChunkIds,
+    selectedCanonFactIds,
   );
 
   const selectedContext: PromptMemoryContextSelection = {

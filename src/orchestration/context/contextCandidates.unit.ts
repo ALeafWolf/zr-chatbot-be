@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ContextCandidate } from "./contextCandidates";
-import { applyCandidateSelection, filterCanonBySelection, buildPromptContextCandidates } from "./contextCandidates";
+import type { RetrievedCanonScene } from "../../retrieval/canon/retrieveCanonTier3Pipeline";
+import { applyCandidateSelection, filterCanonBySelection, buildPromptContextCandidates, canonFactCandidateId } from "./contextCandidates";
 
 function makeCandidate(id: string, source: string, extra?: Partial<ContextCandidate>): ContextCandidate {
   return {
@@ -145,10 +146,10 @@ describe("filterCanonBySelection", () => {
     { id: "chunk_b", sceneId: "scene_1", textContent: "beta", contentType: "narrative", arcKey: "a", chapterName: "" },
     { id: "chunk_c", sceneId: "scene_2", textContent: "gamma", contentType: "narrative", arcKey: "b", chapterName: "" },
   ] as Parameters<typeof filterCanonBySelection>[0];
-  const canonScenes: Parameters<typeof filterCanonBySelection>[1] = [
+  const canonScenes = [
     { sceneId: "scene_1", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [], rankScore: 0.5, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
     { sceneId: "scene_2", arcKey: "b", chapterId: "ch2", episodeId: "ep2", chapterName: "Ch2", episodeLabel: "Ep2", sceneTitle: null, sceneSummary: null, units: [], facts: [], rankScore: 0.4, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
-  ];
+  ] as unknown as Parameters<typeof filterCanonBySelection>[1];
 
   it("returns empty canon when selected IDs is empty", () => {
     const result = filterCanonBySelection(canonChunks, canonScenes, []);
@@ -183,6 +184,161 @@ describe("filterCanonBySelection", () => {
     const result = filterCanonBySelection([], [], ["chunk_a"]);
     assert.deepEqual(result.canonChunks, []);
     assert.deepEqual(result.canonScenes, []);
+  });
+
+  it("keeps fact-parent scenes with only selected facts (facts-only selection)", () => {
+    const scenes = [
+      { sceneId: "scene_a", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+        { subject: "C", predicate: "has", object: "D", textForm: "C has D." },
+        { subject: "E", predicate: "loves", object: "F", textForm: "E loves F." },
+      ], rankScore: 0.9, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+    ] as unknown as Parameters<typeof filterCanonBySelection>[1];
+    // Select only fact at original index 2 (non-zero index!)
+    const result = filterCanonBySelection([], scenes, [], [canonFactCandidateId("scene_a", 2)]);
+    assert.equal(result.canonChunks.length, 0, "no chunks should be returned");
+    assert.equal(result.canonScenes.length, 1, "scene should be kept");
+    assert.equal(result.canonScenes[0]!.facts.length, 1, "only the selected fact should remain");
+    assert.equal(result.canonScenes[0]!.facts[0]!.textForm, "E loves F.");
+  });
+
+  it("keeps multiple selected facts across scenes (facts-only selection)", () => {
+    const scenes = [
+      { sceneId: "scene_a", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+      ], rankScore: 0.9, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+      { sceneId: "scene_b", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [
+        { subject: "X", predicate: "likes", object: "Y", textForm: "X likes Y." },
+      ], rankScore: 0.8, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+    ] as unknown as Parameters<typeof filterCanonBySelection>[1];
+    const result = filterCanonBySelection([], scenes, [], [
+      canonFactCandidateId("scene_a", 0),
+      canonFactCandidateId("scene_b", 0),
+    ]);
+    assert.equal(result.canonScenes.length, 2);
+    assert.equal(result.canonScenes[0]!.facts.length, 1);
+    assert.equal(result.canonScenes[1]!.facts.length, 1);
+  });
+
+  it("clears scenes when only chunks are selected (existing behavior preserved)", () => {
+    const scenes = [
+      { sceneId: "scene_a", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [{ subject: "A", predicate: "is", object: "B", textForm: "A is B." }], rankScore: 0.9, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+    ] as unknown as Parameters<typeof filterCanonBySelection>[1];
+    const result = filterCanonBySelection(canonChunks, scenes, ["chunk_a"], []);
+    assert.equal(result.canonChunks.length, 1, "chunks should be kept");
+    assert.equal(result.canonScenes.length, 0, "scenes should be cleared");
+  });
+
+  it("keeps both chunks and fact-scenes when both are selected", () => {
+    const scenes = [
+      { sceneId: "scene_a", arcKey: "a", chapterId: "ch1", episodeId: "ep1", chapterName: "Ch1", episodeLabel: "Ep1", sceneTitle: null, sceneSummary: null, units: [], facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+        { subject: "C", predicate: "has", object: "D", textForm: "C has D." },
+      ], rankScore: 0.9, provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null } },
+    ] as unknown as Parameters<typeof filterCanonBySelection>[1];
+    const result = filterCanonBySelection(canonChunks, scenes, ["chunk_a"], [canonFactCandidateId("scene_a", 1)]);
+    assert.equal(result.canonChunks.length, 1, "chunks should be kept");
+    assert.equal(result.canonScenes.length, 1, "scene should be kept");
+    assert.equal(result.canonScenes[0]!.facts.length, 1, "only selected fact should remain");
+    assert.equal(result.canonScenes[0]!.facts[0]!.textForm, "C has D.");
+  });
+});
+
+describe("buildPromptContextCandidates canon_fact candidates", () => {
+  const baseScene = (overrides?: Partial<RetrievedCanonScene>) => ({
+    sceneId: overrides?.sceneId ?? "scene_1",
+    arcKey: "a",
+    chapterId: "ch1",
+    episodeId: "ep1",
+    chapterName: "Ch1",
+    episodeLabel: "Ep1",
+    episodeSummary: null,
+    episodeOpeningUnits: [],
+    sceneTitle: null,
+    sceneSummary: null,
+    units: [],
+    facts: overrides?.facts ?? [],
+    rankScore: overrides?.rankScore ?? 0.5,
+    provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null },
+  });
+
+  it("builds canon_fact candidates from scene facts", () => {
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      canonScenes: [baseScene({ facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+        { subject: "C", predicate: "has", object: "D", textForm: "C has D." },
+      ] })],
+      recentTurns: [],
+      sessionSummaryText: undefined,
+    });
+    const facts = result.candidates.filter((c) => c.source === "canon_fact");
+    assert.equal(facts.length, 2, "should create two fact candidates");
+    assert.equal(facts[0]!.id, canonFactCandidateId("scene_1", 0));
+    assert.equal(facts[1]!.id, canonFactCandidateId("scene_1", 1));
+    assert.equal(facts[0]!.text, "A is B.");
+    assert.equal(facts[1]!.text, "C has D.");
+  });
+
+  it("caps canon_fact candidates to SOURCE_CAPS (6)", () => {
+    const manyFacts = Array.from({ length: 10 }, (_, i) => ({
+      subject: `S${i}`, predicate: "is", object: `O${i}`, textForm: `S${i} is O${i}.`,
+    }));
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      canonScenes: [baseScene({ facts: manyFacts })],
+      recentTurns: [],
+      sessionSummaryText: undefined,
+    });
+    const facts = result.candidates.filter((c) => c.source === "canon_fact");
+    assert.ok(facts.length <= 6, `fact candidates should be capped at 6, got ${facts.length}`);
+  });
+
+  it("skips blank textForm facts", () => {
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      canonScenes: [baseScene({ facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "" },
+        { subject: "C", predicate: "has", object: "D", textForm: "C has D." },
+      ] })],
+      recentTurns: [],
+      sessionSummaryText: undefined,
+    });
+    const facts = result.candidates.filter((c) => c.source === "canon_fact");
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0]!.text, "C has D.");
+  });
+
+  it("reports canon_fact counts in diagnostics retrievedBySource", () => {
+    const result = buildPromptContextCandidates({
+      memories: [],
+      sessionRecall: [],
+      structMemEntries: [],
+      structMemConsolidations: [],
+      openThreads: [],
+      canonChunks: [],
+      canonScenes: [baseScene({ facts: [
+        { subject: "A", predicate: "is", object: "B", textForm: "A is B." },
+      ] })],
+      recentTurns: [],
+      sessionSummaryText: undefined,
+    });
+    assert.equal(result.diagnostics.countsBySource["canon_fact"], 1);
   });
 });
 

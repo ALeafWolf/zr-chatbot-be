@@ -372,6 +372,54 @@ describe("buildRecallThoughtContext", () => {
     assert.match(canonItems[0]?.text, /Canon dialogue line/);
   });
 
+  it("includes selected canon_fact in recall thought items via rerank path", () => {
+    // Build a scene with facts that have originalFactIndex at runtime
+    // (as filterCanonBySelection would produce).
+    const sceneWithFacts = {
+      sceneId: "scene_A",
+      arcKey: "a",
+      chapterId: "ch1",
+      episodeId: "ep1",
+      chapterName: "Ch1",
+      episodeLabel: "Ep1",
+      sceneTitle: "Test",
+      sceneSummary: "A scene.",
+      units: [],
+      facts: [
+        // After filterCanonBySelection, only selected facts remain.
+        // originalFactIndex=2 — non-zero index to prove index preservation.
+        // originalFactIndex is a runtime augmentation from filterCanonBySelection, not in the production type
+        { subject: "E", predicate: "loves", object: "F", textForm: "E loves F.", originalFactIndex: 2 } as any,
+      ],
+      rankScore: 0.9,
+      provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null },
+    };
+
+    const result = buildRecallThoughtContext({
+      ...baseInput,
+      canonScenes: [sceneWithFacts] as any,
+      rerankOutput: {
+        selected: [
+          {
+            id: "fact_scene_A_2",
+            source: "canon_fact",
+            relevance: "required",
+            usageInstruction: "must_use",
+            reasonCode: "canon_required",
+          },
+        ],
+        rejected: [],
+        finalContextMode: "memory_and_canon",
+        needsEvidenceFallback: false,
+      },
+    });
+
+    const factItems = result.items.filter((i) => i.source === "canon_fact");
+    assert.ok(factItems.length > 0, "should include canon_fact items");
+    assert.ok(factItems.some((i) => i.text.includes("E loves F.")),
+      "selected fact text should appear in recall thought");
+  });
+
   it("follows rerank selected order", () => {
     const result = buildRecallThoughtContext({
       ...baseInput,
