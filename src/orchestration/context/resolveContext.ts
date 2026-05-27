@@ -45,6 +45,10 @@ import {
   retrieveStructMemEntryContextExpansionsTraced,
   type StructMemEntryContextExpansion,
 } from "../../retrieval/memory/retrieveStructMemEntryContextExpansions";
+import {
+  tracedSearchInternalLogicEvidence,
+  type InternalLogicEvidenceHit,
+} from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 import { env } from "../../config/env";
 import {
   annotationHeuristicFallback,
@@ -118,6 +122,8 @@ export interface ResolvedContext {
   recentTurns: ConversationTurn[];
   derivedState: DerivedState;
   queryEmbedding: number[];
+  /** Internal-logic evidence hits retrieved and selected for this turn. */
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
   /** Embedding used for coarse-to-fine canon (rewritten string when Tier 3). */
   canonQueryEmbedding: number[];
   sessionSummary: SessionSummaryRecord;
@@ -151,6 +157,7 @@ export const ResolvedContextSchema = z.object({
   recentTurns: z.array(z.unknown()),
   derivedState: z.record(z.unknown()),
   queryEmbedding: z.array(z.number()),
+  internalLogicEvidence: z.array(z.unknown()).optional(),
   canonQueryEmbedding: z.array(z.number()),
   sessionSummary: z.unknown(),
   sessionRecall: z.array(z.unknown()),
@@ -199,6 +206,7 @@ export interface PreRerankContext {
   openThreads: RetrievedOpenThread[];
   motifSignal?: MotifSignal;
   motifProbe?: StructMemMotifProbeSummary;
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
   derivedState: DerivedState;
   memoryCorrections: MemoryCorrectionContext[];
   latestTurnDelta: LatestTurnDelta | null;
@@ -254,6 +262,7 @@ export async function assembleResolvedContext(
     memoryCorrections,
     motifSignal,
     motifProbe,
+    internalLogicEvidence: preInternalLogicEvidence,
     queryEmbedding,
     canonQueryEmbedding,
     hypotheticalQueryEmbedding,
@@ -454,6 +463,7 @@ export async function assembleResolvedContext(
     turnType: classifyTurnType(retrievalPlan, userMessage, queryRewrite),
     motifSignal,
     motifProbe,
+    internalLogicEvidence: selectedContext.internalLogicEvidence,
     rerankOutput,
     isFirstUserTurn,
     recallThoughtContext: buildRecallThoughtContext({
@@ -798,6 +808,16 @@ export async function buildPreRerankContext(input: {
     : [];
   openThreadsMs = Date.now() - openThreadsStartedAt;
 
+  // Internal-logic evidence retrieval
+  const internalLogicEvidence = queryEmbedding.length > 0 && env.INTERNAL_LOGIC_EVIDENCE_ENABLED
+    ? await tracedSearchInternalLogicEvidence({
+        characterId: session.characterId,
+        queryEmbedding,
+        continuityScope: session.continuityScope,
+        arcKeys: scopeResolution.arcKeys,
+      })
+    : [];
+
   const derivedState = computeDerivedState(recentTurns.length, userMessage, characterDefaults);
   const memoryCorrections = retrieveActiveCorrections(sessionSummary);
   const latestTurnDelta = readFreshTurnDelta(sessionStateRow, latestFrontierTurn);
@@ -807,6 +827,7 @@ export async function buildPreRerankContext(input: {
   const shortlist = buildPromptContextCandidates({
     memories, sessionRecall, structMemEntries, structMemConsolidations, openThreads, canonChunks, canonScenes, recentTurns,
     sessionSummaryText: sessionSummary?.summaryText ?? undefined, latestTurnDeltaText, memoryCorrections, motifProbeText,
+    internalLogicEvidence,
     openThreadTopK: retrievalPlan.openThreadTopK, maxCandidates: env.MEMORY_RERANK_MAX_CANDIDATES,
   });
 
@@ -816,6 +837,7 @@ export async function buildPreRerankContext(input: {
     hypotheticalQueryEmbedding, motifQueryEmbeddings, memories, canonChunks, canonScenes,
     recentTurns, sessionSummary, sessionStateRow, latestRoleplayTurnIndex, isFirstUserTurn,
     sessionRecall, structMemEntries, structMemConsolidations, openThreads, motifSignal, motifProbe,
+    internalLogicEvidence,
     derivedState, memoryCorrections, latestTurnDelta, shortlist, shortlistMs: Date.now() - selectorStartedAt,
     latestTurnDeltaText, motifProbeText, startedAt, embeddingsMs, mainRetrievalMs, olderRecallMs,
     openThreadsMs, olderRecallExclusiveFirst, useFusedMemoryQuery, latestFrontierTurn,
@@ -854,6 +876,7 @@ export async function resolveContext(input: {
     latestTurnDelta: pre.latestTurnDelta,
     memoryCorrections: pre.memoryCorrections,
     retrievalPlan: pre.retrievalPlan,
+    internalLogicEvidence: pre.internalLogicEvidence,
   });
   return assembleResolvedContext(pre, rerankResult);
 }

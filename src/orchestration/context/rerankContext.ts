@@ -20,6 +20,7 @@ import type { MemoryCorrectionContext } from "./memoryCorrections";
 import type { RetrievalPlan } from "../retrieval/retrievalPlan";
 import type { SessionSummaryRecord } from "../../memory/session/sessionSummaryRepo";
 import type { LatestTurnDelta } from "../turn/turnDelta";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +81,8 @@ export interface RerankContextInput {
   latestTurnDelta: LatestTurnDelta | null;
   memoryCorrections: MemoryCorrectionContext[];
   retrievalPlan: RetrievalPlan;
+  /** Internal-logic evidence hits from searchInternalLogicEvidence. */
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
 }
 
 export interface RerankContextOutput {
@@ -206,6 +209,7 @@ export async function rerankContext(
       structMemEntries: input.structMemEntries,
       structMemConsolidations: input.structMemConsolidations,
       openThreads: input.openThreads,
+      internalLogicEvidence: input.internalLogicEvidence,
     });
 
     ({ filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
@@ -236,6 +240,7 @@ export async function rerankContext(
       structMemEntries: selected.structMemEntries,
       structMemConsolidations: selected.structMemConsolidations,
       openThreads: selected.openThreads,
+      internalLogicEvidence: selected.internalLogicEvidence,
       diagnostics: {
         retrievedCounts: {
           interactive_memory: input.memories.length,
@@ -243,14 +248,16 @@ export async function rerankContext(
           structmem_entry: input.structMemEntries.length,
           structmem_consolidation: input.structMemConsolidations.length,
           open_thread: input.openThreads.length,
-        },
+          internal_logic_evidence: input.internalLogicEvidence?.length ?? 0,
+        } as any,
         injectedCounts: {
           interactive_memory: selected.memories.length,
           session_chunk: selected.sessionRecall.length,
           structmem_entry: selected.structMemEntries.length,
           structmem_consolidation: selected.structMemConsolidations.length,
           open_thread: selected.openThreads.length,
-        },
+          internal_logic_evidence: selected.internalLogicEvidence.length,
+        } as any,
         droppedDuplicateCount: 0,
         droppedLowScoreCount: 0,
         droppedCorrectionCount: 0,
@@ -352,6 +359,7 @@ export async function runLlmRerank(
     structMemEntries: input.structMemEntries,
     structMemConsolidations: input.structMemConsolidations,
     openThreads: input.openThreads,
+    internalLogicEvidence: input.internalLogicEvidence,
   });
 
   const { filteredSessionSummary, filteredLatestTurnDelta, filteredMemoryCorrections } =
@@ -376,6 +384,7 @@ export async function runLlmRerank(
     structMemEntries: selected.structMemEntries,
     structMemConsolidations: selected.structMemConsolidations,
     openThreads: selected.openThreads,
+    internalLogicEvidence: selected.internalLogicEvidence,
     diagnostics: {
       retrievedCounts: {
         interactive_memory: input.memories.length,

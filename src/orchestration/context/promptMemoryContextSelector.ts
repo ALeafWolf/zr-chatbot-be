@@ -5,6 +5,7 @@ import type { RetrievedSessionMemoryChunk } from "../../retrieval/memory/retriev
 import type { RetrievedStructMemConsolidation } from "../../retrieval/memory/retrieveStructMemConsolidations";
 import type { RetrievedStructMemEntry } from "../../retrieval/memory/retrieveStructMemEntries";
 import type { MemoryCorrectionContext } from "./memoryCorrections";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 import type { RetrievalPlan } from "../retrieval/retrievalPlan";
 
 export type PromptMemorySource =
@@ -20,6 +21,8 @@ export interface PromptMemoryContextSelection {
   structMemEntries: RetrievedStructMemEntry[];
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
+  /** Internal-logic evidence hits selected by the deterministic selector. */
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
   diagnostics: PromptMemorySelectionDiagnostics;
 }
 
@@ -71,13 +74,14 @@ function memoryScore(memory: RetrievedMemory): number {
   );
 }
 
-function counts(): Record<PromptMemorySource, number> {
+function counts(): Record<PromptMemorySource, number> & { internal_logic_evidence?: number } {
   return {
     session_chunk: 0,
     structmem_entry: 0,
     structmem_consolidation: 0,
     interactive_memory: 0,
     open_thread: 0,
+    internal_logic_evidence: 0,
   };
 }
 

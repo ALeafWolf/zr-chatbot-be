@@ -7,6 +7,7 @@ import type { RetrievedStructMemEntry } from "../../retrieval/memory/retrieveStr
 import type { RetrievedCanonChunk } from "../../retrieval/canon/retrieveCanonNarrative";
 import type { RetrievedCanonScene } from "../../retrieval/canon/retrieveCanonTier3Pipeline";
 import type { MemoryCorrectionContext } from "./memoryCorrections";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 
 export type ContextCandidateSource =
   | "session_summary"
@@ -16,6 +17,7 @@ export type ContextCandidateSource =
   | "structmem_entry"
   | "structmem_consolidation"
   | "interactive_memory"
+  | "internal_logic_evidence"
   | "canon_fact"
   | "canon_chunk"
   | "motif_probe"
@@ -55,6 +57,7 @@ const SOURCE_CAPS: Partial<Record<ContextCandidateSource, number>> = {
   structmem_entry: 6,
   structmem_consolidation: 4,
   interactive_memory: 4,
+  internal_logic_evidence: 4,
   canon_fact: 6,
   canon_chunk: 4,
   motif_probe: 3,
@@ -72,6 +75,7 @@ const SOURCE_PRIORITY: Record<ContextCandidateSource, number> = {
   motif_probe: 6,
   session_chunk: 7,
   interactive_memory: 8,
+  internal_logic_evidence: 8,
   canon_fact: 8,
   canon_chunk: 9,
 };
@@ -126,6 +130,8 @@ interface BuildCandidatesInput {
   latestTurnDeltaText?: string | null;
   motifProbeText?: string | null;
   memoryCorrections?: MemoryCorrectionContext[];
+  /** Internal-logic evidence hits from searchInternalLogicEvidence. */
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
   /** Deterministic retrieval score caps from RetrievalPlan (fallback to defaults). */
   durableMemoryTopK?: number;
   sessionRecallTopK?: number;
@@ -308,6 +314,26 @@ export function buildPromptContextCandidates(
     });
   }
 
+  // Internal-logic evidence
+  if (input.internalLogicEvidence && input.internalLogicEvidence.length > 0) {
+    retrievedBySource["internal_logic_evidence"] = input.internalLogicEvidence.length;
+    for (const hit of input.internalLogicEvidence.slice(0, SOURCE_CAPS.internal_logic_evidence!)) {
+      all.push({
+        id: `internal_logic_evidence_${hit.id}`,
+        source: "internal_logic_evidence",
+        text: `[${hit.node}] ${hit.claimText}\n证据：${hit.evidenceText}`,
+        score: hit.finalScore,
+        turnStart: null,
+        turnEnd: null,
+        metadata: {
+          node: hit.node,
+          claimText: hit.claimText.slice(0, 200),
+          evidenceText: hit.evidenceText.slice(0, 300),
+        },
+      });
+    }
+  }
+
   // Rank by priority then score
   const ranked = rankCandidates(all);
 
@@ -352,6 +378,7 @@ export interface ApplySelectionInput {
   structMemEntries: RetrievedStructMemEntry[];
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
 }
 
 export interface SelectedTypedArrays {
@@ -360,6 +387,8 @@ export interface SelectedTypedArrays {
   structMemEntries: RetrievedStructMemEntry[];
   structMemConsolidations: RetrievedStructMemConsolidation[];
   openThreads: RetrievedOpenThread[];
+  /** Internal-logic evidence hits selected by the reranker. */
+  internalLogicEvidence: InternalLogicEvidenceHit[];
   /** IDs of all selected memory items (excludes session_summary / latest_turn_delta). */
   selectedMemoryIds: string[];
   /** Whether session_summary was selected by the reranker. */
@@ -385,6 +414,13 @@ export function applyCandidateSelection(
     .filter((c) => c.source === "memory_correction" && selectedSet.has(c.id))
     .map((c) => c.id);
 
+  const selectedEvidenceIds = new Set(
+    [...selectedSet].filter((id) => id.startsWith("internal_logic_evidence_")),
+  );
+  const internalLogicEvidence = (input.internalLogicEvidence ?? []).filter(
+    (hit) => selectedEvidenceIds.has(`internal_logic_evidence_${hit.id}`),
+  );
+
   return {
     memories: input.memories.filter((m) => selectedSet.has(m.id)),
     sessionRecall: input.sessionRecall.filter((c) => selectedSet.has(c.id)),
@@ -393,6 +429,7 @@ export function applyCandidateSelection(
       selectedSet.has(c.id),
     ),
     openThreads: input.openThreads.filter((t) => selectedSet.has(t.id)),
+    internalLogicEvidence,
     selectedMemoryIds: input.selectedIds.filter(
       (id) => byId.get(id)?.source !== "session_summary" && byId.get(id)?.source !== "latest_turn_delta",
     ),

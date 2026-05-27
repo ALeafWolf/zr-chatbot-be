@@ -35,6 +35,7 @@ const HYBRID_SOURCE_PRIORITY: Record<ContextCandidateSource, number> = {
   motif_probe: 6,
   session_chunk: 7,
   interactive_memory: 8,
+  internal_logic_evidence: 8,
   canon_fact: 8,
   canon_chunk: 9,
 };
