@@ -61,8 +61,8 @@ export type CanonTruthMode =
  *
  * Returns `open_roleplay` when no canon is injected.
  * Returns `strict_canon_recall` when canon is injected and the user is asking
- * about concrete canon history (attribution intent, or canon sources marked
- * "required"/"must_use" with recall cues in the user message).
+ * about concrete canon history (attribution intent, or any selected canon
+ * fact/chunk source with recall cues in the user message).
  * Returns `canon_blend` for all other canon-injected turns.
  */
 export function deriveCanonTruthMode(input: {
@@ -76,11 +76,11 @@ export function deriveCanonTruthMode(input: {
   // Attribution intent always triggers strict mode
   if (input.queryRewrite?.intent === "attribution") return "strict_canon_recall";
 
-  // Check for canon sources marked as required/must_use with recall cues
+  // Check for any selected canon source (fact or chunk) with recall cues.
+  // Hybrid/LLM rerank may label useful canon as "useful" / "use_subtly",
+  // so we no longer require "required" or "must_use" for strict mode.
   const hasStrictCanonSource = (input.selectedMemorySources ?? []).some(
-    (s) =>
-      (s.source === "canon_fact" || s.source === "canon_chunk") &&
-      (s.relevance === "required" || s.usageInstruction === "must_use"),
+    (s) => s.source === "canon_fact" || s.source === "canon_chunk",
   );
   if (hasStrictCanonSource) {
     const msg = input.userMessage.toLowerCase();
@@ -189,25 +189,16 @@ export function buildPromptContext(input: {
     structuredBlock.length > 0 && queryRewrite?.parseOk === true;
   const showAnnotations = useAnnotationFallback;
 
-  // Filter canon to only include reranker-selected items when available.
-  // The canonScenes received here are already filtered by filterCanonBySelection()
-  // (called in rerankContext). We still re-check against memoryRerank as a safety
-  // guard: when the reranker ran but selected no canon, clear everything.
+  // Canon scenes/chunks received here are already filtered by
+  // filterCanonBySelection() in rerankContext. We no longer duplicate that
+  // filtering here. Keep only a safety clear: when the reranker ran but
+  // selected no canon, clear everything to prevent unselected canon leakage.
   const hasRerank = memoryRerank?.selected != null;
-  const selectedCanonChunkIds = hasRerank
-    ? new Set(
-        memoryRerank!.selected
-          .filter((s) => (s.source as string) === "canon_chunk")
-          .map((s) => s.id),
+  const rerankHasAnyCanonSelected = hasRerank
+    ? memoryRerank!.selected.some(
+        (s) => (s.source as string) === "canon_fact" || (s.source as string) === "canon_chunk",
       )
-    : null;
-  const selectedCanonFactIds = hasRerank
-    ? new Set(
-        memoryRerank!.selected
-          .filter((s) => (s.source as string) === "canon_fact")
-          .map((s) => s.id),
-      )
-    : null;
+    : false;
 
   let filteredCanonChunks: RetrievedCanonChunk[];
   let filteredCanonScenes: RetrievedCanonScene[];
@@ -216,47 +207,16 @@ export function buildPromptContext(input: {
     // No reranker — trust whatever was passed in
     filteredCanonChunks = canonChunks;
     filteredCanonScenes = canonScenes;
-  } else if (selectedCanonChunkIds!.size === 0 && selectedCanonFactIds!.size === 0) {
+  } else if (!rerankHasAnyCanonSelected) {
     // Reranker exists but selected no canon — clear all canon (safety: never
     // re-inject unselected canon beyond what the reranker chose)
     filteredCanonChunks = [];
     filteredCanonScenes = [];
   } else {
-    // Reranker selected some canon
-    filteredCanonChunks = selectedCanonChunkIds!.size > 0
-      ? canonChunks.filter((c) => selectedCanonChunkIds!.has(c.id))
-      : [];
-
-    if (selectedCanonFactIds!.size > 0) {
-      // Keep only scenes referenced by selected fact IDs, and within each
-      // kept scene filter facts to only selected ones. This handles both:
-      // - already-filtered scenes from resolveContext (facts have
-      //   originalFactIndex at runtime);
-      // - unfiltered scenes where the local array index matches the stable ID.
-      filteredCanonScenes = [];
-      for (const scene of canonScenes) {
-        let sceneHasSelectedFact = false;
-        for (const fid of selectedCanonFactIds!) {
-          if (fid.startsWith(`fact_${scene.sceneId}_`)) {
-            sceneHasSelectedFact = true;
-            break;
-          }
-        }
-        if (!sceneHasSelectedFact) continue;
-
-        // Filter facts to only selected ones, using originalFactIndex when
-        // present (from filterCanonBySelection) and local index otherwise.
-        const keptFacts = scene.facts.filter((f, fi) => {
-          const ff = f as { originalFactIndex?: number };
-          const origIdx = ff.originalFactIndex ?? fi;
-          return selectedCanonFactIds!.has(`fact_${scene.sceneId}_${origIdx}`);
-        });
-        filteredCanonScenes.push({ ...scene, facts: keptFacts });
-      }
-    } else {
-      // Only chunks selected — clear scenes to prevent re-expansion
-      filteredCanonScenes = [];
-    }
+    // Reranker selected some canon — trust already-filtered input from
+    // rerankContext.filterCanonBySelection()
+    filteredCanonChunks = canonChunks;
+    filteredCanonScenes = canonScenes;
   }
   const hasCanonNarrative =
     filteredCanonScenes.length > 0 || filteredCanonChunks.length > 0;

@@ -5,6 +5,9 @@ import type { FusedAnchorScene } from "./fuseAnchors";
 /** How many raw opening units to fetch from Scene 1 for episode context. */
 export const EPISODE_OPENING_MAX_UNITS = 3;
 
+/** Maximum number of distinct episodes for which opening context is fetched. */
+export const EPISODE_OPENING_MAX_EPISODES = 3;
+
 export interface ExpandedSceneRow {
   sceneId: string;
   chapterId: string;
@@ -151,8 +154,10 @@ export async function expandAnchorScenes(input: {
 
   let episodeOpeningUnits: EpisodeOpeningRow[] = [];
   if (episodeNeedsOpening.size > 0) {
+    // Apply per-query episode cap to prevent opening too many distinct episodes
+    const cappedEpList = [...episodeNeedsOpening].slice(0, EPISODE_OPENING_MAX_EPISODES);
     const epIdList = sql.join(
-      [...episodeNeedsOpening].map((id) => sql`${id}::uuid`),
+      cappedEpList.map((id) => sql`${id}::uuid`),
       sql`, `,
     );
     const openingRows = await db.execute(sql`

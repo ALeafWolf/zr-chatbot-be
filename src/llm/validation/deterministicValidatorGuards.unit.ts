@@ -120,6 +120,52 @@ describe("runTemporalPremiseGuard", () => {
     assert.equal(failures.length, 0, "draft already corrects the premise");
   });
 
+  it("does not flag when draft uses newly accepted calm correction phrasing '我记得不太一样'", () => {
+    // Expanded correction markers: "我记得不太一样" should be accepted as a
+    // valid calm correction when canon shows a return visit.
+    const failures = runTemporalPremiseGuard({
+      draft: "我记得不太一样，那封信是第二次去枫河的时候写的。",
+      recentContext: "左然，你还记得我们第一次去枫河的时候，你给我写的信吗？",
+      wasCanonInjected: true,
+      retrievedCanonNarrative: "章节背景：秋季结束前我们又去了回枫河，仍然住在上回那间民宿。",
+    });
+    assert.equal(
+      failures.length,
+      0,
+      "newly accepted '我记得不太一样' phrasing should count as a correction",
+    );
+  });
+
+  it("does not flag when draft uses newly accepted calm correction phrasing '并不是第一次'", () => {
+    // "并不是第一次" is a newly accepted correction marker.
+    const failures = runTemporalPremiseGuard({
+      draft: "那并不是第一次去枫河，实际上是我们第二次去了。",
+      recentContext: "你还记得我们第一次去枫河露营公园的民宿时，你给我写的信吗？",
+      wasCanonInjected: true,
+      retrievedCanonNarrative: "开场背景：秋季结束前我们又去了回枫河，仍然住在上回那间民宿。",
+    });
+    assert.equal(
+      failures.length,
+      0,
+      "newly accepted '并不是第一次' phrasing should count as a correction",
+    );
+  });
+
+  it("does not flag when draft uses newly accepted calm correction phrasing '你记错了一点'", () => {
+    // "你记错了一点" is a newly accepted correction marker.
+    const failures = runTemporalPremiseGuard({
+      draft: "你记错了一点，那其实是我们第二次去枫河的时候。",
+      recentContext: "你还记得我们第一次去枫河的时候，你给我写的信吗？",
+      wasCanonInjected: true,
+      retrievedCanonNarrative: "章节背景：秋季结束前我们又去了回枫河。",
+    });
+    assert.equal(
+      failures.length,
+      0,
+      "newly accepted '你记错了一点' phrasing should count as a correction",
+    );
+  });
+
   it("does not flag when no recent context is provided", () => {
     const failures = runTemporalPremiseGuard({
       draft: "……记得。那封信我一直留着。",

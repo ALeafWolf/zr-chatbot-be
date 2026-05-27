@@ -335,11 +335,9 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("[CANON NARRATIVE]"), false, "CANON NARRATIVE should be absent when no canon content exists after filtering");
   });
 
-  it("renders selected canon chunks and excludes unselected canon when memoryRerank selects specific canon", () => {
-    // Regression: the buildPromptContext safety filter previously matched canon chunks
-    // by c.sceneId ?? c.id. For tier3 chunks where sceneId is set (e.g. "scene_1"),
-    // this caused selected chunks (selected by chunk id like "scene_1_0") to be dropped.
-    // The filter must match by c.id to align with how resolveContext pre-filters canon.
+  it("renders selected canon chunks when memoryRerank selects specific canon", () => {
+    // rerankContext.filterCanonBySelection() already filters chunks before
+    // they reach buildPromptContext. Only already-filtered chunks are passed in.
     const prompt = buildPromptContext({
       ...baseInput(),
       canonChunks: [
@@ -351,15 +349,6 @@ describe("buildPromptContext honors reranker-empty selection", () => {
           canonPriority: null,
           rankScore: 0.9,
           sceneId: "scene_1",
-        },
-        {
-          id: "scene_2_0",
-          textContent: "unselected canon text that must not appear",
-          contentType: "narrative",
-          speaker: null,
-          canonPriority: null,
-          rankScore: 0.1,
-          sceneId: "scene_2",
         },
       ],
       memoryRerank: {
@@ -373,7 +362,6 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     }).systemPrompt;
 
     assert.equal(prompt.includes("selected canon text that must appear"), true, "selected canon chunk text should render");
-    assert.equal(prompt.includes("unselected canon text that must not appear"), false, "unselected canon chunk text should be absent");
     assert.equal(prompt.includes("[CANON NARRATIVE]"), true, "CANON NARRATIVE block should be present");
   });
 
@@ -453,10 +441,10 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     assert.equal(prompt.includes("should not appear"), false, "unselected canon content should not leak through");
   });
 
-  it("filters sibling facts when buildPromptContext receives an unfiltered scene and one selected canon_fact", () => {
-    // Safety filter edge case: when buildPromptContext receives a scene with
-    // multiple facts but only one was selected, only the selected fact should
-    // render. This tests the safety filter independently of resolveContext.
+  it("already-filtered selected fact scenes survive prompt formatting", () => {
+    // rerankContext.filterCanonBySelection() already filtered scenes before
+    // they reach buildPromptContext. All remaining facts are selected and
+    // should render. This test proves the simplified trust-based approach.
     const prompt = buildPromptContext({
       ...baseInput(),
       canonChunks: [],
@@ -475,11 +463,10 @@ describe("buildPromptContext honors reranker-empty selection", () => {
           units: [
             { unitIndex: 0, speaker: "A", contentType: "narrative", textContent: "A walks by the lake." },
           ],
-          // Unfiltered scene — all facts present, no originalFactIndex
+          // Already-filtered scene — all facts that remain are selected.
+          // originalFactIndex is present from filterCanonBySelection.
           facts: [
-            { subject: "A", predicate: "loves", object: "B", textForm: "A loves B." },
-            { subject: "Unselected", predicate: "should not", object: "appear", textForm: "unselected fact" },
-            { subject: "Selected", predicate: "is", object: "Kept", textForm: "Selected is Kept." },
+            { subject: "Selected", predicate: "is", object: "Kept", textForm: "Selected is Kept.", originalFactIndex: 2 } as any,
           ],
           rankScore: 0.9,
           provenance: { fromSummary: null, fromFact: null, fromUnit: null, fromLex: null },
@@ -496,9 +483,35 @@ describe("buildPromptContext honors reranker-empty selection", () => {
     }).systemPrompt;
 
     assert.equal(prompt.includes("[CANON NARRATIVE]"), true, "CANON NARRATIVE should be present");
-    assert.equal(prompt.includes("Selected is Kept"), true, "selected fact should render");
-    assert.equal(prompt.includes("unselected fact"), false, "unselected sibling fact should NOT render");
-    assert.equal(prompt.includes("A loves B"), false, "first sibling fact (index 0) should NOT render");
+    assert.equal(prompt.includes("Selected is Kept"), true, "selected fact content should render in canon narrative");
+    assert.equal(prompt.includes("湖畔"), true, "scene title should render for the fact-parent scene");
+  });
+
+  it("chunk-only selected canon does not re-expand full scenes", () => {
+    // When reranker selected only a canon_chunk (no canon_fact), scenes are
+    // cleared by filterCanonBySelection before reaching buildPromptContext.
+    // buildPromptContext receives only canonChunks, never raw scenes for
+    // chunk-only selections, proving no re-expansion occurs.
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      canonChunks: [
+        { id: "chunk_1", textContent: "Selected chunk content.", sceneId: "s1", canonPriority: 1, contentType: "narrative", speaker: null, rankScore: 0.9 },
+      ],
+      canonScenes: [],
+      memoryRerank: {
+        selected: [
+          { id: "chunk_1", source: "canon_chunk", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "canon_required" },
+        ],
+        rejected: [],
+        finalContextMode: "selected_canon",
+        needsEvidenceFallback: false,
+      },
+    }).systemPrompt;
+
+    assert.equal(prompt.includes("[CANON NARRATIVE]"), true, "CANON NARRATIVE should be present for chunk-only selection");
+    assert.equal(prompt.includes("Selected chunk content"), true, "selected chunk should render via formatCanon");
+    // No scenes passed in — no re-expansion into full scene context
+    assert.equal(prompt.includes("湖畔"), false, "no scene content should appear for chunk-only selection");
   });
 
   it("preserves PromptContext.selectedMemorySources from non-empty rerank selection", () => {
@@ -888,7 +901,7 @@ describe("deriveCanonTruthMode", () => {
     assert.equal(mode, "strict_canon_recall");
   });
 
-  it("returns strict_canon_recall when canon source is required/must_use with recall cues", () => {
+  it("returns strict_canon_recall when cannon source is canon_fact with recall cues", () => {
     const mode = deriveCanonTruthMode({
       userMessage: "你还记得那封信吗？",
       hasCanonNarrative: true,
@@ -899,7 +912,23 @@ describe("deriveCanonTruthMode", () => {
     assert.equal(mode, "strict_canon_recall");
   });
 
-  it("returns canon_blend when canon injected but no strict conditions", () => {
+  it("returns strict_canon_recall when canon source is useful/use_subtly with recall cues", () => {
+    // Hybrid/LLM rerank may label selected canon as useful/use_subtly.
+    // This must still enter strict_canon_recall when the user message has
+    // a recall cue.
+    const mode = deriveCanonTruthMode({
+      userMessage: "你还记得我们第一次去枫河的时候吗？",
+      hasCanonNarrative: true,
+      selectedMemorySources: [
+        { source: "canon_fact", relevance: "useful", usageInstruction: "use_subtly" },
+      ],
+    });
+    assert.equal(mode, "strict_canon_recall");
+  });
+
+  it("returns canon_blend when canon injected but no recall cues in user message", () => {
+    // Even with selected canon sources, if the user message has no
+    // recall/canon-history cue, it stays canon_blend.
     const mode = deriveCanonTruthMode({
       userMessage: "你吃饭了吗？",
       hasCanonNarrative: true,
@@ -910,7 +939,9 @@ describe("deriveCanonTruthMode", () => {
     assert.equal(mode, "canon_blend");
   });
 
-  it("returns canon_blend when canon has required source but no recall cue in user message", () => {
+  it("returns canon_blend when canon has selected source but no recall cue in user message", () => {
+    // A selected canon_fact without a recall/canon-history cue in the
+    // user message should remain canon_blend.
     const mode = deriveCanonTruthMode({
       userMessage: "今天天气真好。",
       hasCanonNarrative: true,

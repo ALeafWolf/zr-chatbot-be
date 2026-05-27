@@ -224,8 +224,13 @@ export function runTemporalPremiseGuard(input: {
   // First-visit claims in the user message/recent context
   const userFirstVisitMarkers = ["第一次", "首次"];
 
-  // Correction markers the draft would use if it properly addressed the contradiction
-  const draftCorrectionMarkers = ["第二次", "是第二次", "不是第一次", "再次", "上回说"];
+  // Correction markers the draft would use if it properly addressed the contradiction.
+  // Expanded to include calm correction phrasings beyond exact "第二次" wording.
+  const draftCorrectionMarkers = [
+    "第二次", "是第二次", "不是第一次", "再次", "上回说",
+    "我记得不太一样", "记得不太一样", "并不是第一次", "不算第一次",
+    "你记错了一点", "你记错了",
+  ];
 
   // Check if user context contains a first-visit claim
   const hasUserFirstClaim = userFirstVisitMarkers.some((m) => context.includes(m));
