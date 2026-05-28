@@ -203,22 +203,22 @@ export async function runHybridScoreRerank(
     openThreads: applied.openThreads,
     internalLogicEvidence: applied.internalLogicEvidence,
     diagnostics: {
-        retrievedCounts: {
-          interactive_memory: input.memories.length,
-          session_chunk: input.sessionRecall.length,
-          structmem_entry: input.structMemEntries.length,
-          structmem_consolidation: input.structMemConsolidations.length,
-          open_thread: input.openThreads.length,
-          internal_logic_evidence: input.internalLogicEvidence?.length ?? 0,
-        } as any,
-        injectedCounts: {
-          interactive_memory: applied.memories.length,
-          session_chunk: applied.sessionRecall.length,
-          structmem_entry: applied.structMemEntries.length,
-          structmem_consolidation: applied.structMemConsolidations.length,
-          open_thread: applied.openThreads.length,
-          internal_logic_evidence: applied.internalLogicEvidence.length,
-        } as any,
+      retrievedCounts: {
+        interactive_memory: input.memories.length,
+        session_chunk: input.sessionRecall.length,
+        structmem_entry: input.structMemEntries.length,
+        structmem_consolidation: input.structMemConsolidations.length,
+        open_thread: input.openThreads.length,
+        internal_logic_evidence: input.internalLogicEvidence?.length ?? 0,
+      } as any,
+      injectedCounts: {
+        interactive_memory: applied.memories.length,
+        session_chunk: applied.sessionRecall.length,
+        structmem_entry: applied.structMemEntries.length,
+        structmem_consolidation: applied.structMemConsolidations.length,
+        open_thread: applied.openThreads.length,
+        internal_logic_evidence: applied.internalLogicEvidence.length,
+      } as any,
       droppedDuplicateCount: 0,
       droppedLowScoreCount: 0,
       droppedCorrectionCount: 0,
@@ -242,6 +242,20 @@ export async function runHybridScoreRerank(
     selectedCanonFactIds,
   );
 
+  const hasCanon = selectedCanonChunkIds.length > 0 || selectedCanonFactIds.length > 0;
+  const hasMemory =
+    applied.memories.length > 0 ||
+    applied.sessionRecall.length > 0 ||
+    applied.structMemEntries.length > 0 ||
+    applied.structMemConsolidations.length > 0 ||
+    applied.openThreads.length > 0 ||
+    applied.internalLogicEvidence.length > 0;
+  const finalContextMode: "recent_only" | "selected_memory" | "selected_canon" | "memory_and_canon" | "no_extra_context" =
+    hasCanon && hasMemory ? "memory_and_canon" :
+    hasCanon ? "selected_canon" :
+    hasMemory ? "selected_memory" :
+    "recent_only";
+
   return {
     rerankOutput: {
       selected: selected.map((c) => ({
@@ -252,7 +266,7 @@ export async function runHybridScoreRerank(
         reasonCode: "direct_continuity" as const,
       })),
       rejected: [],
-      finalContextMode: "selected_memory",
+      finalContextMode,
       needsEvidenceFallback: false,
     },
     selectedContext,

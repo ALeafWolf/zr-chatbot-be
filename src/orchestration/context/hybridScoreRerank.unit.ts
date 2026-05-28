@@ -106,4 +106,25 @@ describe("hybridScoreSelect", () => {
     const factSelected = selected.some((c) => c.source === "canon_fact");
     assert.ok(factSelected, "canon_fact should be selected for canon_question");
   });
+
+  it("selects internal_logic_evidence candidates when present", () => {
+    const candidates = [
+      makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence", 0.7),
+      makeCandidate("internal_logic_evidence_ev_002", "internal_logic_evidence", 0.6),
+    ];
+    const { selected } = hybridScoreSelect(candidates, "scene_continuation");
+    const evidenceSelected = selected.filter((c) => c.source === "internal_logic_evidence");
+    assert.equal(evidenceSelected.length, 2, "both evidence candidates should be selected");
+    assert.equal(evidenceSelected[0]!.id, "internal_logic_evidence_ev_001");
+  });
+
+  it("applies hybrid source cap for internal_logic_evidence", () => {
+    const candidates = Array.from({ length: 5 }, (_, i) =>
+      makeCandidate(`internal_logic_evidence_ev_${i}`, "internal_logic_evidence", 0.5),
+    );
+    const { selected } = hybridScoreSelect(candidates, "scene_continuation");
+    const evidenceSelected = selected.filter((c) => c.source === "internal_logic_evidence");
+    // HYBRID_SOURCE_CAPS.internal_logic_evidence = 2
+    assert.equal(evidenceSelected.length, 2, "should cap at HYBRID_SOURCE_CAPS of 2");
+  });
 });

@@ -296,7 +296,7 @@ ${hardRules}
           promptFormatters.formatInternalLogicEvidence(internalLogicEvidence))]
       : []),
 
-  buildBlock("BASE PERSONA", basePersonaBody),
+    buildBlock("BASE PERSONA", basePersonaBody),
 
     buildBlock(
       "CONTINUITY OVERLAY",

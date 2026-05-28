@@ -992,3 +992,58 @@ describe("buildPromptContext canon truth mode block", () => {
     assert.ok(!prompt.includes("[CANON TRUTH MODE]"), "CANON TRUTH MODE block should be absent when no canon");
   });
 });
+
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
+
+describe("buildPromptContext internal-logic evidence block", () => {
+  const evidenceHit: InternalLogicEvidenceHit = {
+    id: "ev_001", characterId: "zuo_ran", node: "core_fear",
+    claimText: "左然害怕暴露不成熟的一面。",
+    evidenceText: "六年级生日想要棉花糖却说要钢笔。",
+    arcKey: null, chapterKey: null, episodeLabel: null,
+    sceneOrder: null, unitIndex: null,
+    scopeApplicability: {}, sourceKind: "canon",
+    confidenceScore: null, metadata: {},
+    cosineSimilarity: 0.5, finalScore: 0.5,
+  };
+
+  it("renders [CHARACTER INTERNAL LOGIC EVIDENCE] when evidence is selected", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      internalLogicEvidence: [evidenceHit],
+    }).systemPrompt;
+    assert.ok(prompt.includes("[CHARACTER INTERNAL LOGIC EVIDENCE]"),
+      "evidence block should render when evidence is selected");
+    assert.ok(prompt.includes("core_fear"),
+      "evidence block should contain the evidence node");
+  });
+
+  it("omits [CHARACTER INTERNAL LOGIC EVIDENCE] when evidence array is empty", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      internalLogicEvidence: [],
+    }).systemPrompt;
+    assert.ok(!prompt.includes("[CHARACTER INTERNAL LOGIC EVIDENCE]"),
+      "evidence block should be absent when no evidence is selected");
+  });
+
+  it("evidence block appears after CHARACTER INTERNAL LOGIC and before BASE PERSONA", () => {
+    const prompt = buildPromptContext({
+      ...baseInput(),
+      internalLogicEvidence: [evidenceHit],
+    }).systemPrompt;
+    const internalLogicPos = prompt.indexOf("[CHARACTER INTERNAL LOGIC]");
+    const evidencePos = prompt.indexOf("[CHARACTER INTERNAL LOGIC EVIDENCE]");
+    const basePersonaPos = prompt.indexOf("[BASE PERSONA]");
+    assert.ok(evidencePos > internalLogicPos,
+      "evidence block should be after CHARACTER INTERNAL LOGIC");
+    assert.ok(basePersonaPos > evidencePos,
+      "BASE PERSONA should be after evidence block");
+  });
+
+  it("omits evidence block by default when not provided", () => {
+    const prompt = buildPromptContext(baseInput()).systemPrompt;
+    assert.ok(!prompt.includes("[CHARACTER INTERNAL LOGIC EVIDENCE]"),
+      "evidence block should be absent when internalLogicEvidence is undefined");
+  });
+});
