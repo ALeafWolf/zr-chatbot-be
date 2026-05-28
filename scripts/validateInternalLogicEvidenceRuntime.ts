@@ -1,24 +1,25 @@
 /**
- * Targeted runtime validation for internal-logic evidence.
+ * Internal-logic evidence runtime validation — manual checklist helper.
  *
- * Sends test queries through the full resolveContext pipeline and captures
- * whether evidence is retrieved, selected, and rendered in the prompt.
+ * This script does NOT call models or run the full resolveContext pipeline.
+ * It provides:
+ * 1. A quick seed-count check (active rows with embeddings).
+ * 2. A printed manual checklist with exact curl commands for runtime validation.
  *
- * Run: tsx scripts/validateInternalLogicEvidenceRuntime.ts
+ * The actual runtime validation was performed via the agent eval CLI
+ * (see implementation notes for probe commands and results).
+ *
+ * Usage:
+ *   tsx scripts/validateInternalLogicEvidenceRuntime.ts
  */
-import { resolveContext } from "../src/orchestration/context/resolveContext";
-import { buildPromptContext } from "../src/orchestration/prompt/buildPromptContext";
-import { loadCharacterDefaults } from "../src/character/characterDefaults";
-import { loadPersonaOverlay } from "../src/character/characterDefaults";
 import { db } from "../src/db/client";
 import { internalLogicEvidence } from "../src/db/schema/internalLogic";
-import { eq, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 
-// Quick inline test: retrieve evidence diagnostics and verify
 async function main(): Promise<void> {
-  console.log("=== Internal-Logic Evidence Runtime Validation ===\n");
+  console.log("=== Internal-Logic Evidence — Manual Validation Checklist ===\n");
 
-  // 1. Check active seed count in DB
+  // 1. Active seed count
   const activeCount = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(internalLogicEvidence)
@@ -29,30 +30,46 @@ async function main(): Promise<void> {
         sql`embedding IS NOT NULL`,
       ),
     );
-  console.log(`Active seeded rows in DB: ${activeCount[0]?.count ?? 0}\n`);
+  const count = activeCount[0]?.count ?? 0;
+  console.log(`Active seeded rows with embeddings: ${count}`);
+  console.log(`(Expected: 4 for the initial seed batch)\n`);
 
-  // 2. Check candidate shortlist for evidence
-  console.log("To run full pipeline validation, start the backend and send:");
-  console.log('  curl -X POST http://localhost:3000/api/turn \\');
-  console.log('    -H "Content-Type: application/json" \\');
-  console.log('    -d \'{"characterId":"zuo_ran","message":"你还记得我们第一次去枫河的时候吗？"}\'');
+  // 2. Manual checklist
+  console.log("--- Manual Runtime Validation Checklist ---");
   console.log("");
-  console.log("Then inspect the LangSmith trace or the returned prompt for:");
-  console.log("  - [CHARACTER INTERNAL LOGIC EVIDENCE] block");
-  console.log("  - internal_logic_evidence in retrieval diagnostics");
+  console.log("To validate runtime evidence retrieval and rendering,");
+  console.log("start the backend and run the following probe evals:\n");
+
+  console.log("Positive test (should retrieve evidence):");
+  console.log("  $env:EVAL_SCENARIO_SET=\"probes\"");
+  console.log("  npm run eval:agent -- --scenario probe_false_premise_with_fact");
+  console.log("  → Expect: rerank.selected >= 1, finalContextMode contains \"memory\"");
+  console.log("  → Prompt should contain [CHARACTER INTERNAL LOGIC EVIDENCE]");
   console.log("");
 
-  // 3. Negative validation: a normal greeting should NOT trigger evidence
-  console.log("Negative test (should NOT retrieve evidence):");
-  console.log('  curl -X POST http://localhost:3000/api/turn \\');
-  console.log('    -H "Content-Type: application/json" \\');
-  console.log('    -d \'{"characterId":"zuo_ran","message":"早啊，今天天气不错。"}\'');
-  console.log("  → [CHARACTER INTERNAL LOGIC EVIDENCE] should be ABSENT");
+  console.log("Negative test (no evidence match expected):");
+  console.log("  $env:EVAL_SCENARIO_SET=\"probes\"");
+  console.log("  npm run eval:agent -- --scenario probe_false_premise_no_fact");
+  console.log("  → Expect: rerank.selected could be 0, no evidence in prompt");
+  console.log("");
+
+  console.log("Negative test (casual conversation, no evidence):");
+  console.log("  $env:EVAL_SCENARIO_SET=\"probes\"");
+  console.log("  npm run eval:agent -- --scenario probe_relaxed_morning");
+  console.log("  → Expect: candidates selected from other sources, no evidence block");
+  console.log("");
+
+  console.log("To inspect the generated prompt directly:");
+  console.log("  Check LangSmith traces for the 'prompt.build_context' span");
+  console.log("  or add console.log to buildPromptContext to capture systemPrompt.");
+  console.log("");
+
+  console.log("Offline seed validation (no backend needed):");
+  console.log("  npm run seed:internal-logic -- --validate");
+  console.log("");
 }
 
-import { and } from "drizzle-orm";
-
 main().catch((err) => {
-  console.error("Validation failed:", err);
+  console.error("Check failed:", err);
   process.exit(1);
 });
