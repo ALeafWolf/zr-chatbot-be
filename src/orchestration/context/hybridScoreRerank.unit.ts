@@ -3,18 +3,15 @@ import { describe, it } from "node:test";
 import { hybridScoreSelect } from "./hybridScoreRerank";
 import type { ContextCandidate } from "./contextCandidates";
 
-describe("hybridScoreSelect", () => {
-  const makeCandidate = (
-    id: string,
-    source: ContextCandidate["source"],
-    score: number | null = 0.5,
-  ): ContextCandidate => ({
-    id,
-    source,
-    text: `text for ${id}`,
-    score,
-  });
+function makeCandidate(
+  id: string,
+  source: ContextCandidate["source"],
+  score: number | null = 0.5,
+): ContextCandidate {
+  return { id, source, text: `text for ${id}`, score };
+}
 
+describe("hybridScoreSelect", () => {
   it("returns empty selection for empty candidates", () => {
     const { selected } = hybridScoreSelect([], "scene_continuation");
     assert.equal(selected.length, 0);
@@ -126,5 +123,109 @@ describe("hybridScoreSelect", () => {
     const evidenceSelected = selected.filter((c) => c.source === "internal_logic_evidence");
     // HYBRID_SOURCE_CAPS.internal_logic_evidence = 2
     assert.equal(evidenceSelected.length, 2, "should cap at HYBRID_SOURCE_CAPS of 2");
+  });
+});
+
+import { runHybridScoreRerank } from "./hybridScoreRerank";
+import type { RerankContextInput } from "./rerankContext";
+import type { RetrievedMemory } from "../../retrieval/memory/retrieveInteractiveMemories";
+import type { RetrievedSessionMemoryChunk } from "../../retrieval/memory/retrieveSessionMemoryChunks";
+import type { RetrievedStructMemEntry } from "../../retrieval/memory/retrieveStructMemEntries";
+import type { RetrievedStructMemConsolidation } from "../../retrieval/memory/retrieveStructMemConsolidations";
+import type { RetrievedOpenThread } from "../../retrieval/memory/retrieveOpenThreads";
+import type { RetrievedCanonChunk } from "../../retrieval/canon/retrieveCanonNarrative";
+import type { RetrievedCanonScene } from "../../retrieval/canon/retrieveCanonTier3Pipeline";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
+
+function makeHybridInput(overrides: Partial<RerankContextInput> & { evidenceHits?: InternalLogicEvidenceHit[] }): RerankContextInput {
+  return {
+    userMessage: "hi",
+    structuredUserQuery: { userSpeech: "hi" },
+    plannerIntent: "scene_continuation",
+    plannerHints: { sourcePriority: [], queryVariants: { memory: [], structmem: [], structmemConsolidation: [], interactiveMemory: [], canon: [], web: [] }, possibleMotif: false, possibleCanonClaim: false, possibleOldMemoryReference: false, possibleDurableMemoryReference: false },
+    recentTurns: [],
+    continuityScope: "main_married",
+    candidates: [],
+    memories: [] as RetrievedMemory[],
+    sessionRecall: [] as RetrievedSessionMemoryChunk[],
+    structMemEntries: [] as RetrievedStructMemEntry[],
+    structMemConsolidations: [] as RetrievedStructMemConsolidation[],
+    openThreads: [] as RetrievedOpenThread[],
+    canonChunks: [] as RetrievedCanonChunk[],
+    canonScenes: [] as RetrievedCanonScene[],
+    sessionSummary: null as any,
+    latestTurnDelta: null,
+    memoryCorrections: [],
+    retrievalPlan: { intent: "scene_continuation" as const, canonMode: "skip" as const, broadFailOpen: false, forceOpenThreads: false, durableMemoryTopK: 0, sessionRecallTopK: 0, structMemEntryTopK: 0, structMemConsolidationTopK: 0, openThreadTopK: 0, contextNeed: { needsRecentTurns: false, needsOlderSessionRecall: false, needsDurableMemory: false, needsStructMem: false, needsStructMemConsolidation: false, needsCanon: false, needsWeb: false, injectionMode: "compact" as const, reason: "" } },
+    ...overrides,
+    internalLogicEvidence: overrides.evidenceHits,
+  };
+}
+
+describe("runHybridScoreRerank finalContextMode", () => {
+  const evidenceHit: InternalLogicEvidenceHit = {
+    id: "ev_001", characterId: "zuo_ran", node: "core_fear",
+    claimText: "Claim", evidenceText: "Evidence",
+    arcKey: null, chapterKey: null, episodeLabel: null,
+    sceneOrder: null, unitIndex: null, scopeApplicability: {},
+    sourceKind: "canon", confidenceScore: null, metadata: {},
+    cosineSimilarity: 0.5, finalScore: 0.5,
+  };
+
+  it("evidence-only selection returns selected_memory mode and preserves evidence", async () => {
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence")],
+      evidenceHits: [evidenceHit],
+    }));
+    assert.equal(result.selectedContext.internalLogicEvidence?.length, 1);
+    assert.equal(result.selectedContext.internalLogicEvidence![0]!.id, "ev_001");
+    assert.equal(result.rerankOutput.finalContextMode, "selected_memory");
+  });
+
+  it("canon-only selection returns selected_canon mode", async () => {
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [makeCandidate("canon_1", "canon_chunk")],
+      canonChunks: [{ id: "canon_1", textContent: "canon", sceneId: "s1", arcKey: "a", chapterName: "ch", contentType: "narrative", speaker: null, canonPriority: null, rankScore: 0.5 } as RetrievedCanonChunk],
+    }));
+    assert.equal(result.rerankOutput.finalContextMode, "selected_canon");
+  });
+
+  it("canon plus evidence returns memory_and_canon mode", async () => {
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [
+        makeCandidate("canon_1", "canon_chunk"),
+        makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence"),
+      ],
+      canonChunks: [{ id: "canon_1", textContent: "canon", sceneId: "s1", arcKey: "a", chapterName: "ch", contentType: "narrative", speaker: null, canonPriority: null, rankScore: 0.5 } as RetrievedCanonChunk],
+      evidenceHits: [evidenceHit],
+    }));
+    assert.equal(result.rerankOutput.finalContextMode, "memory_and_canon");
+  });
+
+  it("no selected candidates returns recent_only mode", async () => {
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [],
+    }));
+    assert.equal(result.rerankOutput.finalContextMode, "recent_only");
+  });
+
+  it("diagnostics include internal_logic_evidence retrieved and injected counts", async () => {
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence")],
+      evidenceHits: [evidenceHit],
+    }));
+    const d = result.selectedContext.diagnostics;
+    assert.equal((d.retrievedCounts as any).internal_logic_evidence, 1);
+    assert.equal((d.injectedCounts as any).internal_logic_evidence, 1);
+  });
+
+  it("selected_memory mode with only evidence and no other memory sources", async () => {
+    // Only evidence is selected, no other memory sources should still result in selected_memory
+    const result = await runHybridScoreRerank(makeHybridInput({
+      candidates: [makeCandidate("internal_logic_evidence_ev_001", "internal_logic_evidence")],
+      evidenceHits: [evidenceHit],
+      memories: [],
+    }));
+    assert.equal(result.rerankOutput.finalContextMode, "selected_memory");
   });
 });
