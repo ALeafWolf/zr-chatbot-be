@@ -5,12 +5,14 @@ import type { ModelBinding } from "../../config/models";
 import { z } from "zod";
 import { parseJsonOutput } from "../json/parseJsonOutput";
 import type {
+  ChatOptions,
+  ToolChatMessage,
   LLMMessage,
   LLMProvider,
   LLMResponse,
-  ChatOptions,
-  ToolChatMessage,
   LLMStreamEvent,
+  LLMUsage,
+  OpenAIToolCall,
 } from "./providerTypes";
 
 export type {
@@ -29,6 +31,7 @@ export type ChatJsonOk<T> = {
   raw: string;
   inputTokens: number;
   outputTokens: number;
+  usage?: LLMUsage;
 };
 
 export type ChatJsonErr = {
@@ -38,6 +41,7 @@ export type ChatJsonErr = {
   inputTokens: number;
   outputTokens: number;
   finishReason?: string | null;
+  usage?: LLMUsage;
 };
 
 export type ChatJsonResult<T> = ChatJsonOk<T> | ChatJsonErr;
@@ -274,6 +278,7 @@ export async function chatJson<T>(
       error: extracted.error,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      usage: response.usage,
       finishReason: response.finishReason,
     };
   }
@@ -286,6 +291,7 @@ export async function chatJson<T>(
       error: zResult.error.message,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      usage: response.usage,
       finishReason: response.finishReason,
     };
   }
@@ -296,6 +302,7 @@ export async function chatJson<T>(
     raw: response.content,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
+    usage: response.usage,
   };
 }
 
@@ -395,6 +402,7 @@ export async function chatJsonStream<T>(
   let raw = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let usage: LLMUsage | undefined;
   let finishReason: string | null | undefined;
 
   for await (const ev of provider.streamChat(msgs, {
@@ -409,11 +417,12 @@ export async function chatJsonStream<T>(
       raw = ev.content;
       inputTokens = ev.usage.inputTokens;
       outputTokens = ev.usage.outputTokens;
+      usage = ev.usage;
       finishReason = ev.finishReason;
     }
   }
 
-  return parseJsonStreamResult(raw, inputTokens, outputTokens, finishReason, schema);
+  return parseJsonStreamResult(raw, inputTokens, outputTokens, finishReason, schema, usage);
 }
 
 export async function chatJsonStreamWithFallback<T>(
@@ -529,18 +538,19 @@ export function parseJsonStreamResult<T>(
   outputTokens: number,
   finishReason: string | null | undefined,
   schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  usage?: LLMUsage,
 ): ChatJsonOk<T> | ChatJsonErr {
   const extracted = parseJsonOutput(raw);
   if (!extracted.ok) {
-    return { ok: false, raw, error: extracted.error, inputTokens, outputTokens, finishReason };
+    return { ok: false, raw, error: extracted.error, inputTokens, outputTokens, usage, finishReason };
   }
 
   const zResult = schema.safeParse(extracted.data);
   if (!zResult.success) {
-    return { ok: false, raw, error: zResult.error.message, inputTokens, outputTokens, finishReason };
+    return { ok: false, raw, error: zResult.error.message, inputTokens, outputTokens, usage, finishReason };
   }
 
-  return { ok: true, data: zResult.data, raw, inputTokens, outputTokens };
+  return { ok: true, data: zResult.data, raw, inputTokens, outputTokens, usage };
 }
 
 // Test seam — allows injecting a mock provider for fallback-helper tests.

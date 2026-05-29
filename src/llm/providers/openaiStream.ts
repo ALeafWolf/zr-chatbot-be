@@ -7,8 +7,22 @@ import type {
 import type {
   ChatOptions,
   LLMStreamEvent,
+  LLMUsage,
   ToolChatMessage,
 } from "./providerTypes";
+
+/**
+ * Local extension to access DeepSeek's flat cache fields on the usage
+ * object. These are NOT in the openai-node published types: DeepSeek
+ * returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` as
+ * flat siblings (not nested). OpenAI streams won't populate them.
+ */
+interface DeepSeekChatCompletionUsage {
+  prompt_cache_hit_tokens?: number | null;
+  prompt_cache_miss_tokens?: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
 
 function toOpenAIMessages(messages: ToolChatMessage[]): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [];
@@ -126,7 +140,11 @@ export async function* streamOpenAICompatibleChat(
   let finishReason: string | null | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
-  let reasoningTokens = 0;
+  let reasoningTokens: number | undefined;
+  let cachedInputTokens: number | undefined;
+  // DeepSeek-style cache fields (flat siblings on usage object)
+  let cacheHitInputTokens: number | undefined;
+  let cacheMissInputTokens: number | undefined;
 
   for await (const part of stream) {
     const choice = part.choices?.[0];
@@ -167,8 +185,14 @@ export async function* streamOpenAICompatibleChat(
       inputTokens = usage.prompt_tokens ?? inputTokens;
       outputTokens = usage.completion_tokens ?? outputTokens;
       reasoningTokens =
-        (usage as { completion_tokens_details?: { reasoning_tokens?: number } })
-          .completion_tokens_details?.reasoning_tokens ?? reasoningTokens;
+        usage.completion_tokens_details?.reasoning_tokens ?? reasoningTokens;
+      cachedInputTokens =
+        usage.prompt_tokens_details?.cached_tokens ?? cachedInputTokens;
+
+      // DeepSeek flat cache fields (cast through local extension)
+      const ds = usage as unknown as DeepSeekChatCompletionUsage;
+      cacheHitInputTokens = ds.prompt_cache_hit_tokens ?? cacheHitInputTokens;
+      cacheMissInputTokens = ds.prompt_cache_miss_tokens ?? cacheMissInputTokens;
     }
   }
 
@@ -178,11 +202,20 @@ export async function* streamOpenAICompatibleChat(
     finishReason === "tool_calls" ||
     finishReason === "requires_action";
 
+  const finalUsage: LLMUsage = {
+    inputTokens,
+    outputTokens,
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheHitInputTokens !== undefined ? { cacheHitInputTokens } : {}),
+    ...(cacheMissInputTokens !== undefined ? { cacheMissInputTokens } : {}),
+  };
+
   yield {
     type: "assistant_done",
     content: buf,
     toolCalls: wantsTools ? toolCalls : undefined,
-    usage: { inputTokens, outputTokens, reasoningTokens },
+    usage: finalUsage,
     finishReason,
   };
 }

@@ -98,10 +98,7 @@ export async function generateThoughtSummaryWithUsage(
     {
       binding: res.binding,
       modelRole: "extractor",
-      usage: {
-        inputTokens: res.inputTokens,
-        outputTokens: res.outputTokens,
-      },
+      usage: res.usage ?? { inputTokens: res.inputTokens, outputTokens: res.outputTokens },
       fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     },
   );

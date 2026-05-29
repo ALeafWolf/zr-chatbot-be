@@ -210,10 +210,7 @@ async function classifyTurnRouteImpl(
   return attachTraceLlmMetadata(output, {
     binding: result.binding,
     modelRole: "extractor",
-    usage: {
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-    },
+    usage: result.usage ?? { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
     fallback: {
       used: result.fallbackUsed,
       attempts: result.fallbackAttempts,

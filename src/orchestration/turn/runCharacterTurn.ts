@@ -102,10 +102,7 @@ const tracedRecallThought = traceLLMStage(
     return attachTraceLlmMetadata(output, {
       binding: thought.binding ?? models.extractor,
       modelRole: "extractor",
-      usage: {
-        inputTokens: thought.inputTokens,
-        outputTokens: thought.outputTokens,
-      },
+      usage: { inputTokens: thought.inputTokens, outputTokens: thought.outputTokens },
     });
   },
   {
