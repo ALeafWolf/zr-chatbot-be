@@ -184,6 +184,7 @@ async function synthesizeStructMemConsolidationImpl(input: {
       binding: result.binding,
       modelRole: "consolidation",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }
@@ -292,6 +293,7 @@ async function distillCrossSessionStructMemImpl(input: {
       binding: result.binding,
       modelRole: "consolidation",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }

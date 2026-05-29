@@ -266,6 +266,7 @@ const tracedPhaseB = traceLLMStage(
       binding: res.binding,
       modelRole: "extractor",
       usage: res,
+      fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     });
   },
   {

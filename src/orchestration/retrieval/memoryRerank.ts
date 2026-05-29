@@ -433,6 +433,7 @@ const tracedRerank = traceLLMStage(
         binding: result.binding,
         modelRole: "memoryRerank",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   },

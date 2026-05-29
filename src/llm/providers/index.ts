@@ -45,7 +45,6 @@ export type ChatJsonResult<T> = ChatJsonOk<T> | ChatJsonErr;
 export type ChatFallbackAttempt = {
   binding: ModelBinding;
   trigger:
-    | "provider_error"
     | "network_error"
     | "rate_limit"
     | "server_error"
@@ -544,8 +543,13 @@ export function parseJsonStreamResult<T>(
   return { ok: true, data: zResult.data, raw, inputTokens, outputTokens };
 }
 
+// Test seam — allows injecting a mock provider for fallback-helper tests.
+// Replaces the default getProvider with a custom implementation.
+let _testGetProvider: ((binding: ModelBinding) => LLMProvider) | undefined;
+
 /** Dispatch to the correct provider by the ModelBinding derived from env. */
 export function getProvider(binding: ModelBinding): LLMProvider {
+  if (_testGetProvider) return _testGetProvider(binding);
   switch (binding.provider) {
     case "anthropic":
       return createAnthropicProvider(binding.model);
@@ -557,3 +561,10 @@ export function getProvider(binding: ModelBinding): LLMProvider {
       throw new Error(`Unknown provider: ${(binding as ModelBinding).provider}`);
   }
 }
+
+// Test seam — exported only for unit tests.
+export const __testables__ = {
+  setMockProvider: (fn: ((binding: ModelBinding) => LLMProvider) | undefined) => {
+    _testGetProvider = fn;
+  },
+};

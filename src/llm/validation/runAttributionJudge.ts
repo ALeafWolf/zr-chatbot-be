@@ -89,6 +89,7 @@ Return the JSON object.`.trim();
         binding: res.binding,
         modelRole: "attributionJudge",
         usage: res,
+        fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
       },
     );
   }
@@ -99,6 +100,7 @@ Return the JSON object.`.trim();
       binding: res.binding,
       modelRole: "attributionJudge",
       usage: res,
+      fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     },
   );
 }

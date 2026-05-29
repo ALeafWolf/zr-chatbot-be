@@ -353,6 +353,7 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
         binding: result.binding,
         modelRole: "extractor",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -412,6 +413,7 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
       binding: result.binding,
       modelRole: "extractor",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }

@@ -102,6 +102,7 @@ export async function generateThoughtSummaryWithUsage(
         inputTokens: res.inputTokens,
         outputTokens: res.outputTokens,
       },
+      fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     },
   );
 }

@@ -131,6 +131,7 @@ ${segmentBody || "（空片段）"}
         binding: result.binding,
         modelRole: "extractor",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -150,6 +151,7 @@ ${segmentBody || "（空片段）"}
         binding: result.binding,
         modelRole: "extractor",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -165,6 +167,7 @@ ${segmentBody || "（空片段）"}
       binding: result.binding,
       modelRole: "extractor",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }

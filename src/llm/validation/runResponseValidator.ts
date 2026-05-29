@@ -567,6 +567,7 @@ Return the JSON validation result.`.trim();
         binding: result.binding,
         modelRole: "validator",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -610,6 +611,7 @@ Return the JSON validation result.`.trim();
       binding: result.binding,
       modelRole: "validator",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }

@@ -5,6 +5,7 @@ import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import type { ModelBinding } from "../../config/models";
 import type { ChatSession } from "../../db/schema/chat";
+import type { ChatFallbackAttempt } from "../../llm/providers";
 import {
   APP_COMMAND_ROUTE,
   ROLEPLAY_TURN_ROUTE,
@@ -104,18 +105,25 @@ function fallbackClassification(input: {
   reason?: string;
   fallbackReason: string;
   usage?: { inputTokens: number; outputTokens: number };
+  binding?: ModelBinding;
+  fallback?: {
+    used: boolean;
+    attempts: readonly ChatFallbackAttempt[];
+  };
 }): TurnRouteClassification {
+  const binding = input.binding ?? models.extractor;
   const output: TurnRouteClassification = {
     type: ROLEPLAY_TURN_ROUTE,
     confidence: input.confidence ?? 0,
     fallbackReason: input.fallbackReason,
-    modelName: models.extractor.model,
+    modelName: binding.model,
     ...(input.reason ? { reason: input.reason } : {}),
   };
   return attachTraceLlmMetadata(output, {
-    binding: models.extractor,
+    binding,
     modelRole: "extractor",
     usage: input.usage ?? { inputTokens: 0, outputTokens: 0 },
+    ...(input.fallback ? { fallback: input.fallback } : {}),
   });
 }
 
@@ -187,6 +195,11 @@ async function classifyTurnRouteImpl(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
       },
+      binding: result.binding,
+      fallback: {
+        used: result.fallbackUsed,
+        attempts: result.fallbackAttempts,
+      },
     });
   }
 
@@ -200,6 +213,10 @@ async function classifyTurnRouteImpl(
     usage: {
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+    },
+    fallback: {
+      used: result.fallbackUsed,
+      attempts: result.fallbackAttempts,
     },
   });
 }
@@ -239,3 +256,6 @@ function unwrapClassifyTurnRouteInput(
   }
   return inputs as unknown as ClassifyTurnRouteInput;
 }
+
+// Test seam — exported only for unit tests.
+export const __testables__ = { fallbackClassification };

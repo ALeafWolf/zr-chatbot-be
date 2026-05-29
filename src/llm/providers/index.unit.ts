@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert";
 import { z } from "zod";
 import { isFallbackableLlmError, parseJsonStreamResult } from "./index";
@@ -103,5 +103,332 @@ describe("isFallbackableLlmError", () => {
     const controller = new AbortController();
     controller.abort();
     assert.equal(isFallbackableLlmError(new Error("aborted"), controller.signal), false);
+  });
+});
+
+const ScenarioSchema = z.object({ ok: z.boolean() });
+
+/**
+ * Helper: create a mock LLMProvider with controlled chat/streamChat behavior.
+ */
+function mockProvider(behavior: {
+  throwError?: unknown;
+  content?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}) {
+  const content = behavior.content ?? JSON.stringify({ ok: true });
+  const inputTokens = behavior.inputTokens ?? 100;
+  const outputTokens = behavior.outputTokens ?? 50;
+  const err = behavior.throwError;
+  return {
+    chat: async () => {
+      if (err) throw err;
+      return { content, inputTokens, outputTokens, finishReason: "stop" as const };
+    },
+    streamChat: async function* () {
+      if (err) throw err;
+      yield {
+        type: "assistant_done" as const,
+        content,
+        usage: { inputTokens, outputTokens },
+        finishReason: "stop" as const,
+      };
+    },
+  };
+}
+
+describe("chatJsonWithFallback", () => {
+  afterEach(async () => {
+    const { __testables__ } = await import("./index");
+    __testables__.setMockProvider(undefined);
+  });
+
+  it("primary parse failure → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ content: "not-json" })
+        : mockProvider({ content: JSON.stringify({ ok: true }) });
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.data.ok, true);
+    assert.equal(result.binding.model, "gpt-5-mini");
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts.length, 1);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "parse_failure");
+    assert.equal(result.fallbackAttempts[0]!.inputTokens, 100);
+    assert.equal(result.fallbackAttempts[0]!.outputTokens, 50);
+  });
+
+  it("primary 429 → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("Rate limit"), { status: 429 }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts.length, 1);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "rate_limit");
+  });
+
+  it("primary 503 → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("Overloaded"), { status: 503 }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "server_error");
+  });
+
+  it("primary network error → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("fetch failed"), { code: "ECONNRESET" }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "network_error");
+  });
+
+  it("primary 401 → no fallback, rethrows", async () => {
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() =>
+      mockProvider({ throwError: Object.assign(new Error("Unauthorized"), { status: 401 }) }),
+    );
+    await assert.rejects(
+      fn(
+        { provider: "openai", model: "gpt-5-nano" },
+        { provider: "openai", model: "gpt-5-mini" },
+        [{ role: "user", content: "test" }],
+        ScenarioSchema,
+      ),
+      (err: Error) => {
+        assert.match(err.message, /Unauthorized/i);
+        return true;
+      },
+    );
+  });
+
+  it("aborted signal → no fallback", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() =>
+      mockProvider({ throwError: Object.assign(new Error("server error"), { status: 500 }) }),
+    );
+    await assert.rejects(
+      fn(
+        { provider: "openai", model: "gpt-5-nano" },
+        { provider: "openai", model: "gpt-5-mini" },
+        [{ role: "user", content: "test" }],
+        ScenarioSchema,
+        { signal: controller.signal },
+      ),
+    );
+  });
+
+  it("duplicate fallback binding → silently skipped", async () => {
+    let callCount = 0;
+    const { __testables__, chatJsonWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callCount++;
+      return mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-nano" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(result.fallbackAttempts.length, 0);
+    assert.equal(callCount, 1);
+  });
+});
+
+describe("chatJsonStreamWithFallback", () => {
+  afterEach(async () => {
+    const { __testables__ } = await import("./index");
+    __testables__.setMockProvider(undefined);
+  });
+
+  it("primary parse failure → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ content: "not-json" })
+        : mockProvider({ content: JSON.stringify({ ok: true }) });
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.data.ok, true);
+    assert.equal(result.binding.model, "gpt-5-mini");
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts.length, 1);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "parse_failure");
+  });
+
+  it("primary 429 → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("Rate limit"), { status: 429 }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "rate_limit");
+  });
+
+  it("primary 503 → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("Overloaded"), { status: 503 }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "server_error");
+  });
+
+  it("primary network error → fallback success", async () => {
+    let callIndex = 0;
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callIndex++;
+      return callIndex === 1
+        ? mockProvider({ throwError: Object.assign(new Error("fetch failed"), { code: "ECONNRESET" }) })
+        : mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-mini" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.equal(result.fallbackAttempts[0]!.trigger, "network_error");
+  });
+
+  it("primary 401 → no fallback, rethrows", async () => {
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() =>
+      mockProvider({ throwError: Object.assign(new Error("Unauthorized"), { status: 401 }) }),
+    );
+    await assert.rejects(
+      fn(
+        { provider: "openai", model: "gpt-5-nano" },
+        { provider: "openai", model: "gpt-5-mini" },
+        [{ role: "user", content: "test" }],
+        ScenarioSchema,
+      ),
+      (err: Error) => {
+        assert.match(err.message, /Unauthorized/i);
+        return true;
+      },
+    );
+  });
+
+  it("aborted signal → no fallback", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() =>
+      mockProvider({ throwError: Object.assign(new Error("server error"), { status: 500 }) }),
+    );
+    await assert.rejects(
+      fn(
+        { provider: "openai", model: "gpt-5-nano" },
+        { provider: "openai", model: "gpt-5-mini" },
+        [{ role: "user", content: "test" }],
+        ScenarioSchema,
+        { signal: controller.signal },
+      ),
+    );
+  });
+
+  it("duplicate fallback binding → silently skipped", async () => {
+    let callCount = 0;
+    const { __testables__, chatJsonStreamWithFallback: fn } = await import("./index");
+    __testables__.setMockProvider(() => {
+      callCount++;
+      return mockProvider({});
+    });
+    const result = await fn(
+      { provider: "openai", model: "gpt-5-nano" },
+      { provider: "openai", model: "gpt-5-nano" },
+      [{ role: "user", content: "test" }],
+      ScenarioSchema,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.fallbackUsed, false);
+    assert.equal(result.fallbackAttempts.length, 0);
+    assert.equal(callCount, 1);
   });
 });

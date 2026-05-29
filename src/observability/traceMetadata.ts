@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { env } from "../config/env";
 import { models, type ModelBinding } from "../config/models";
 import { buildExperimentVariantMetadata } from "../eval/experimentVariants";
+import type { ChatFallbackAttempt } from "../llm/providers";
 
 export const TRACE_SCHEMA_VERSION = 1;
 export const TRACE_PRICING_VERSION = "2026-05-15";
@@ -76,6 +77,18 @@ export interface TraceLlmMetadata {
   pricingKnown?: boolean;
   pricingVersion?: string;
   usage_metadata?: LangSmithUsageMetadata;
+  fallbackUsed?: boolean;
+  fallbackAttempts?: readonly {
+    provider: ModelBinding["provider"];
+    model: string;
+    trigger: ChatFallbackAttempt["trigger"];
+    inputTokens?: number;
+    outputTokens?: number;
+    finishReason?: string | null;
+  }[];
+  fallbackAttemptTotalInputTokens?: number;
+  fallbackAttemptTotalOutputTokens?: number;
+  fallbackAttemptEstimatedCostUsd?: number | null;
 }
 
 export interface LangSmithUsageMetadata {
@@ -105,6 +118,9 @@ const MODEL_PRICES_USD_PER_MILLION: Record<string, ModelPrice> = {
   "anthropic:claude-sonnet-4-5": { inputPerMillion: 3, outputPerMillion: 15 },
   "anthropic:claude-haiku-4-5": { inputPerMillion: 1, outputPerMillion: 5 },
   "deepseek:deepseek-chat": { inputPerMillion: 0.27, outputPerMillion: 1.1 },
+  // TODO(match-provider-pricing-dimensions): add deepseek-v4-flash,
+  // deepseek-v4-pro, gpt-5-nano, gpt-5-mini with verified per-provider
+  // dimensional pricing.
   "openai:text-embedding-3-small": {
     inputPerMillion: 0.02,
     outputPerMillion: 0,
@@ -170,10 +186,93 @@ export function buildLlmTraceMetadata(input: {
   binding: ModelBinding;
   modelRole?: TraceModelRole;
   usage?: TraceUsageInput;
+  fallback?: {
+    used: boolean;
+    attempts: readonly ChatFallbackAttempt[];
+  };
 }): TraceLlmMetadata {
   const usage = input.usage
     ? buildUsageMetadata(input.binding, input.usage)
     : undefined;
+
+  let fallbackMetadata: {
+    fallbackUsed?: boolean;
+    fallbackAttempts?: TraceLlmMetadata["fallbackAttempts"];
+    fallbackAttemptTotalInputTokens?: number;
+    fallbackAttemptTotalOutputTokens?: number;
+    fallbackAttemptEstimatedCostUsd?: number | null;
+  } = {};
+
+  if (input.fallback && input.fallback.attempts.length > 0) {
+    const binding = input.binding;
+    const attempts = input.fallback.attempts;
+
+    // Drop final attempt when its binding matches the trace binding —
+    // its tokens are already counted in `usage`.
+    const deduped =
+      attempts.length > 0 &&
+      binding &&
+      attempts[attempts.length - 1]!.binding.provider === binding.provider &&
+      attempts[attempts.length - 1]!.binding.model === binding.model
+        ? attempts.slice(0, -1)
+        : attempts;
+
+    if (deduped.length > 0) {
+      const mapped = deduped.map((a) => ({
+        provider: a.binding.provider,
+        model: a.binding.model,
+        trigger: a.trigger,
+        ...(a.inputTokens !== undefined ? { inputTokens: a.inputTokens } : {}),
+        ...(a.outputTokens !== undefined ? { outputTokens: a.outputTokens } : {}),
+        ...(a.finishReason !== undefined ? { finishReason: a.finishReason } : {}),
+      }));
+
+      const hasAnyInputTokens = deduped.some((a) => a.inputTokens !== undefined);
+      const hasAnyOutputTokens = deduped.some((a) => a.outputTokens !== undefined);
+
+      const totalInputTokens = hasAnyInputTokens
+        ? deduped.reduce((sum, a) => sum + (a.inputTokens ?? 0), 0)
+        : undefined;
+      const totalOutputTokens = hasAnyOutputTokens
+        ? deduped.reduce((sum, a) => sum + (a.outputTokens ?? 0), 0)
+        : undefined;
+
+      // Compute cost rollup: if any attempt has unknown pricing, result is null
+      let totalCost = 0;
+      let anyUnknownPricing = false;
+      for (const a of deduped) {
+        const cost = estimateModelCost(a.binding, {
+          inputTokens: a.inputTokens ?? 0,
+          outputTokens: a.outputTokens ?? 0,
+        });
+        if (cost === null) {
+          anyUnknownPricing = true;
+        } else {
+          totalCost += cost;
+        }
+      }
+
+      fallbackMetadata = {
+        fallbackUsed: input.fallback.used,
+        fallbackAttempts: mapped,
+        ...(totalInputTokens !== undefined
+          ? { fallbackAttemptTotalInputTokens: totalInputTokens }
+          : {}),
+        ...(totalOutputTokens !== undefined
+          ? { fallbackAttemptTotalOutputTokens: totalOutputTokens }
+          : {}),
+        fallbackAttemptEstimatedCostUsd: anyUnknownPricing
+          ? null
+          : Number(totalCost.toFixed(8)),
+      };
+    } else {
+      fallbackMetadata = {
+        fallbackUsed: input.fallback.used,
+        fallbackAttempts: [],
+      };
+    }
+  }
+
   return {
     modelProvider: input.binding.provider,
     modelName: input.binding.model,
@@ -181,6 +280,7 @@ export function buildLlmTraceMetadata(input: {
     ls_model_name: input.binding.model,
     ...(input.modelRole ? { modelRole: input.modelRole } : {}),
     ...(usage ?? {}),
+    ...fallbackMetadata,
   };
 }
 
@@ -236,6 +336,10 @@ export function attachTraceLlmMetadata<T extends object>(
     binding: ModelBinding;
     modelRole?: TraceModelRole;
     usage: TraceUsageInput;
+    fallback?: {
+      used: boolean;
+      attempts: readonly ChatFallbackAttempt[];
+    };
   },
 ): T {
   Object.defineProperty(value, TRACE_LLM_METADATA_SYMBOL, {
