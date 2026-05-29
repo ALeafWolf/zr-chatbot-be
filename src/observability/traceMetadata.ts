@@ -12,6 +12,7 @@ export type TraceModelRole =
   | "extractor"
   | "attributionJudge"
   | "memoryDedupJudge"
+  | "memoryRerank"
   | "consolidation"
   | "embedding";
 

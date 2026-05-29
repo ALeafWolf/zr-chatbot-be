@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { models } from "../../config/models";
 import { env } from "../../config/env";
-import { chatJson } from "../providers";
+import { chatJsonWithFallback } from "../providers";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { scoreMemoryImportance } from "../../memory/shared/scoreMemoryImportance";
 import type { MemoryCandidate, MemoryScope } from "../../memory/interactive/writeInteractiveMemory";
@@ -323,8 +323,9 @@ Character reply (this turn — primary source for 角色):
 
 Extract memory candidates; summaries must follow the grounding rules.`.trim();
 
-  const result = await chatJson(
+  const result = await chatJsonWithFallback(
     models.extractor,
+    models.fallbacks.postTurnExtractor,
     [
       { role: "system", content: EXTRACTOR_SYSTEM },
       { role: "user", content: userMessage },
@@ -349,7 +350,7 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
         },
       },
       {
-        binding: models.extractor,
+        binding: result.binding,
         modelRole: "extractor",
         usage: result,
       },
@@ -408,7 +409,7 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
       },
     },
     {
-      binding: models.extractor,
+      binding: result.binding,
       modelRole: "extractor",
       usage: result,
     },

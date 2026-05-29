@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { z } from "zod";
-import { parseJsonStreamResult } from "./index";
+import { isFallbackableLlmError, parseJsonStreamResult } from "./index";
 
 const TestSchema = z.object({
   selected: z.array(z.object({ id: z.string() })),
@@ -88,5 +88,20 @@ describe("buildChatJsonOptions", () => {
     const controller = new AbortController();
     const result = buildChatJsonOptions({ signal: controller.signal });
     assert.equal(result.signal, controller.signal);
+  });
+});
+
+describe("isFallbackableLlmError", () => {
+  it("matches rate limits, server errors, and network-style failures", () => {
+    assert.equal(isFallbackableLlmError({ status: 429 }), true);
+    assert.equal(isFallbackableLlmError({ status: 503 }), true);
+    assert.equal(isFallbackableLlmError(Object.assign(new Error("fetch failed"), { code: "ECONNRESET" })), true);
+  });
+
+  it("does not match client/auth errors or caller-aborted signals", () => {
+    assert.equal(isFallbackableLlmError({ status: 401 }), false);
+    const controller = new AbortController();
+    controller.abort();
+    assert.equal(isFallbackableLlmError(new Error("aborted"), controller.signal), false);
   });
 });

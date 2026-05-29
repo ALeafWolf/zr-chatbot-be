@@ -136,8 +136,15 @@ const envSchema = z.object({
       if (s === "first_turn_only") return s;
       return "every_generation";
     }),
-  VALIDATOR_MODEL: z.string().default("anthropic:claude-haiku-4-5"),
+  VALIDATOR_MODEL: z.string().default("deepseek:deepseek-v4-pro"),
   EXTRACTOR_MODEL: z.string().default("deepseek:deepseek-v4-flash"),
+  CLASSIFY_TURN_ROUTE_FALLBACK_MODEL: z.string().default("openai:gpt-5-nano"),
+  QUERY_REWRITE_FALLBACK_MODEL: z.string().default("openai:gpt-5-nano"),
+  RECALL_THOUGHT_FALLBACK_MODEL: z.string().default("openai:gpt-5-nano"),
+  RESPONSE_VALIDATOR_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
+  MEMORY_DEDUP_JUDGE_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
+  VALIDATOR_ATTRIBUTION_JUDGE_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
+  POST_TURN_EXTRACTOR_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
   EMBEDDING_MODEL: z.string().default("openai:text-embedding-3-small"),
   EMBEDDING_DIMENSIONS: z
     .string()
@@ -178,7 +185,7 @@ const envSchema = z.object({
     .string()
     .default("0")
     .transform((v) => v.trim() === "1" || v.trim().toLowerCase() === "true"),
-  VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().optional(),
+  VALIDATOR_ATTRIBUTION_JUDGE_MODEL: z.string().default("deepseek:deepseek-v4-pro"),
   EVAL_ENABLE_LLM_JUDGE: z
     .string()
     .default("0")
@@ -225,7 +232,8 @@ const envSchema = z.object({
       const s = v.trim().toLowerCase();
       return s === "1" || s === "true";
     }),
-  STRUCTMEM_CONSOLIDATION_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  STRUCTMEM_CONSOLIDATION_MODEL: z.string().default("deepseek:deepseek-v4-pro"),
+  STRUCTMEM_CONSOLIDATION_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
   STRUCTMEM_MIN_UNCONSOLIDATED_TURNS: z
     .string()
     .default("8")
@@ -333,8 +341,9 @@ const envSchema = z.object({
 
   // Memory Rerank
   // Model binding for the LLM that judges which retrieved context to inject.
-  // Use EXTRACTOR_MODEL to reuse the extractor binding (same sentinel as STRUCTMEM_CONSOLIDATION_MODEL).
-  MEMORY_RERANK_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  // EXTRACTOR_MODEL is still accepted as a sentinel for local overrides.
+  MEMORY_RERANK_MODEL: z.string().default("deepseek:deepseek-v4-flash"),
+  MEMORY_RERANK_FALLBACK_MODEL: z.string().default("openai:gpt-5-mini"),
   MEMORY_RERANK_MAX_CANDIDATES: z
     .string()
     .default("24")
@@ -359,6 +368,9 @@ const envSchema = z.object({
       if (Number.isNaN(n) || n < 1000) return 60000;
       return Math.min(300000, Math.max(1000, n));
     }),
+  STRUCTMEM_CROSS_SESSION_DISTILLATION_FALLBACK_MODEL: z
+    .string()
+    .default("openai:gpt-5-mini"),
 
   // StructMem: Motif Probe
   // Deterministic repeated-relationship-gesture detection and optional StructMem probe.

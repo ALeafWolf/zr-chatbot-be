@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJson } from "../../llm/providers";
+import { chatJsonWithFallback } from "../../llm/providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import type { ConsolidationCandidateEntry } from "./structmemConsolidationSelection";
@@ -119,8 +119,9 @@ async function synthesizeStructMemConsolidationImpl(input: {
     "Keys: summary_text (string), summary_json (object), confidence_score (number 0-1 or null).";
 
   const runChat = () =>
-    chatJson(
+    chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemConsolidation,
       [
         { role: "system", content: systemStrictJson },
         { role: "user", content: prompt },
@@ -145,8 +146,9 @@ async function synthesizeStructMemConsolidationImpl(input: {
       .filter(Boolean)
       .join("\n");
 
-    result = await chatJson(
+    result = await chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemConsolidation,
       [
         { role: "system", content: systemStrictJson },
         { role: "user", content: repairPrompt },
@@ -166,17 +168,24 @@ async function synthesizeStructMemConsolidationImpl(input: {
   }
 
   const data = result.data;
-  return {
-    summary_text: data.summary_text,
-    summary_json: data.summary_json ?? {},
-    confidence_score: data.confidence_score ?? null,
-    telemetry: {
-      model: models.consolidation.model,
-      provider: models.consolidation.provider,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
+  return attachTraceLlmMetadata(
+    {
+      summary_text: data.summary_text,
+      summary_json: data.summary_json ?? {},
+      confidence_score: data.confidence_score ?? null,
+      telemetry: {
+        model: result.binding.model,
+        provider: result.binding.provider,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      },
     },
-  };
+    {
+      binding: result.binding,
+      modelRole: "consolidation",
+      usage: result,
+    },
+  );
 }
 
 export const synthesizeStructMemConsolidation = traceLLMStage(
@@ -238,8 +247,9 @@ async function distillCrossSessionStructMemImpl(input: {
     "Respond with one JSON object only (no markdown). Key: stable_items (array).";
 
   const runChat = () =>
-    chatJson(
+    chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemCrossSessionDistillation,
       [
         { role: "system", content: systemDistill },
         { role: "user", content: userContent },
@@ -256,8 +266,9 @@ async function distillCrossSessionStructMemImpl(input: {
       "",
       `Previous output was not valid JSON (${result.error}). Reply with ONLY: {"stable_items":[...] } using double quotes.`,
     ].join("\n");
-    result = await chatJson(
+    result = await chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemCrossSessionDistillation,
       [
         { role: "system", content: systemDistill },
         { role: "user", content: repairUser },
@@ -278,7 +289,7 @@ async function distillCrossSessionStructMemImpl(input: {
   return attachTraceLlmMetadata(
     StructMemCrossSessionDistillationOutputSchema.parse(result.data),
     {
-      binding: models.consolidation,
+      binding: result.binding,
       modelRole: "consolidation",
       usage: result,
     },

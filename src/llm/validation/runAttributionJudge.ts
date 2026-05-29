@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJsonStream } from "../providers";
+import { chatJsonStreamWithFallback } from "../providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
@@ -71,8 +71,9 @@ ${input.draft.trim().slice(0, 4000)}
 
 Return the JSON object.`.trim();
 
-  const res = await chatJsonStream(
+  const res = await chatJsonStreamWithFallback(
     models.attributionJudge,
+    models.fallbacks.attributionJudge,
     [
       { role: "system", content: ATTRIBUTION_JUDGE_SYSTEM },
       { role: "user", content: user },
@@ -85,7 +86,7 @@ Return the JSON object.`.trim();
     return attachTraceLlmMetadata(
       { verdict: FAIL_OPEN_VERDICT, usedFailOpen: true },
       {
-        binding: models.attributionJudge,
+        binding: res.binding,
         modelRole: "attributionJudge",
         usage: res,
       },
@@ -95,7 +96,7 @@ Return the JSON object.`.trim();
   return attachTraceLlmMetadata(
     { verdict: res.data, usedFailOpen: false },
     {
-      binding: models.attributionJudge,
+      binding: res.binding,
       modelRole: "attributionJudge",
       usage: res,
     },

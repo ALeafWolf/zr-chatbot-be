@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { CANON_PROMPT_LIMITS } from "../../character/canonRules";
 import { models } from "../../config/models";
-import { chatJsonStream } from "../providers";
+import {
+  chatJsonStreamWithFallback,
+  isFallbackableLlmError,
+} from "../providers";
 import { env } from "../../config/env";
 import type { CanonTruthMode } from "../../orchestration/prompt/buildPromptContext";
 import {
@@ -459,35 +462,6 @@ function selectedContextForValidatorPrompt(
 ${lines.join("\n")}`;
 }
 
-/** Anthropic/OpenAI-style overload / capacity — safe to retry and eventually fail-open for the validator. */
-function isProviderOverloadOrRateLimit(err: unknown): boolean {
-  if (typeof err === "object" && err !== null) {
-    const st = (err as { status?: number }).status;
-    if (st === 429 || st === 503 || st === 529) return true;
-    const nestedType = (err as { error?: { type?: string } }).error?.type;
-    if (nestedType === "overloaded_error") return true;
-  }
-  const text =
-    err instanceof Error
-      ? err.message
-      : (() => {
-          try {
-            return JSON.stringify(err);
-          } catch {
-            return String(err);
-          }
-        })();
-  const lower = text.toLowerCase();
-  return (
-    lower.includes("overloaded") ||
-    lower.includes("overloaded_error") ||
-    lower.includes("rate_limit") ||
-    lower.includes("too many requests") ||
-    /\b529\b/.test(text) ||
-    /\b429\b/.test(text)
-  );
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -540,21 +514,22 @@ Return the JSON validation result.`.trim();
   ];
 
   type ValidatorChatOutcome = Awaited<
-    ReturnType<typeof chatJsonStream<z.infer<typeof ValidationResultSchema>>>
+    ReturnType<typeof chatJsonStreamWithFallback<z.infer<typeof ValidationResultSchema>>>
   >;
   let result: ValidatorChatOutcome | undefined;
 
   for (let attempt = 0; attempt < VALIDATOR_LLM_MAX_ATTEMPTS; attempt++) {
     try {
-      result = await chatJsonStream(
+      result = await chatJsonStreamWithFallback(
         models.validator,
+        models.fallbacks.responseValidator,
         messages,
         ValidationResultSchema,
         { maxTokens: 512, temperature: 0.1, signal: input.signal },
       );
       break;
     } catch (err) {
-      const retriable = isProviderOverloadOrRateLimit(err);
+      const retriable = isFallbackableLlmError(err, input.signal);
       const lastAttempt = attempt >= VALIDATOR_LLM_MAX_ATTEMPTS - 1;
       if (!retriable || lastAttempt) {
         if (retriable) {
@@ -589,7 +564,7 @@ Return the JSON validation result.`.trim();
     return attachTraceLlmMetadata(
       { ...VALIDATOR_FAIL_OPEN },
       {
-        binding: models.validator,
+        binding: result.binding,
         modelRole: "validator",
         usage: result,
       },
@@ -632,7 +607,7 @@ Return the JSON validation result.`.trim();
       ...(attributionJudgeMeta ? { attribution_judge: attributionJudgeMeta } : {}),
     },
     {
-      binding: models.validator,
+      binding: result.binding,
       modelRole: "validator",
       usage: result,
     },

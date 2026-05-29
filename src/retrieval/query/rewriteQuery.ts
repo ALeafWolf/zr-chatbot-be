@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJsonStream } from "../../llm/providers";
+import { chatJsonStreamWithFallback } from "../../llm/providers";
 import { traceLLMStage, traceStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { CANON_RETRIEVAL, CANON_TIER3 } from "../../character/canonRules";
@@ -243,8 +243,9 @@ const tracedPhaseB = traceLLMStage(
       `\n\nSpans array:\n${JSON.stringify(input.payload)}`;
     const wantHypothetical = env.CANON_QUERY_HYDE;
 
-    const res = await chatJsonStream<LaneLabelModelOutput>(
+    const res = await chatJsonStreamWithFallback<LaneLabelModelOutput>(
       models.extractor,
+      models.fallbacks.queryRewrite,
       [
         { role: "system", content: REWRITE_ANNOTATION_INSTRUCTIONS },
         {
@@ -262,7 +263,7 @@ const tracedPhaseB = traceLLMStage(
 
     if (!res.ok) return null;
     return attachTraceLlmMetadata(res.data, {
-      binding: models.extractor,
+      binding: res.binding,
       modelRole: "extractor",
       usage: res,
     });
