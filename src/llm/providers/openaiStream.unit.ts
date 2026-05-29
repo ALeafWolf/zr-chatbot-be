@@ -357,3 +357,93 @@ describe("DeepSeek stream — flat cache hit/miss accumulation", () => {
     assert.equal(done.usage.cacheMissInputTokens, undefined);
   });
 });
+
+describe("OpenAI stream — max_completion_tokens detection", () => {
+  it("sends max_completion_tokens for gpt-5-mini (reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "gpt-5-mini",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.max_completion_tokens, 2048);
+    assert.equal(capturedParams.max_tokens, undefined);
+  });
+
+  it("sends max_tokens for gpt-4o-mini (non-reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "gpt-4o-mini",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.max_tokens, 2048);
+    assert.equal(capturedParams.max_completion_tokens, undefined);
+  });
+
+  it("sends max_tokens for deepseek-v4-pro (regression guard)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "deepseek-v4-pro",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    // DeepSeek does NOT use max_completion_tokens — this is the regression guard
+    assert.equal(capturedParams.max_tokens, 2048);
+    assert.equal(capturedParams.max_completion_tokens, undefined);
+  });
+});

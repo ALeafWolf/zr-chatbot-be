@@ -10,6 +10,7 @@ import type {
   LLMUsage,
   ToolChatMessage,
 } from "./providerTypes";
+import { requiresMaxCompletionTokens } from "./openaiModelCapabilities";
 
 /**
  * Local extension to access DeepSeek's flat cache fields on the usage
@@ -114,13 +115,18 @@ export async function* streamOpenAICompatibleChat(
         ? "auto"
         : undefined;
 
+  const useMaxCompletion = requiresMaxCompletionTokens(model);
+  const tokenBudget = options.maxTokens ?? 2048;
+
   const createParams = Object.assign(
     {},
     options.openAICompatibleRequestExtensions ?? {},
     {
       model,
       messages: apiMessages,
-      max_tokens: options.maxTokens ?? 2048,
+      ...(useMaxCompletion
+        ? { max_completion_tokens: tokenBudget }
+        : { max_tokens: tokenBudget }),
       temperature: options.temperature ?? 1.0,
       stream: true,
       ...(options.jsonMode && !tools

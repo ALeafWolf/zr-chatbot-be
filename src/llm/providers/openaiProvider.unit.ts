@@ -157,3 +157,45 @@ describe("OpenAI provider — non-streaming cached input and reasoning tokens", 
     assert.equal(result.usage, undefined);
   });
 });
+
+describe("OpenAI provider — max_completion_tokens detection", () => {
+  it("sends max_completion_tokens for gpt-5-mini (reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
+          },
+        },
+      },
+    } as never);
+
+    const provider = createOpenAIProvider("gpt-5-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.max_completion_tokens, 2048);
+    assert.equal(capturedParams.max_tokens, undefined);
+  });
+
+  it("sends max_tokens for gpt-4o-mini (non-reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
+          },
+        },
+      },
+    } as never);
+
+    const provider = createOpenAIProvider("gpt-4o-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.max_tokens, 2048);
+    assert.equal(capturedParams.max_completion_tokens, undefined);
+  });
+});

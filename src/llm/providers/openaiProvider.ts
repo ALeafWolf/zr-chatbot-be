@@ -9,6 +9,7 @@ import type {
   LLMUsage,
 } from "./providerTypes";
 import { streamOpenAICompatibleChat } from "./openaiStream";
+import { requiresMaxCompletionTokens } from "./openaiModelCapabilities";
 
 /** @visibleForTesting — used by openaiProvider.unit.ts to inject a mock client. */
 export function __test_setClient(mockClient: OpenAI | null): void {
@@ -41,17 +42,21 @@ export function createOpenAIProvider(model: string): LLMProvider {
       messages: LLMMessage[],
       options: ChatOptions = {},
     ): Promise<LLMResponse> {
+      const useMaxCompletion = requiresMaxCompletionTokens(model);
+      const tokenBudget = options.maxTokens ?? 2048;
       const response = await getClient().chat.completions.create(
         {
           model,
-          max_tokens: options.maxTokens ?? 2048,
+          ...(useMaxCompletion
+            ? { max_completion_tokens: tokenBudget }
+            : { max_tokens: tokenBudget }),
           temperature: options.temperature ?? 1.0,
           response_format: options.jsonMode ? { type: "json_object" } : undefined,
           messages: messages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
-        },
+        } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
         { signal: options.signal },
       );
 
