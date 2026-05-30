@@ -447,3 +447,156 @@ describe("OpenAI stream — max_completion_tokens detection", () => {
     assert.equal(capturedParams.max_completion_tokens, undefined);
   });
 });
+
+describe("OpenAI stream — reasoning_effort default", () => {
+  it("adds reasoning_effort: low for gpt-5-mini with no caller extensions", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "gpt-5-mini",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, "low");
+  });
+
+  it("respects caller-supplied reasoning_effort override", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "gpt-5-mini",
+      [{ role: "user", content: "Hi" }],
+      { openAICompatibleRequestExtensions: { reasoning_effort: "medium" } },
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, "medium");
+  });
+
+  it("omits reasoning_effort for gpt-4o-mini (non-reasoning)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "gpt-4o-mini",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, undefined);
+  });
+
+  it("omits reasoning_effort for deepseek-v4-pro (regression guard)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return chunksToStream([
+              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
+            ]);
+          },
+        },
+      },
+    } as unknown as OpenAI;
+
+    const events: unknown[] = [];
+    for await (const ev of streamOpenAICompatibleChat(
+      mockClient,
+      "deepseek-v4-pro",
+      [{ role: "user", content: "Hi" }],
+    )) {
+      events.push(ev);
+    }
+
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, undefined);
+  });
+});
+
+describe("OpenAI stream — temperature omission for reasoning models", () => {
+  function makeMockClient() {
+    return {
+      chat: { completions: { create: async (params: Record<string, unknown>) => ({ params, [Symbol.asyncIterator]() { return this; }, next: async () => ({ done: true, value: undefined }) }) } },
+    } as unknown as OpenAI;
+  }
+
+  it("omits temperature for gpt-5-mini (reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
+    } as unknown as OpenAI;
+    for await (const _ of streamOpenAICompatibleChat(mockClient, "gpt-5-mini", [{ role: "user", content: "Hi" }])) { /* drain */ }
+    assert.ok(capturedParams);
+    assert.equal("temperature" in capturedParams, false);
+  });
+
+  it("includes temperature for gpt-4o-mini (non-reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
+    } as unknown as OpenAI;
+    for await (const _ of streamOpenAICompatibleChat(mockClient, "gpt-4o-mini", [{ role: "user", content: "Hi" }])) { /* drain */ }
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.temperature, 1.0);
+  });
+
+  it("includes temperature for deepseek-v4-pro (regression guard — non-reasoning)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    const mockClient = {
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
+    } as unknown as OpenAI;
+    for await (const _ of streamOpenAICompatibleChat(mockClient, "deepseek-v4-pro", [{ role: "user", content: "Hi" }])) { /* drain */ }
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.temperature, 1.0);
+  });
+});

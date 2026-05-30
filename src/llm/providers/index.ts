@@ -57,6 +57,12 @@ export type ChatFallbackAttempt = {
   inputTokens?: number;
   outputTokens?: number;
   finishReason?: string | null;
+  // Cache/reasoning fields from LLMUsage (populated on parse-failure only)
+  cachedInputTokens?: number;
+  cacheHitInputTokens?: number;
+  cacheMissInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
 };
 
 export type ChatResultWithFallback<T extends ChatJsonResult<unknown>> = T & {
@@ -248,6 +254,18 @@ function addAttempt(
   return [...attempts, attempt];
 }
 
+/** Extract cache-relevant fields from an LLMUsage for a ChatFallbackAttempt. */
+function cacheFieldsFromUsage(usage: LLMUsage | undefined): Partial<ChatFallbackAttempt> {
+  if (!usage) return {};
+  return {
+    ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(usage.cacheHitInputTokens !== undefined ? { cacheHitInputTokens: usage.cacheHitInputTokens } : {}),
+    ...(usage.cacheMissInputTokens !== undefined ? { cacheMissInputTokens: usage.cacheMissInputTokens } : {}),
+    ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
+  };
+}
+
 function withFallbackMetadata<T extends ChatJsonResult<unknown>>(
   result: T,
   binding: ModelBinding,
@@ -334,6 +352,7 @@ export async function chatJsonWithFallback<T>(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         finishReason: result.finishReason,
+        ...cacheFieldsFromUsage(result.usage),
       });
     } catch (err) {
       const trigger = fallbackTriggerForError(err, options?.signal);
@@ -453,6 +472,7 @@ export async function chatJsonStreamWithFallback<T>(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         finishReason: result.finishReason,
+        ...cacheFieldsFromUsage(result.usage),
       });
     } catch (err) {
       const trigger = fallbackTriggerForError(err, options?.signal);

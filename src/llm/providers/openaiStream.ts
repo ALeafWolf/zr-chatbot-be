@@ -117,17 +117,22 @@ export async function* streamOpenAICompatibleChat(
 
   const useMaxCompletion = requiresMaxCompletionTokens(model);
   const tokenBudget = options.maxTokens ?? 2048;
+  const extensions = options.openAICompatibleRequestExtensions ?? {};
+  const withDefaults =
+    useMaxCompletion && !("reasoning_effort" in extensions)
+      ? { ...extensions, reasoning_effort: "low" as const }
+      : extensions;
 
   const createParams = Object.assign(
     {},
-    options.openAICompatibleRequestExtensions ?? {},
+    withDefaults,
     {
       model,
       messages: apiMessages,
       ...(useMaxCompletion
         ? { max_completion_tokens: tokenBudget }
         : { max_tokens: tokenBudget }),
-      temperature: options.temperature ?? 1.0,
+      ...(useMaxCompletion ? {} : { temperature: options.temperature ?? 1.0 }),
       stream: true,
       ...(options.jsonMode && !tools
         ? { response_format: { type: "json_object" as const } }

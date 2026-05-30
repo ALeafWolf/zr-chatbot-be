@@ -96,6 +96,11 @@ export interface TraceLlmMetadata {
     inputTokens?: number;
     outputTokens?: number;
     finishReason?: string | null;
+    cachedInputTokens?: number;
+    cacheHitInputTokens?: number;
+    cacheMissInputTokens?: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
   }[];
   fallbackAttemptTotalInputTokens?: number;
   fallbackAttemptTotalOutputTokens?: number;
@@ -321,6 +326,11 @@ export function buildLlmTraceMetadata(input: {
         ...(a.inputTokens !== undefined ? { inputTokens: a.inputTokens } : {}),
         ...(a.outputTokens !== undefined ? { outputTokens: a.outputTokens } : {}),
         ...(a.finishReason !== undefined ? { finishReason: a.finishReason } : {}),
+        ...(a.cachedInputTokens !== undefined ? { cachedInputTokens: a.cachedInputTokens } : {}),
+        ...(a.cacheHitInputTokens !== undefined ? { cacheHitInputTokens: a.cacheHitInputTokens } : {}),
+        ...(a.cacheMissInputTokens !== undefined ? { cacheMissInputTokens: a.cacheMissInputTokens } : {}),
+        ...(a.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: a.cacheReadInputTokens } : {}),
+        ...(a.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: a.cacheCreationInputTokens } : {}),
       }));
 
       const hasAnyInputTokens = deduped.some((a) => a.inputTokens !== undefined);
@@ -340,6 +350,11 @@ export function buildLlmTraceMetadata(input: {
         const breakdown = estimateModelCost(a.binding, {
           inputTokens: a.inputTokens ?? 0,
           outputTokens: a.outputTokens ?? 0,
+          ...(a.cachedInputTokens !== undefined ? { cachedInputTokens: a.cachedInputTokens } : {}),
+          ...(a.cacheHitInputTokens !== undefined ? { cacheHitInputTokens: a.cacheHitInputTokens } : {}),
+          ...(a.cacheMissInputTokens !== undefined ? { cacheMissInputTokens: a.cacheMissInputTokens } : {}),
+          ...(a.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: a.cacheReadInputTokens } : {}),
+          ...(a.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: a.cacheCreationInputTokens } : {}),
         });
         if (breakdown === null) {
           anyUnknownPricing = true;

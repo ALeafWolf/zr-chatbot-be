@@ -198,4 +198,98 @@ describe("OpenAI provider — max_completion_tokens detection", () => {
     assert.equal(capturedParams.max_tokens, 2048);
     assert.equal(capturedParams.max_completion_tokens, undefined);
   });
+
+  it("adds reasoning_effort default for gpt-5-mini with no caller extensions", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
+          },
+        },
+      },
+    } as never);
+
+    const provider = createOpenAIProvider("gpt-5-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, "low");
+  });
+
+  it("respects caller-supplied reasoning_effort override", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
+          },
+        },
+      },
+    } as never);
+
+    const provider = createOpenAIProvider("gpt-5-mini");
+    await provider.chat([{ role: "user", content: "Hi" }], {
+      openAICompatibleRequestExtensions: { reasoning_effort: "high" },
+    });
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, "high");
+  });
+
+  it("omits reasoning_effort for gpt-4o-mini (non-reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: {
+        completions: {
+          create: async (params: Record<string, unknown>) => {
+            capturedParams = params;
+            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
+          },
+        },
+      },
+    } as never);
+
+    const provider = createOpenAIProvider("gpt-4o-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.reasoning_effort, undefined);
+  });
+});
+
+describe("OpenAI provider — temperature omission for reasoning models", () => {
+  it("omits temperature for gpt-5-mini (reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
+    } as never);
+    const provider = createOpenAIProvider("gpt-5-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal("temperature" in capturedParams, false);
+  });
+
+  it("includes temperature for gpt-5-mini even when reasoning-effort already covers it", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
+    } as never);
+    const provider = createOpenAIProvider("gpt-5-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal("temperature" in capturedParams, false);
+  });
+
+  it("includes temperature for gpt-4o-mini (non-reasoning model)", async () => {
+    let capturedParams: Record<string, unknown> | undefined;
+    __test_setClient({
+      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
+    } as never);
+    const provider = createOpenAIProvider("gpt-4o-mini");
+    await provider.chat([{ role: "user", content: "Hi" }]);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.temperature, 1.0);
+  });
 });

@@ -375,4 +375,52 @@ describe("buildLlmTraceMetadata fallback handling", () => {
     assert.equal(meta.fallbackAttempts!.length, 0);
     assert.equal(meta.fallbackUsed, true);
   });
+
+  it("computes fallback cost with DeepSeek cache hit/miss split", () => {
+    const attempt: ChatFallbackAttempt = {
+      binding: { provider: "deepseek", model: "deepseek-v4-pro" },
+      trigger: "parse_failure",
+      error: "parse error",
+      inputTokens: 200,
+      outputTokens: 50,
+      cacheHitInputTokens: 100,
+      cacheMissInputTokens: 100,
+    };
+    const meta = buildLlmTraceMetadata({
+      binding: { provider: "openai", model: "gpt-5-mini" },
+      usage: { inputTokens: 300, outputTokens: 80 },
+      fallback: { used: true, attempts: [attempt] },
+    });
+
+    // Hit/miss split: (100/1M)*0.003625 + (100/1M)*0.435 = ~4.39e-5
+    // All-miss would be: (200/1M)*1.74 + (50/1M)*3.48 = ~5.22e-4
+    // The computed cost should reflect the hit/miss split, not all-miss
+    assert.ok(meta.fallbackAttemptEstimatedCostUsd !== null);
+    assert.ok(meta.fallbackAttemptEstimatedCostUsd! < 0.0005); // less than all-miss
+    // Verify the attempt record carries the cache fields
+    assert.equal(meta.fallbackAttempts![0]!.cacheHitInputTokens, 100);
+    assert.equal(meta.fallbackAttempts![0]!.cacheMissInputTokens, 100);
+  });
+
+  it("falls back to all-miss when DeepSeek attempt has no cache fields (back-compat)", () => {
+    const attempt: ChatFallbackAttempt = {
+      binding: { provider: "deepseek", model: "deepseek-v4-flash" },
+      trigger: "parse_failure",
+      error: "parse error",
+      inputTokens: 1000,
+      outputTokens: 500,
+    };
+    const meta = buildLlmTraceMetadata({
+      binding: { provider: "openai", model: "gpt-5-mini" },
+      usage: { inputTokens: 100, outputTokens: 20 },
+      fallback: { used: true, attempts: [attempt] },
+    });
+
+    // All-miss: (1000/1M)*0.14 + (500/1M)*0.28 = 0.00014 + 0.00014 = 0.00028
+    assert.ok(meta.fallbackAttemptEstimatedCostUsd !== null);
+    assert.equal(
+      Number(meta.fallbackAttemptEstimatedCostUsd!.toFixed(8)),
+      0.00028,
+    );
+  });
 });

@@ -44,19 +44,29 @@ export function createOpenAIProvider(model: string): LLMProvider {
     ): Promise<LLMResponse> {
       const useMaxCompletion = requiresMaxCompletionTokens(model);
       const tokenBudget = options.maxTokens ?? 2048;
+      const extensions = options.openAICompatibleRequestExtensions ?? {};
+      const withDefaults =
+        useMaxCompletion && !("reasoning_effort" in extensions)
+          ? { ...extensions, reasoning_effort: "low" as const }
+          : extensions;
+
       const response = await getClient().chat.completions.create(
-        {
-          model,
-          ...(useMaxCompletion
-            ? { max_completion_tokens: tokenBudget }
-            : { max_tokens: tokenBudget }),
-          temperature: options.temperature ?? 1.0,
-          response_format: options.jsonMode ? { type: "json_object" } : undefined,
-          messages: messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-        } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+        Object.assign(
+          {},
+          withDefaults,
+          {
+            model,
+            ...(useMaxCompletion
+              ? { max_completion_tokens: tokenBudget }
+              : { max_tokens: tokenBudget }),
+            ...(useMaxCompletion ? {} : { temperature: options.temperature ?? 1.0 }),
+            response_format: options.jsonMode ? { type: "json_object" } : undefined,
+            messages: messages.map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          },
+        ) as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
         { signal: options.signal },
       );
 
