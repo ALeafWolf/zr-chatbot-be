@@ -3,4 +3,4 @@
 --
 -- See agent-workspace/openspec/changes/persist-internal-logic-in-db/
 
-ALTER TABLE "character_profiles" ADD COLUMN "internal_logic" jsonb;
+ALTER TABLE "character_profiles" ADD COLUMN IF NOT EXISTS "internal_logic" jsonb;
