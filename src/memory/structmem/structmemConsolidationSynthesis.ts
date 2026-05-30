@@ -137,10 +137,10 @@ async function synthesizeStructMemConsolidationImpl(input: {
     const repairPrompt = [
       prompt,
       "",
-      `Previous model output could not be parsed (${result.error}).`,
-      "Keep the output SHORTER and simpler than the previous attempt. One compact JSON object only.",
-      "Use ASCII double quotes for all keys and string values.",
-      'Required keys: "summary_text", "summary_json", "confidence_score".',
+      `上一次模型输出无法被解析（${result.error}）。`,
+      "请让输出比上一次尝试更短、更简单。只返回一个紧凑的 JSON 对象。",
+      "所有键和字符串值都使用 ASCII 双引号。",
+      '必需字段："summary_text"、"summary_json"、"confidence_score"。',
       preview ? `Bad output began with: ${preview}` : "",
     ]
       .filter(Boolean)
@@ -247,8 +247,8 @@ async function distillCrossSessionStructMemImpl(input: {
 }): Promise<StructMemCrossSessionDistillationOutput> {
   const userContent = buildCrossSessionDistillationPrompt(input);
   const systemDistill =
-    "You are a conservative memory distillation worker. " +
-    "Respond with one JSON object only (no markdown). Key: stable_items (array).";
+    "你是一个保守的记忆提炼工作器。" +
+    "只返回一个 JSON 对象（不要使用 markdown)。字段包括: stable_items (数组)。";
 
   const runChat = () =>
     chatJsonWithFallback(
