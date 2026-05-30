@@ -365,6 +365,11 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
+  // Evidence Miner
+  // Comma-separated arc keys for the offline evidence miner.
+  // Overrides the built-in DEFAULT_ARC_KEYS; --arc flag takes precedence over this.
+  EVIDENCE_MINER_ARC_KEYS: z.string().optional(),
+
   // Character Profile DB — Internal Logic persistence (M-A)
   // When ON, the runtime merges DB internal_logic over YAML at cache-warm time.
   CHARACTER_PROFILE_DB_ENABLED: z
