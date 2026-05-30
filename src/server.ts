@@ -11,7 +11,7 @@ let server: Awaited<ReturnType<typeof createApp>> | null = null;
 async function bootstrap(): Promise<void> {
   server = await createApp();
 
-  warmCharacterCache();
+  await warmCharacterCache();
   warnStructMemFlagConfig(env, (message) => server?.log.warn(message));
   postTurnRunner.start();
   if (env.STRUCTMEM_ENABLED && env.STRUCTMEM_CONSOLIDATION_ENABLED) {

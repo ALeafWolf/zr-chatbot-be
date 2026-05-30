@@ -365,6 +365,16 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
+  // Character Profile DB — Internal Logic persistence (M-A)
+  // When ON, the runtime merges DB internal_logic over YAML at cache-warm time.
+  CHARACTER_PROFILE_DB_ENABLED: z
+    .string()
+    .default("0")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+
   // Memory Rerank
   // Model binding for the LLM that judges which retrieved context to inject.
   // EXTRACTOR_MODEL is still accepted as a sentinel for local overrides.

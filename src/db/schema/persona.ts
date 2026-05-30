@@ -16,6 +16,7 @@ export const characterProfiles = pgTable("character_profiles", {
   hardRules: jsonb("hard_rules"),
   interactionDefaults: jsonb("interaction_defaults"),
   version: text("version"),
+  internalLogic: jsonb("internal_logic").$type<Record<string, string>>(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .$defaultFn(() => new Date()),

@@ -1,6 +1,8 @@
 import path from "path";
 import fs from "fs";
 import yaml from "js-yaml";
+import { env } from "../config/env";
+import { getCharacterProfile } from "./characterProfiles";
 
 export interface CharacterDefaults {
   character_id: string;
@@ -93,6 +95,9 @@ export function loadCharacterDefaults(characterId: string): CharacterDefaults {
   if (characterCache.has(characterId)) {
     return characterCache.get(characterId)!;
   }
+  // Lazy cache-miss path: returns pure YAML with no DB merge.
+  // DB-internal_logic precedence requires the async warmCharacterCache() to
+  // have run at startup. This path is a safe fallback, not a correctness bug.
   const filePath = path.join(DEFAULTS_DIR, `${characterId}.yaml`);
   if (!fs.existsSync(filePath)) {
     throw new Error(`Character defaults not found for: ${characterId}`);
@@ -117,14 +122,80 @@ export function loadPersonaOverlay(overlayId: string): PersonaOverlayDefaults {
   return parsed;
 }
 
-/** Pre-warm all known character defaults and overlays at server startup. */
-export function warmCharacterCache(): void {
+/**
+ * Merge DB internal_logic over the YAML-loaded cache entry for one character
+ * when all precedence conditions are met. Logs the winning source.
+ *
+ * Exported for unit testing — callers should use warmCharacterCache() instead.
+ */
+export async function mergeDbInternalLogic(characterId: string): Promise<void> {
+  const cached = characterCache.get(characterId);
+  if (!cached) return;
+
+  try {
+    const profile = await getCharacterProfile(characterId);
+
+    if (!profile) {
+      console.warn(
+        `[warmCharacterCache] DB row missing for "${characterId}" — using YAML internal_logic`,
+      );
+      return;
+    }
+
+    if (!profile.internalLogic) {
+      console.warn(
+        `[warmCharacterCache] DB internal_logic is null for "${characterId}" — using YAML`,
+      );
+      return;
+    }
+
+    // Version precedence: DB version must parse and not be older than YAML version
+    const dbVersion = parseFloat(profile.version ?? "");
+    const yamlVersion = parseFloat(cached.version ?? "");
+
+    if (Number.isNaN(dbVersion) || Number.isNaN(yamlVersion) || dbVersion < yamlVersion) {
+      console.warn(
+        `[warmCharacterCache] DB version "${profile.version}" is missing/older than YAML version "${cached.version}" for "${characterId}" — using YAML`,
+      );
+      return;
+    }
+
+    // All conditions met — overlay DB internal_logic onto the cached entry.
+    // DB field values win over YAML values at the key level.
+    cached.internal_logic = {
+      ...(cached.internal_logic as Record<string, string>),
+      ...(profile.internalLogic as Record<string, string>),
+    };
+
+    console.log(
+      `[warmCharacterCache] { source: "db", characterId: "${characterId}", version: "${profile.version}" }`,
+    );
+  } catch (err) {
+    console.error(
+      `[warmCharacterCache] DB read failed for "${characterId}": ${(err as Error).message} — using YAML`,
+    );
+  }
+}
+
+/** Pre-warm all known character defaults and overlays at server startup.
+ *  When CHARACTER_PROFILE_DB_ENABLED is ON, merges DB internal_logic over
+ *  the YAML-loaded defaults per the precedence rules defined in design.md. */
+export async function warmCharacterCache(): Promise<void> {
   const defaultFiles = fs.readdirSync(DEFAULTS_DIR).filter((f) =>
     f.endsWith(".yaml"),
   );
   for (const file of defaultFiles) {
     const characterId = file.replace(".yaml", "");
     loadCharacterDefaults(characterId);
+
+    // DB merge: only when the env flag is ON
+    if (env.CHARACTER_PROFILE_DB_ENABLED) {
+      await mergeDbInternalLogic(characterId);
+    } else {
+      console.log(
+        `[warmCharacterCache] { source: "yaml", characterId: "${characterId}", version: "${characterCache.get(characterId)?.version ?? "?"}" }`,
+      );
+    }
   }
   const overlayFiles = fs.readdirSync(OVERLAYS_DIR).filter((f) =>
     f.endsWith(".yaml"),
