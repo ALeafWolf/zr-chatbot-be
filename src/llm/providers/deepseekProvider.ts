@@ -6,8 +6,32 @@ import type {
   LLMProvider,
   ChatOptions,
   ToolChatMessage,
+  LLMUsage,
 } from "./providerTypes";
 import { streamOpenAICompatibleChat } from "./openaiStream";
+
+/**
+ * Local extension of the SDK's CompletionUsage to access DeepSeek's
+ * flat cache siblings and reasoning-token details. DeepSeek returns
+ * `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` as flat
+ * fields on the usage object (NOT nested under
+ * `prompt_tokens_details`) — these are NOT in the openai-node
+ * published types.
+ */
+interface DeepSeekChatCompletionUsage {
+  prompt_cache_hit_tokens?: number | null;
+  prompt_cache_miss_tokens?: number | null;
+  completion_tokens_details?: {
+    reasoning_tokens?: number;
+  };
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+/** @visibleForTesting — used by deepseekProvider.unit.ts to inject a mock client. */
+export function __test_setClient(mockClient: OpenAI | null): void {
+  client = mockClient;
+}
 
 let client: OpenAI | null = null;
 
@@ -19,6 +43,16 @@ function getClient(): OpenAI {
     });
   }
   return client;
+}
+
+function buildDeepSeekUsage(usage: DeepSeekChatCompletionUsage): LLMUsage {
+  return {
+    inputTokens: usage.prompt_tokens,
+    outputTokens: usage.completion_tokens,
+    cacheHitInputTokens: usage.prompt_cache_hit_tokens ?? undefined,
+    cacheMissInputTokens: usage.prompt_cache_miss_tokens ?? undefined,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? undefined,
+  };
 }
 
 export function createDeepSeekProvider(model: string): LLMProvider {
@@ -52,10 +86,14 @@ export function createDeepSeekProvider(model: string): LLMProvider {
         | { content?: string | null; reasoning_content?: string | null }
         | undefined;
       const content = msg?.content ?? "";
+      const dsUsage = response.usage
+        ? buildDeepSeekUsage(response.usage as unknown as DeepSeekChatCompletionUsage)
+        : undefined;
       return {
         content,
-        inputTokens: response.usage?.prompt_tokens ?? 0,
-        outputTokens: response.usage?.completion_tokens ?? 0,
+        inputTokens: dsUsage?.inputTokens ?? 0,
+        outputTokens: dsUsage?.outputTokens ?? 0,
+        usage: dsUsage,
         reasoningContent:
           typeof msg?.reasoning_content === "string"
             ? msg.reasoning_content

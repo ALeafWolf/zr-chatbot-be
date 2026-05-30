@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJsonStream } from "../../llm/providers";
+import { chatJsonStreamWithFallback } from "../../llm/providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
+import type { ModelBinding } from "../../config/models";
 import type { ChatSession } from "../../db/schema/chat";
+import type { ChatFallbackAttempt } from "../../llm/providers";
 import {
   APP_COMMAND_ROUTE,
   ROLEPLAY_TURN_ROUTE,
@@ -66,8 +68,9 @@ export function isCredentialDisclosureRequest(userMessage: string): boolean {
 
 export function normalizeRouteIntent(
   intent: RouteIntent,
-  options?: { userMessage?: string },
+  options?: { userMessage?: string; binding?: ModelBinding },
 ): TurnRouteClassification {
+  const binding = options?.binding ?? models.extractor;
   if (
     options?.userMessage &&
     isCredentialDisclosureRequest(options.userMessage)
@@ -76,7 +79,7 @@ export function normalizeRouteIntent(
       type: UNSUPPORTED_ROUTE,
       confidence: Math.max(intent.confidence, CREDENTIAL_DISCLOSURE_CONFIDENCE),
       reason: "credential_or_secret_disclosure_request",
-      modelName: models.extractor.model,
+      modelName: binding.model,
     };
   }
 
@@ -86,14 +89,14 @@ export function normalizeRouteIntent(
       confidence: intent.confidence,
       ...(intent.reason ? { reason: intent.reason } : {}),
       fallbackReason: "low_confidence_roleplay_fail_open",
-      modelName: models.extractor.model,
+      modelName: binding.model,
     };
   }
   return {
     type: intent.type,
     confidence: intent.confidence,
     ...(intent.reason ? { reason: intent.reason } : {}),
-    modelName: models.extractor.model,
+    modelName: binding.model,
   };
 }
 
@@ -102,18 +105,25 @@ function fallbackClassification(input: {
   reason?: string;
   fallbackReason: string;
   usage?: { inputTokens: number; outputTokens: number };
+  binding?: ModelBinding;
+  fallback?: {
+    used: boolean;
+    attempts: readonly ChatFallbackAttempt[];
+  };
 }): TurnRouteClassification {
+  const binding = input.binding ?? models.extractor;
   const output: TurnRouteClassification = {
     type: ROLEPLAY_TURN_ROUTE,
     confidence: input.confidence ?? 0,
     fallbackReason: input.fallbackReason,
-    modelName: models.extractor.model,
+    modelName: binding.model,
     ...(input.reason ? { reason: input.reason } : {}),
   };
   return attachTraceLlmMetadata(output, {
-    binding: models.extractor,
+    binding,
     modelRole: "extractor",
     usage: input.usage ?? { inputTokens: 0, outputTokens: 0 },
+    ...(input.fallback ? { fallback: input.fallback } : {}),
   });
 }
 
@@ -161,10 +171,11 @@ function buildClassifierMessages(input: ClassifyTurnRouteInput) {
 async function classifyTurnRouteImpl(
   input: ClassifyTurnRouteInput,
 ): Promise<TurnRouteClassification> {
-  let result: Awaited<ReturnType<typeof chatJsonStream<RouteIntent>>>;
+  let result: Awaited<ReturnType<typeof chatJsonStreamWithFallback<RouteIntent>>>;
   try {
-    result = await chatJsonStream<RouteIntent>(
+    result = await chatJsonStreamWithFallback<RouteIntent>(
       models.extractor,
+      models.fallbacks.classifyTurnRoute,
       buildClassifierMessages(input),
       RouteIntentSchema,
       { maxTokens: 256, temperature: 0.1, signal: input.signal },
@@ -184,18 +195,25 @@ async function classifyTurnRouteImpl(
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
       },
+      binding: result.binding,
+      fallback: {
+        used: result.fallbackUsed,
+        attempts: result.fallbackAttempts,
+      },
     });
   }
 
   const output = normalizeRouteIntent(result.data, {
     userMessage: input.userMessage,
+    binding: result.binding,
   });
   return attachTraceLlmMetadata(output, {
-    binding: models.extractor,
+    binding: result.binding,
     modelRole: "extractor",
-    usage: {
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
+    usage: result.usage ?? { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+    fallback: {
+      used: result.fallbackUsed,
+      attempts: result.fallbackAttempts,
     },
   });
 }
@@ -235,3 +253,6 @@ function unwrapClassifyTurnRouteInput(
   }
   return inputs as unknown as ClassifyTurnRouteInput;
 }
+
+// Test seam — exported only for unit tests.
+export const __testables__ = { fallbackClassification };

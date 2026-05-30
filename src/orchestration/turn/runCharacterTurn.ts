@@ -100,12 +100,9 @@ const tracedRecallThought = traceLLMStage(
     };
     if (thought.cacheHit) return output;
     return attachTraceLlmMetadata(output, {
-      binding: models.extractor,
+      binding: thought.binding ?? models.extractor,
       modelRole: "extractor",
-      usage: {
-        inputTokens: thought.inputTokens,
-        outputTokens: thought.outputTokens,
-      },
+      usage: { inputTokens: thought.inputTokens, outputTokens: thought.outputTokens },
     });
   },
   {

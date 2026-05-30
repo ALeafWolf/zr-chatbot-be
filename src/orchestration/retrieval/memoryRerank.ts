@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { models, type ModelBinding } from "../../config/models";
 import { env } from "../../config/env";
-import { chatJson } from "../../llm/providers";
+import { chatJsonWithFallback } from "../../llm/providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
+import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import type { ContextCandidate, ContextCandidateSource } from "../context/contextCandidates";
 import type { ContextPlannerOutput } from "../context/contextPlanner";
 import { buildMemoryRerankPrompt } from "./memoryRerankPrompt";
@@ -358,8 +359,9 @@ const tracedRerank = traceLLMStage(
     ];
 
     // Parse with non-streaming chatJson (rerank only needs one compact JSON object).
-    const result = await chatJson(
+    const result = await chatJsonWithFallback(
       models.rerank,
+      models.fallbacks.memoryRerank,
       messages,
       CompactRawRerankOutputSchema,
       {
@@ -419,18 +421,26 @@ const tracedRerank = traceLLMStage(
 
     guarded.resolutionDiagnostics = { exactIdCount, numericIndexCount, unresolvedCount };
 
-    return {
-      ok: true,
-      output: guarded,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-      timingMs: rerankTimingMs,
-    };
+    return attachTraceLlmMetadata(
+      {
+        ok: true,
+        output: guarded,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        timingMs: rerankTimingMs,
+      },
+      {
+        binding: result.binding,
+        modelRole: "memoryRerank",
+        usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
+      },
+    );
   },
   {
     subsystem: "llm",
     turn: "foreground",
-    llm: { binding: models.rerank, modelRole: "memory_rerank" },
+    llm: { binding: models.rerank, modelRole: "memoryRerank" },
   },
 );
 

@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
-import { getProvider } from "../providers";
-import { models } from "../../config/models";
+import { chatWithFallback } from "../providers";
+import { models, type ModelBinding } from "../../config/models";
 import type { ThoughtKind } from "../../orchestration/thought/thoughtTypes";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
@@ -16,6 +16,8 @@ export interface ThoughtSummaryResult {
   inputTokens: number;
   outputTokens: number;
   cacheHit: boolean;
+  binding?: ModelBinding;
+  fallbackUsed?: boolean;
 }
 
 function hashKey(parts: unknown[]): string {
@@ -53,8 +55,6 @@ export async function generateThoughtSummaryWithUsage(
     };
   }
 
-  const provider = getProvider(models.extractor);
-
   const system =
     "你是角色扮演助手。根据给定情境，用角色的口吻输出恰好一句内心独白。" +
     "要求：第一人称；口语自然；最多50个汉字；不要引号；不要Markdown；不要复述指令。";
@@ -66,7 +66,9 @@ export async function generateThoughtSummaryWithUsage(
     `情境(JSON)：${JSON.stringify(input.context)}\n` +
     "只输出那一句独白。";
 
-  const res = await provider.chat(
+  const res = await chatWithFallback(
+    models.extractor,
+    models.fallbacks.recallThought,
     [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -90,14 +92,14 @@ export async function generateThoughtSummaryWithUsage(
       inputTokens: res.inputTokens,
       outputTokens: res.outputTokens,
       cacheHit: false,
+      binding: res.binding,
+      fallbackUsed: res.fallbackUsed,
     },
     {
-      binding: models.extractor,
+      binding: res.binding,
       modelRole: "extractor",
-      usage: {
-        inputTokens: res.inputTokens,
-        outputTokens: res.outputTokens,
-      },
+      usage: res.usage ?? { inputTokens: res.inputTokens, outputTokens: res.outputTokens },
+      fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     },
   );
 }

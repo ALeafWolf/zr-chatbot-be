@@ -7,7 +7,54 @@ import type {
   ChatOptions,
   ToolChatMessage,
   LLMStreamEvent,
+  LLMUsage,
 } from "./providerTypes";
+
+/**
+ * Local extension of the SDK's `Usage` type to access the nested
+ * `cache_creation` TTL-split object. The public SDK `Usage` exposes
+ * flat `cache_creation_input_tokens` / `cache_read_input_tokens` but
+ * NOT the nested `cache_creation: { ephemeral_5m_input_tokens,
+ * ephemeral_1h_input_tokens }` — that lives on `BetaUsage` only
+ * (confirmed in SDK 0.52.0).
+ */
+interface AnthropicUsageWithCacheTTL {
+  cache_creation?: {
+    ephemeral_5m_input_tokens: number;
+    ephemeral_1h_input_tokens: number;
+  } | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+function buildAnthropicUsage(usage: AnthropicUsageWithCacheTTL): LLMUsage {
+  const cacheCreation = usage.cache_creation;
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadInputTokens: usage.cache_read_input_tokens ?? undefined,
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? undefined,
+    cacheCreation5mTokens: cacheCreation?.ephemeral_5m_input_tokens ?? undefined,
+    cacheCreation1hTokens: cacheCreation?.ephemeral_1h_input_tokens ?? undefined,
+  };
+}
+
+function buildAnthropicStreamUsage(usage: AnthropicUsageWithCacheTTL): LLMUsage {
+  // Streaming path: no TTL split available; emit only the sum
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cacheReadInputTokens: usage.cache_read_input_tokens ?? undefined,
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? undefined,
+  };
+}
+
+/** @visibleForTesting — used by anthropicProvider.unit.ts to inject a mock client. */
+export function __test_setClient(mockClient: Anthropic | null): void {
+  client = mockClient;
+}
 
 let client: Anthropic | null = null;
 
@@ -133,10 +180,12 @@ export function createAnthropicProvider(model: string): LLMProvider {
         text = `{${text}`;
       }
 
+      const antUsage = response.usage as AnthropicUsageWithCacheTTL;
       return {
         content: text,
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
+        inputTokens: antUsage.input_tokens,
+        outputTokens: antUsage.output_tokens,
+        usage: buildAnthropicUsage(antUsage),
         finishReason: response.stop_reason,
       };
     },
@@ -194,14 +243,12 @@ export function createAnthropicProvider(model: string): LLMProvider {
           }
         }
 
+        const toolsUsage = response.usage as AnthropicUsageWithCacheTTL;
         yield {
           type: "assistant_done",
           content: text,
           toolCalls: toolCalls.length ? toolCalls : undefined,
-          usage: {
-            inputTokens: response.usage.input_tokens,
-            outputTokens: response.usage.output_tokens,
-          },
+          usage: buildAnthropicUsage(toolsUsage),
           finishReason: response.stop_reason,
         };
         return;
@@ -230,13 +277,11 @@ export function createAnthropicProvider(model: string): LLMProvider {
       const final = await stream.finalMessage();
       const content =
         options.jsonMode === true ? `{${buf}` : buf;
+      const streamUsage = final.usage as AnthropicUsageWithCacheTTL;
       yield {
         type: "assistant_done",
         content,
-        usage: {
-          inputTokens: final.usage.input_tokens,
-          outputTokens: final.usage.output_tokens,
-        },
+        usage: buildAnthropicStreamUsage(streamUsage),
         finishReason: final.stop_reason,
       };
     },
