@@ -5,12 +5,14 @@ import type { ModelBinding } from "../../config/models";
 import { z } from "zod";
 import { parseJsonOutput } from "../json/parseJsonOutput";
 import type {
+  ChatOptions,
+  ToolChatMessage,
   LLMMessage,
   LLMProvider,
   LLMResponse,
-  ChatOptions,
-  ToolChatMessage,
   LLMStreamEvent,
+  LLMUsage,
+  OpenAIToolCall,
 } from "./providerTypes";
 
 export type {
@@ -29,6 +31,7 @@ export type ChatJsonOk<T> = {
   raw: string;
   inputTokens: number;
   outputTokens: number;
+  usage?: LLMUsage;
 };
 
 export type ChatJsonErr = {
@@ -38,6 +41,40 @@ export type ChatJsonErr = {
   inputTokens: number;
   outputTokens: number;
   finishReason?: string | null;
+  usage?: LLMUsage;
+};
+
+export type ChatJsonResult<T> = ChatJsonOk<T> | ChatJsonErr;
+
+export type ChatFallbackAttempt = {
+  binding: ModelBinding;
+  trigger:
+    | "network_error"
+    | "rate_limit"
+    | "server_error"
+    | "parse_failure";
+  error: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  finishReason?: string | null;
+  // Cache/reasoning fields from LLMUsage (populated on parse-failure only)
+  cachedInputTokens?: number;
+  cacheHitInputTokens?: number;
+  cacheMissInputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+};
+
+export type ChatResultWithFallback<T extends ChatJsonResult<unknown>> = T & {
+  binding: ModelBinding;
+  fallbackUsed: boolean;
+  fallbackAttempts: ChatFallbackAttempt[];
+};
+
+export type ChatTextResultWithFallback = LLMResponse & {
+  binding: ModelBinding;
+  fallbackUsed: boolean;
+  fallbackAttempts: ChatFallbackAttempt[];
 };
 
 export interface ChatJsonOptions {
@@ -63,6 +100,181 @@ export function buildChatJsonOptions(options?: ChatJsonOptions): ChatOptions {
   };
 }
 
+function normalizeFallbacks(
+  fallback: ModelBinding | readonly ModelBinding[] | undefined,
+): ModelBinding[] {
+  if (!fallback) return [];
+  if (Array.isArray(fallback)) return [...fallback];
+  return [fallback as ModelBinding];
+}
+
+function sameBinding(a: ModelBinding, b: ModelBinding): boolean {
+  return a.provider === b.provider && a.model === b.model;
+}
+
+function orderedBindings(
+  primary: ModelBinding,
+  fallback: ModelBinding | readonly ModelBinding[] | undefined,
+): ModelBinding[] {
+  const out = [primary];
+  for (const binding of normalizeFallbacks(fallback)) {
+    if (!out.some((existing) => sameBinding(existing, binding))) {
+      out.push(binding);
+    }
+  }
+  return out;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function errorStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const record = err as {
+    status?: unknown;
+    code?: unknown;
+    response?: { status?: unknown };
+    error?: { status?: unknown; code?: unknown; type?: unknown };
+  };
+  const candidates = [
+    record.status,
+    record.response?.status,
+    record.error?.status,
+    typeof record.code === "number" ? record.code : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function errorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const record = err as {
+    code?: unknown;
+    name?: unknown;
+    error?: { code?: unknown; type?: unknown };
+  };
+  for (const candidate of [record.code, record.error?.code, record.error?.type, record.name]) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function fallbackTriggerForError(
+  err: unknown,
+  signal?: AbortSignal,
+): ChatFallbackAttempt["trigger"] | null {
+  if (signal?.aborted) return null;
+
+  const status = errorStatus(err);
+  if (status === 429) return "rate_limit";
+  if (status !== undefined && status >= 500 && status <= 599) {
+    return "server_error";
+  }
+  if (status === 408) return "network_error";
+
+  const code = errorCode(err)?.toLowerCase() ?? "";
+  if (
+    code === "apiConnectionError".toLowerCase() ||
+    code === "apiConnectionTimeoutError".toLowerCase() ||
+    code === "apitimeouterror" ||
+    code === "timeoutError".toLowerCase() ||
+    code === "fetcherror" ||
+    code === "overloaded_error" ||
+    [
+      "econnreset",
+      "etimedout",
+      "econnrefused",
+      "enotfound",
+      "eai_again",
+      "sockettimeout",
+    ].includes(code)
+  ) {
+    return code === "overloaded_error" ? "server_error" : "network_error";
+  }
+
+  const text = errorMessage(err).toLowerCase();
+  if (
+    text.includes("rate_limit") ||
+    text.includes("too many requests") ||
+    text.includes("rate limit")
+  ) {
+    return "rate_limit";
+  }
+  if (
+    text.includes("overloaded") ||
+    text.includes("server error") ||
+    text.includes("service unavailable") ||
+    text.includes("bad gateway") ||
+    text.includes("gateway timeout") ||
+    /\b5\d\d\b/.test(text) ||
+    /\b529\b/.test(text)
+  ) {
+    return "server_error";
+  }
+  if (
+    text.includes("network") ||
+    text.includes("fetch failed") ||
+    text.includes("connection") ||
+    text.includes("socket") ||
+    text.includes("timeout") ||
+    text.includes("timed out") ||
+    text.includes("econnreset") ||
+    text.includes("etimedout") ||
+    text.includes("enotfound")
+  ) {
+    return "network_error";
+  }
+
+  return null;
+}
+
+export function isFallbackableLlmError(
+  err: unknown,
+  signal?: AbortSignal,
+): boolean {
+  return fallbackTriggerForError(err, signal) !== null;
+}
+
+function addAttempt(
+  attempts: ChatFallbackAttempt[],
+  attempt: ChatFallbackAttempt,
+): ChatFallbackAttempt[] {
+  return [...attempts, attempt];
+}
+
+/** Extract cache-relevant fields from an LLMUsage for a ChatFallbackAttempt. */
+function cacheFieldsFromUsage(usage: LLMUsage | undefined): Partial<ChatFallbackAttempt> {
+  if (!usage) return {};
+  return {
+    ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+    ...(usage.cacheHitInputTokens !== undefined ? { cacheHitInputTokens: usage.cacheHitInputTokens } : {}),
+    ...(usage.cacheMissInputTokens !== undefined ? { cacheMissInputTokens: usage.cacheMissInputTokens } : {}),
+    ...(usage.cacheReadInputTokens !== undefined ? { cacheReadInputTokens: usage.cacheReadInputTokens } : {}),
+    ...(usage.cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens: usage.cacheCreationInputTokens } : {}),
+  };
+}
+
+function withFallbackMetadata<T extends ChatJsonResult<unknown>>(
+  result: T,
+  binding: ModelBinding,
+  fallbackUsed: boolean,
+  fallbackAttempts: ChatFallbackAttempt[],
+): ChatResultWithFallback<T> {
+  return Object.assign(result, { binding, fallbackUsed, fallbackAttempts });
+}
+
 /**
  * JSON-mode chat with tolerant parsing (fences, preamble) + Zod validation.
  * Uses each provider's strongest JSON hint (response_format or Anthropic prefill).
@@ -84,6 +296,7 @@ export async function chatJson<T>(
       error: extracted.error,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      usage: response.usage,
       finishReason: response.finishReason,
     };
   }
@@ -96,6 +309,7 @@ export async function chatJson<T>(
       error: zResult.error.message,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
+      usage: response.usage,
       finishReason: response.finishReason,
     };
   }
@@ -106,22 +320,87 @@ export async function chatJson<T>(
     raw: response.content,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
+    usage: response.usage,
   };
+}
+
+export async function chatJsonWithFallback<T>(
+  primary: ModelBinding,
+  fallback: ModelBinding | readonly ModelBinding[] | undefined,
+  messages: LLMMessage[],
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  options?: ChatJsonOptions,
+): Promise<ChatResultWithFallback<ChatJsonResult<T>>> {
+  const bindings = orderedBindings(primary, fallback);
+  let attempts: ChatFallbackAttempt[] = [];
+
+  for (let i = 0; i < bindings.length; i++) {
+    const binding = bindings[i]!;
+    const tag = `${binding.provider}:${binding.model}`;
+    try {
+      const result = await chatJson(binding, messages, schema, options);
+      if (result.ok || i === bindings.length - 1) {
+        return withFallbackMetadata(result, binding, i > 0, attempts);
+      }
+      console.warn(
+        `[chatJsonWithFallback] ${tag} parse_failure: ${result.error} — trying next binding`,
+      );
+      attempts = addAttempt(attempts, {
+        binding,
+        trigger: "parse_failure",
+        error: result.error,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        finishReason: result.finishReason,
+        ...cacheFieldsFromUsage(result.usage),
+      });
+    } catch (err) {
+      const trigger = fallbackTriggerForError(err, options?.signal);
+      if (!trigger || i === bindings.length - 1) {
+        if (attempts.length > 0) {
+          console.error(
+            `[chatJsonWithFallback] chain exhausted — prior failures:`,
+            attempts.map((a) => `${a.binding.provider}:${a.binding.model} (${a.trigger}): ${a.error}`),
+          );
+        }
+        throw err;
+      }
+      const msg = errorMessage(err);
+      console.warn(
+        `[chatJsonWithFallback] ${tag} ${trigger}: ${msg} — trying next binding`,
+      );
+      attempts = addAttempt(attempts, {
+        binding,
+        trigger,
+        error: msg,
+      });
+    }
+  }
+
+  throw new Error("chatJsonWithFallback exhausted without an attempt");
+}
+
+export interface ChatJsonStreamOptions {
+  maxTokens?: number;
+  temperature?: number;
+  signal?: AbortSignal;
+  openAICompatibleRequestExtensions?: Record<string, unknown>;
 }
 
 /**
  * Like {@link chatJson}, but consumes a streaming completion, concatenates assistant
  * output, then runs the same parse + Zod path.
+ *
+ * DeepSeek reasoning models (deepseek-v4-pro, etc.) produce empty `content` fields
+ * in streaming JSON mode when thinking is enabled — reasoning goes into
+ * `reasoning_content` only, leaving `content` empty and causing a parse_failure.
+ * This function automatically disables thinking for any DeepSeek binding.
  */
 export async function chatJsonStream<T>(
   binding: ModelBinding,
   messages: LLMMessage[],
   schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-  options?: {
-    maxTokens?: number;
-    temperature?: number;
-    signal?: AbortSignal;
-  },
+  options?: ChatJsonStreamOptions,
 ): Promise<ChatJsonOk<T> | ChatJsonErr> {
   const provider = getProvider(binding);
   const msgs: ToolChatMessage[] = messages.map((m) => ({
@@ -129,9 +408,20 @@ export async function chatJsonStream<T>(
     content: m.content,
   }));
 
+  // DeepSeek reasoning models emit content only in reasoning_content during
+  // streaming, leaving content empty when thinking is active. Disable it so
+  // the JSON lands in the content field where the parser expects it.
+  const deepseekExtensions: Record<string, unknown> | undefined =
+    binding.provider === "deepseek" ? { thinking: { type: "disabled" } } : undefined;
+  const extensions: Record<string, unknown> | undefined =
+    deepseekExtensions || options?.openAICompatibleRequestExtensions
+      ? { ...deepseekExtensions, ...options?.openAICompatibleRequestExtensions }
+      : undefined;
+
   let raw = "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let usage: LLMUsage | undefined;
   let finishReason: string | null | undefined;
 
   for await (const ev of provider.streamChat(msgs, {
@@ -140,16 +430,121 @@ export async function chatJsonStream<T>(
     jsonMode: true,
     toolChoice: "none",
     signal: options?.signal,
+    openAICompatibleRequestExtensions: extensions,
   })) {
     if (ev.type === "assistant_done") {
       raw = ev.content;
       inputTokens = ev.usage.inputTokens;
       outputTokens = ev.usage.outputTokens;
+      usage = ev.usage;
       finishReason = ev.finishReason;
     }
   }
 
-  return parseJsonStreamResult(raw, inputTokens, outputTokens, finishReason, schema);
+  return parseJsonStreamResult(raw, inputTokens, outputTokens, finishReason, schema, usage);
+}
+
+export async function chatJsonStreamWithFallback<T>(
+  primary: ModelBinding,
+  fallback: ModelBinding | readonly ModelBinding[] | undefined,
+  messages: LLMMessage[],
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  options?: ChatJsonStreamOptions,
+): Promise<ChatResultWithFallback<ChatJsonResult<T>>> {
+  const bindings = orderedBindings(primary, fallback);
+  let attempts: ChatFallbackAttempt[] = [];
+
+  for (let i = 0; i < bindings.length; i++) {
+    const binding = bindings[i]!;
+    const tag = `${binding.provider}:${binding.model}`;
+    try {
+      const result = await chatJsonStream(binding, messages, schema, options);
+      if (result.ok || i === bindings.length - 1) {
+        return withFallbackMetadata(result, binding, i > 0, attempts);
+      }
+      console.warn(
+        `[chatJsonStreamWithFallback] ${tag} parse_failure: ${result.error} — trying next binding`,
+      );
+      attempts = addAttempt(attempts, {
+        binding,
+        trigger: "parse_failure",
+        error: result.error,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        finishReason: result.finishReason,
+        ...cacheFieldsFromUsage(result.usage),
+      });
+    } catch (err) {
+      const trigger = fallbackTriggerForError(err, options?.signal);
+      if (!trigger || i === bindings.length - 1) {
+        if (attempts.length > 0) {
+          console.error(
+            `[chatJsonStreamWithFallback] chain exhausted — prior failures:`,
+            attempts.map((a) => `${a.binding.provider}:${a.binding.model} (${a.trigger}): ${a.error}`),
+          );
+        }
+        throw err;
+      }
+      const msg = errorMessage(err);
+      console.warn(
+        `[chatJsonStreamWithFallback] ${tag} ${trigger}: ${msg} — trying next binding`,
+      );
+      attempts = addAttempt(attempts, {
+        binding,
+        trigger,
+        error: msg,
+      });
+    }
+  }
+
+  throw new Error("chatJsonStreamWithFallback exhausted without an attempt");
+}
+
+export async function chatWithFallback(
+  primary: ModelBinding,
+  fallback: ModelBinding | readonly ModelBinding[] | undefined,
+  messages: LLMMessage[],
+  options?: ChatOptions,
+): Promise<ChatTextResultWithFallback> {
+  const bindings = orderedBindings(primary, fallback);
+  let attempts: ChatFallbackAttempt[] = [];
+
+  for (let i = 0; i < bindings.length; i++) {
+    const binding = bindings[i]!;
+    const tag = `${binding.provider}:${binding.model}`;
+    try {
+      const provider = getProvider(binding);
+      const response = await provider.chat(messages, options);
+      return {
+        ...response,
+        binding,
+        fallbackUsed: i > 0,
+        fallbackAttempts: attempts,
+      };
+    } catch (err) {
+      const trigger = fallbackTriggerForError(err, options?.signal);
+      if (!trigger || i === bindings.length - 1) {
+        if (attempts.length > 0) {
+          console.error(
+            `[chatWithFallback] chain exhausted — prior failures:`,
+            attempts.map((a) => `${a.binding.provider}:${a.binding.model} (${a.trigger}): ${a.error}`),
+          );
+        }
+        throw err;
+      }
+      const msg = errorMessage(err);
+      console.warn(
+        `[chatWithFallback] ${tag} ${trigger}: ${msg} — trying next binding`,
+      );
+      attempts = addAttempt(attempts, {
+        binding,
+        trigger,
+        error: msg,
+      });
+    }
+  }
+
+  throw new Error("chatWithFallback exhausted without an attempt");
 }
 
 /**
@@ -163,22 +558,28 @@ export function parseJsonStreamResult<T>(
   outputTokens: number,
   finishReason: string | null | undefined,
   schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  usage?: LLMUsage,
 ): ChatJsonOk<T> | ChatJsonErr {
   const extracted = parseJsonOutput(raw);
   if (!extracted.ok) {
-    return { ok: false, raw, error: extracted.error, inputTokens, outputTokens, finishReason };
+    return { ok: false, raw, error: extracted.error, inputTokens, outputTokens, usage, finishReason };
   }
 
   const zResult = schema.safeParse(extracted.data);
   if (!zResult.success) {
-    return { ok: false, raw, error: zResult.error.message, inputTokens, outputTokens, finishReason };
+    return { ok: false, raw, error: zResult.error.message, inputTokens, outputTokens, usage, finishReason };
   }
 
-  return { ok: true, data: zResult.data, raw, inputTokens, outputTokens };
+  return { ok: true, data: zResult.data, raw, inputTokens, outputTokens, usage };
 }
+
+// Test seam — allows injecting a mock provider for fallback-helper tests.
+// Replaces the default getProvider with a custom implementation.
+let _testGetProvider: ((binding: ModelBinding) => LLMProvider) | undefined;
 
 /** Dispatch to the correct provider by the ModelBinding derived from env. */
 export function getProvider(binding: ModelBinding): LLMProvider {
+  if (_testGetProvider) return _testGetProvider(binding);
   switch (binding.provider) {
     case "anthropic":
       return createAnthropicProvider(binding.model);
@@ -190,3 +591,10 @@ export function getProvider(binding: ModelBinding): LLMProvider {
       throw new Error(`Unknown provider: ${(binding as ModelBinding).provider}`);
   }
 }
+
+// Test seam — exported only for unit tests.
+export const __testables__ = {
+  setMockProvider: (fn: ((binding: ModelBinding) => LLMProvider) | undefined) => {
+    _testGetProvider = fn;
+  },
+};

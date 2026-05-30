@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { chatJson } from "../providers";
+import { chatJsonWithFallback } from "../providers";
 import { models } from "../../config/models";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import { traceLLMStage } from "../../observability/langsmithTracing";
@@ -105,8 +105,9 @@ ${segmentBody || "（空片段）"}
 
 请输出 {"summary_json": { ...完整结构化摘要... }} 。`.trim();
 
-  const result = await chatJson(
+  const result = await chatJsonWithFallback(
     models.extractor,
+    models.fallbacks.sessionSummaryMerger,
     [
       { role: "system", content: MERGER_SYSTEM },
       { role: "user", content: userContent },
@@ -127,9 +128,10 @@ ${segmentBody || "（空片段）"}
         summaryText: renderSessionSummaryForPrompt(fallback),
       },
       {
-        binding: models.extractor,
+        binding: result.binding,
         modelRole: "extractor",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -146,9 +148,10 @@ ${segmentBody || "（空片段）"}
         summaryText: renderSessionSummaryForPrompt(fallback),
       },
       {
-        binding: models.extractor,
+        binding: result.binding,
         modelRole: "extractor",
         usage: result,
+        fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
       },
     );
   }
@@ -161,9 +164,10 @@ ${segmentBody || "（空片段）"}
       summaryText: renderSessionSummaryForPrompt(summaryJson),
     },
     {
-      binding: models.extractor,
+      binding: result.binding,
       modelRole: "extractor",
       usage: result,
+      fallback: { used: result.fallbackUsed, attempts: result.fallbackAttempts },
     },
   );
 }

@@ -33,18 +33,34 @@ export interface ChatOptions {
   openAICompatibleRequestExtensions?: Record<string, unknown>;
 }
 
+export interface LLMUsage {
+  inputTokens: number;
+  outputTokens: number;
+
+  // OpenAI-style cache: cached subset of inputTokens
+  cachedInputTokens?: number;
+
+  // DeepSeek-style cache: hit + miss sum to inputTokens
+  cacheHitInputTokens?: number;
+  cacheMissInputTokens?: number;
+
+  // Anthropic-style cache: siblings to inputTokens (not subset)
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;       // Sum across TTLs
+  cacheCreation5mTokens?: number;          // Non-streaming only
+  cacheCreation1hTokens?: number;          // Non-streaming only
+
+  // Reasoning-token visibility (subset of outputTokens; billed at output rate)
+  reasoningTokens?: number;
+}
+
 export type LLMStreamEvent =
   | { type: "delta"; text?: string; reasoning?: string }
   | {
       type: "assistant_done";
       content: string;
       toolCalls?: Array<{ id: string; name: string; arguments: string }>;
-      usage: {
-        inputTokens: number;
-        outputTokens: number;
-        /** Optional reasoning/completion tokens detail (DeepSeek/OpenAI-compatible). */
-        reasoningTokens?: number;
-      };
+      usage: LLMUsage;
       finishReason?: string | null;
     };
 
@@ -55,6 +71,9 @@ export interface LLMResponse {
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
   reasoningContent?: string;
   finishReason?: string | null;
+
+  /** Per-provider dimensional usage breakdown (populated by provider adapters). */
+  usage?: LLMUsage;
 }
 
 export interface LLMProvider {

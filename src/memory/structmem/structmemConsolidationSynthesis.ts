@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJson } from "../../llm/providers";
+import { chatJsonWithFallback } from "../../llm/providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 import type { ConsolidationCandidateEntry } from "./structmemConsolidationSelection";
@@ -90,14 +90,14 @@ export function buildStructMemConsolidationPrompt(input: {
   maxInputTokens: number;
 }): string {
   const body = [
-    "Synthesize current-session StructMem entries into one compact memory consolidation.",
-    "Keep output compact — short summary_text, minimal summary_json.",
-    "Use only the provided entries. Do not invent people, actions, motives, dates, or outcomes.",
-    "Prefer durable within-session patterns, unresolved threads, decisions, factual state, and relationship/emotional movement.",
-    "If buffer entries conflict with semantic seeds, prefer buffer entries.",
-    "Return JSON only with summary_text, summary_json, and confidence_score.",
-    "Example shape (replace with real content):",
-    '{"summary_text":"One compact paragraph.","summary_json":{},"confidence_score":0.75}',
+    "将当前会话中的 StructMem 条目综合为一条紧凑的记忆整合结果。",
+    "保持输出紧凑——summary_text 要简短, summary_json 要精简。",
+    "只能使用提供的条目。不要编造人物、行为、动机、日期或结果。",
+    "优先保留会话内较持久的模式、未解决的线索、决策、事实状态，以及关系/情绪变化。",
+    "如果 buffer entries 与 semantic seeds 发生冲突，优先采用 buffer entries。",
+    "只返回包含 summary_text、summary_json 和 confidence_score 的 JSON。",
+    "示例结构（请替换为真实内容）：",
+    '{"summary_text":"一段紧凑的总结。","summary_json":{},"confidence_score":0.75}',
     "",
     formatEntries("BUFFER ENTRIES", input.bufferEntries),
     "",
@@ -113,14 +113,15 @@ async function synthesizeStructMemConsolidationImpl(input: {
 }): Promise<StructMemConsolidationSynthesisResult> {
   const prompt = buildStructMemConsolidationPrompt(input);
   const systemStrictJson =
-    "You are a conservative memory consolidation worker. " +
-    "Keep output compact — short summary_text, minimal summary_json. " +
-    "Respond with one JSON object only (no markdown fences, no preamble). " +
-    "Keys: summary_text (string), summary_json (object), confidence_score (number 0-1 or null).";
+    "你是一个保守的记忆整合工作器。" +
+    "保持输出紧凑——summary_text 要简短, summary_json 要精简。" +
+    "只返回一个 JSON 对象（不要使用 markdown 代码块，不要添加前言）。" +
+    '字段包括: "summary_text"（字符串）, "summary_json"（对象）, "confidence_score" (0 到 1 之间的数字，或 null)。';
 
   const runChat = () =>
-    chatJson(
+    chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemConsolidation,
       [
         { role: "system", content: systemStrictJson },
         { role: "user", content: prompt },
@@ -136,17 +137,18 @@ async function synthesizeStructMemConsolidationImpl(input: {
     const repairPrompt = [
       prompt,
       "",
-      `Previous model output could not be parsed (${result.error}).`,
-      "Keep the output SHORTER and simpler than the previous attempt. One compact JSON object only.",
-      "Use ASCII double quotes for all keys and string values.",
-      "Required keys: \"summary_text\", \"summary_json\", \"confidence_score\".",
+      `上一次模型输出无法被解析（${result.error}）。`,
+      "请让输出比上一次尝试更短、更简单。只返回一个紧凑的 JSON 对象。",
+      "所有键和字符串值都使用 ASCII 双引号。",
+      '必需字段："summary_text"、"summary_json"、"confidence_score"。',
       preview ? `Bad output began with: ${preview}` : "",
     ]
       .filter(Boolean)
       .join("\n");
 
-    result = await chatJson(
+    result = await chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemConsolidation,
       [
         { role: "system", content: systemStrictJson },
         { role: "user", content: repairPrompt },
@@ -166,17 +168,28 @@ async function synthesizeStructMemConsolidationImpl(input: {
   }
 
   const data = result.data;
-  return {
-    summary_text: data.summary_text,
-    summary_json: data.summary_json ?? {},
-    confidence_score: data.confidence_score ?? null,
-    telemetry: {
-      model: models.consolidation.model,
-      provider: models.consolidation.provider,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
+  return attachTraceLlmMetadata(
+    {
+      summary_text: data.summary_text,
+      summary_json: data.summary_json ?? {},
+      confidence_score: data.confidence_score ?? null,
+      telemetry: {
+        model: result.binding.model,
+        provider: result.binding.provider,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      },
     },
-  };
+    {
+      binding: result.binding,
+      modelRole: "consolidation",
+      usage: result,
+      fallback: {
+        used: result.fallbackUsed,
+        attempts: result.fallbackAttempts,
+      },
+    },
+  );
 }
 
 export const synthesizeStructMemConsolidation = traceLLMStage(
@@ -213,10 +226,10 @@ function buildCrossSessionDistillationPrompt(input: {
   confidenceScore: number | null;
 }): string {
   return [
-    "Decide whether this current-session StructMem synthesis contains stable cross-session memory.",
-    "Return only items that should help future sessions in the same memory namespace.",
-    "Do not include one-off scene details, transient emotions, or unsupported speculation.",
-    "If nothing is stable enough, return an empty stable_items array.",
+    "判断当前会话的 StructMem 综合结果是否包含稳定的跨会话记忆。",
+    "只返回那些应当有助于同一记忆命名空间下未来会话的条目。",
+    "不要包含一次性场景细节、短暂情绪，或缺乏依据的推测。",
+    "如果没有足够稳定的内容，则返回一个空的 stable_items 数组。",
     "",
     `Current confidence: ${input.confidenceScore ?? "unknown"}`,
     `Summary: ${input.summaryText}`,
@@ -234,12 +247,13 @@ async function distillCrossSessionStructMemImpl(input: {
 }): Promise<StructMemCrossSessionDistillationOutput> {
   const userContent = buildCrossSessionDistillationPrompt(input);
   const systemDistill =
-    "You are a conservative memory distillation worker. " +
-    "Respond with one JSON object only (no markdown). Key: stable_items (array).";
+    "你是一个保守的记忆提炼工作器。" +
+    "只返回一个 JSON 对象（不要使用 markdown)。字段包括: stable_items (数组)。";
 
   const runChat = () =>
-    chatJson(
+    chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemCrossSessionDistillation,
       [
         { role: "system", content: systemDistill },
         { role: "user", content: userContent },
@@ -256,8 +270,9 @@ async function distillCrossSessionStructMemImpl(input: {
       "",
       `Previous output was not valid JSON (${result.error}). Reply with ONLY: {"stable_items":[...] } using double quotes.`,
     ].join("\n");
-    result = await chatJson(
+    result = await chatJsonWithFallback(
       models.consolidation,
+      models.fallbacks.structMemCrossSessionDistillation,
       [
         { role: "system", content: systemDistill },
         { role: "user", content: repairUser },
@@ -278,9 +293,13 @@ async function distillCrossSessionStructMemImpl(input: {
   return attachTraceLlmMetadata(
     StructMemCrossSessionDistillationOutputSchema.parse(result.data),
     {
-      binding: models.consolidation,
+      binding: result.binding,
       modelRole: "consolidation",
       usage: result,
+      fallback: {
+        used: result.fallbackUsed,
+        attempts: result.fallbackAttempts,
+      },
     },
   );
 }

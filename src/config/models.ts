@@ -20,6 +20,32 @@ export function parseModelBinding(value: string): ModelBinding {
   return { provider, model };
 }
 
+function formatModelBinding(binding: ModelBinding): string {
+  return `${binding.provider}:${binding.model}`;
+}
+
+export function parseFallbackModelBindings(
+  value: string | undefined,
+  primary?: ModelBinding,
+): ModelBinding[] {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed || trimmed.toLowerCase() === "none") return [];
+
+  const seen = new Set<string>();
+  const out: ModelBinding[] = [];
+  for (const part of trimmed.split(/[,\s]+/)) {
+    const item = part.trim();
+    if (!item) continue;
+    const binding = parseModelBinding(item);
+    const formatted = formatModelBinding(binding);
+    if (primary && formatted === formatModelBinding(primary)) continue;
+    if (seen.has(formatted)) continue;
+    seen.add(formatted);
+    out.push(binding);
+  }
+  return out;
+}
+
 export function resolveConsolidationModelBinding(
   value: string,
   extractor: ModelBinding,
@@ -62,4 +88,54 @@ export const models = {
     env.MEMORY_RERANK_MODEL,
     extractor,
   ),
+  fallbacks: {
+    classifyTurnRoute: parseFallbackModelBindings(
+      env.CLASSIFY_TURN_ROUTE_FALLBACK_MODEL,
+      extractor,
+    ),
+    queryRewrite: parseFallbackModelBindings(
+      env.QUERY_REWRITE_FALLBACK_MODEL,
+      extractor,
+    ),
+    memoryRerank: parseFallbackModelBindings(
+      env.MEMORY_RERANK_FALLBACK_MODEL,
+      resolveMemoryRerankModelBinding(env.MEMORY_RERANK_MODEL, extractor),
+    ),
+    recallThought: parseFallbackModelBindings(
+      env.RECALL_THOUGHT_FALLBACK_MODEL,
+      extractor,
+    ),
+    responseValidator: parseFallbackModelBindings(
+      env.RESPONSE_VALIDATOR_FALLBACK_MODEL,
+      parseModelBinding(env.VALIDATOR_MODEL),
+    ),
+    attributionJudge: parseFallbackModelBindings(
+      env.VALIDATOR_ATTRIBUTION_JUDGE_FALLBACK_MODEL,
+      parseModelBinding(
+        env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL?.trim()
+          ? env.VALIDATOR_ATTRIBUTION_JUDGE_MODEL.trim()
+          : env.EXTRACTOR_MODEL,
+      ),
+    ),
+    memoryDedupJudge: parseFallbackModelBindings(
+      env.MEMORY_DEDUP_JUDGE_FALLBACK_MODEL,
+      parseModelBinding(env.VALIDATOR_MODEL),
+    ),
+    postTurnExtractor: parseFallbackModelBindings(
+      env.POST_TURN_EXTRACTOR_FALLBACK_MODEL,
+      extractor,
+    ),
+    sessionSummaryMerger: parseFallbackModelBindings(
+      env.POST_TURN_EXTRACTOR_FALLBACK_MODEL,
+      extractor,
+    ),
+    structMemConsolidation: parseFallbackModelBindings(
+      env.STRUCTMEM_CONSOLIDATION_FALLBACK_MODEL,
+      resolveConsolidationModelBinding(env.STRUCTMEM_CONSOLIDATION_MODEL, extractor),
+    ),
+    structMemCrossSessionDistillation: parseFallbackModelBindings(
+      env.STRUCTMEM_CROSS_SESSION_DISTILLATION_FALLBACK_MODEL,
+      resolveConsolidationModelBinding(env.STRUCTMEM_CONSOLIDATION_MODEL, extractor),
+    ),
+  },
 } as const;

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { models } from "../../config/models";
+import { models, type ModelBinding } from "../../config/models";
+import { getAttachedTraceLlmMetadata } from "../../observability/traceMetadata";
+import { ROLEPLAY_TURN_ROUTE } from "./turnRoutes";
 import {
   isCredentialDisclosureRequest,
   normalizeRouteIntent,
+  __testables__,
 } from "./classifyTurnRoute";
 
 describe("normalizeRouteIntent", () => {
@@ -69,5 +72,42 @@ describe("isCredentialDisclosureRequest", () => {
 
   it("does not treat ordinary roleplay key mentions as credential disclosure", () => {
     assert.equal(isCredentialDisclosureRequest("我把钥匙放在桌上。"), false);
+  });
+});
+
+describe("fallbackClassification (parse-fail trace binding)", () => {
+  it("uses result.binding for modelName and trace metadata when binding is provided", () => {
+    const fallbackBinding: ModelBinding = {
+      provider: "openai",
+      model: "gpt-5-nano",
+    };
+    const result = __testables__.fallbackClassification({
+      fallbackReason: "classifier_parse_error_roleplay_fail_open",
+      reason: "parse error",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      binding: fallbackBinding,
+    });
+
+    assert.equal(result.type, ROLEPLAY_TURN_ROUTE);
+    assert.equal(result.modelName, "gpt-5-nano");
+    assert.equal(result.fallbackReason, "classifier_parse_error_roleplay_fail_open");
+    assert.equal(result.reason, "parse error");
+
+    const trace = getAttachedTraceLlmMetadata(result);
+    assert.ok(trace, "trace metadata should be attached");
+    assert.equal(trace.modelName, "gpt-5-nano");
+    assert.equal(trace.modelProvider, "openai");
+  });
+
+  it("defaults to models.extractor when no binding provided", () => {
+    const result = __testables__.fallbackClassification({
+      fallbackReason: "classifier_exception_roleplay_fail_open",
+    });
+
+    assert.equal(result.modelName, models.extractor.model);
+
+    const trace = getAttachedTraceLlmMetadata(result);
+    assert.ok(trace, "trace metadata should be attached");
+    assert.equal(trace.modelName, models.extractor.model);
   });
 });

@@ -15,7 +15,7 @@ import type {
   PersistCompletedTurnResult,
 } from "../persistence/turnPersistence";
 import type { ModelBinding } from "../../config/models";
-import type { TraceUsageInput } from "../../observability/traceMetadata";
+import type { TraceUsageInput, ModelCostBreakdown } from "../../observability/traceMetadata";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,7 +48,7 @@ type TraceRouteSwitchFn = (input: {
 type EstimateModelCostFn = (
   binding: ModelBinding,
   usage: TraceUsageInput,
-) => number | null;
+) => ModelCostBreakdown | null;
 
 // ---------------------------------------------------------------------------
 // Adapter
@@ -107,10 +107,11 @@ export async function persistRoleplayTurn(
     persistedRoute,
   });
 
-  const estimatedCostUsd = doCostEstimate(generationModelBinding, {
+  const costBreakdown = doCostEstimate(generationModelBinding, {
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
   });
+  const estimatedCostUsd = costBreakdown?.total ?? null;
 
   const persisted = await doPersist({
     session,
@@ -155,7 +156,7 @@ async function defaultTraceRouteSwitch(_input: {
 function defaultEstimateModelCost(
   _binding: ModelBinding,
   _usage: TraceUsageInput,
-): number | null {
+): ModelCostBreakdown | null {
   return null;
 }
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { models } from "../../config/models";
-import { chatJsonStream } from "../providers";
+import { chatJsonStreamWithFallback } from "../providers";
 import { traceLLMStage } from "../../observability/langsmithTracing";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
 
@@ -51,8 +51,9 @@ ${input.candidates
 
 Return the JSON object.`.trim();
 
-  const res = await chatJsonStream(
+  const res = await chatJsonStreamWithFallback(
     models.validator,
+    models.fallbacks.memoryDedupJudge,
     [
       { role: "system", content: MEMORY_DEDUP_JUDGE_SYSTEM },
       { role: "user", content: user },
@@ -65,9 +66,10 @@ Return the JSON object.`.trim();
     return attachTraceLlmMetadata(
       { decision: "distinct", usedFailOpen: true },
       {
-        binding: models.validator,
+        binding: res.binding,
         modelRole: "memoryDedupJudge",
         usage: res,
+        fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
       },
     );
   }
@@ -79,9 +81,10 @@ Return the JSON object.`.trim();
       usedFailOpen: false,
     },
     {
-      binding: models.validator,
+      binding: res.binding,
       modelRole: "memoryDedupJudge",
       usage: res,
+      fallback: { used: res.fallbackUsed, attempts: res.fallbackAttempts },
     },
   );
 }
