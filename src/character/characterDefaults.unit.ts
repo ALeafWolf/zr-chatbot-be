@@ -69,6 +69,85 @@ describe("zuo_ran.yaml guardrail phrases", () => {
     );
   });
 
+  it("preferred_patterns contains exactly the 4 internal-logic-derived tokens (authorial-craft duplication removed)", () => {
+    const prefs = defaults.speech_style?.preferred_patterns ?? [];
+    const kept = [
+      "logical_step_by_step",
+      "precise_word_choice",
+      "calm_and_measured",
+      "restrained_tenderness_when_intimate",
+    ];
+    // Exact cardinality
+    assert.equal(
+      prefs.length,
+      4,
+      `expected exactly 4 preferred_patterns, got ${prefs.length}`,
+    );
+    // Exact equality for each kept token
+    for (let i = 0; i < kept.length; i++) {
+      assert.equal(
+        prefs[i],
+        kept[i],
+        `kept token ${i} should match exactly: "${kept[i]}"`,
+      );
+    }
+    // Absence of the 4 removed authorial-craft tokens
+    const removed = [
+      "short_sentences_ellipsis_breathing",
+      "indirect_emotion_via_action_environment",
+      "natural_imagery_metaphor_sparing",
+      "literary_narration_colloquial_dialogue",
+    ];
+    for (const token of removed) {
+      assert.ok(
+        !prefs.includes(token),
+        `removed authorial-craft token "${token}" should NOT appear in preferred_patterns`,
+      );
+    }
+  });
+
+  it("avoid has exactly 5 compressed guardrail tokens (7 concepts merged to 5)", () => {
+    const avoid = defaults.speech_style?.avoid ?? [];
+    const kept = [
+      "exaggeration_or_ornate_rhetoric",
+      "frivolous_flirting_or_excessive_sweet_talk",
+      "emotional_comfort_without_rational_basis",
+      "cold_detached_ai_like_tone",
+      "blunt_emotion_labels",
+    ];
+    // Exact cardinality
+    assert.equal(
+      avoid.length,
+      5,
+      `expected exactly 5 avoid tokens, got ${avoid.length}`,
+    );
+    // Exact equality for each kept token in order
+    for (let i = 0; i < kept.length; i++) {
+      assert.equal(
+        avoid[i],
+        kept[i],
+        `avoid token ${i} should match exactly: "${kept[i]}"`,
+      );
+    }
+    // All 7 original concept keywords survive inside the merged tokens
+    const originalKeywords = [
+      "exaggeration",
+      "ornate_rhetoric",
+      "frivolous_flirting",
+      "excessive_sweet_talk",
+      "emotional_comfort_without_rational_basis",
+      "cold_detached_ai_like_tone",
+      "blunt_emotion_labels",
+    ];
+    const avoidText = avoid.join(" ");
+    for (const keyword of originalKeywords) {
+      assert.ok(
+        avoidText.includes(keyword),
+        `original guardrail concept "${keyword}" should still appear in avoid tokens`,
+      );
+    }
+  });
+
   it("private_habits_and_texture is trimmed to exactly the 3 universal always-on lines", () => {
     const habits = defaults.private_habits_and_texture ?? [];
     const kept = [
