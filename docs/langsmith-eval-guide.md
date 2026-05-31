@@ -520,33 +520,63 @@ The `RERANK_VARIANT` env var accepts shorthand aliases in addition to full varia
 
 These are resolved in `experimentVariants.ts`. Other variant env vars (`RETRIEVAL_VARIANT`, `VALIDATOR_VARIANT`, `CONTEXT_PLANNER_VARIANT`) do not currently have aliases.
 
-### Running Probe Experiments (before/after gate)
+### LLM Judge for Probe Experiments
 
-The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) contains 12 manual-scored scenarios for character-quality evaluation. They have no automated assertions — `all_assertions_pass` will always be `false` for probes. This is expected.
+The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) includes an **LLM-as-judge** evaluator that auto-scores each probe reply on a 6-dimension rubric (Traceability, State fit, Transition friction, Style stability, Canon caution, Anti-self-analysis).
 
-**Before/after workflow:**
+### How it works
+
+The judge is registered as a LangSmith evaluator in `runLangSmithExperiment.ts`. It:
+
+1. **Gates on `EVAL_ENABLE_LLM_JUDGE=1`** — default-off; with the flag off, no judge LLM call is made and no `judge_*` feedback keys appear.
+2. **Fires only for probe rows** (`group === "probes"` with `mode === "agent_turn"` and non-empty reply) — non-probe rows short-circuit before any LLM call.
+3. **Calls `chatJsonWithFallback`** on the **validator model** (`models.validator` + `models.fallbacks.responseValidator`), the same binding used by `runResponseValidator`.
+4. **Emits 7 feedback keys** per probe row:
+   - `judge_traceability` (1–5)
+   - `judge_state_fit` (1–5)
+   - `judge_transition_friction` (1–5)
+   - `judge_style_stability` (1–5)
+   - `judge_canon_caution` (1–5)
+   - `judge_anti_self_analysis` (1–5)
+   - `judge_composite` (mean of the six)
+5. **Per-probe `expected_behavior`** from example metadata is injected into the judge prompt to anchor scoring to the specific probe's target.
+6. **Non-gating** — judge scores are NEVER read by the `failedRows` loop (which only checks `all_assertions_pass`). They are tracked metrics for before/after comparison only, visible in LangSmith **Experiments → Compare**.
+
+### Running probe experiments with the judge
 
 ```bash
 # Step 1 — push probes to a dedicated dataset (one time, or whenever probe set changes)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval EVAL_SCENARIO_SET=probes npm run eval:dataset:push
 
-# Step 2 — run experiment on baseline (stash or checkout commit before internal-logic changes)
-LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
-# → creates experiment "zuoran-phase1 [run-1]" in LangSmith
+# Step 2 — run with judge enabled
+EVAL_ENABLE_LLM_JUDGE=1 LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
+# → 7 judge_* feedback keys visible in LangSmith Compare
 
-# Step 3 — restore changes and run again on current HEAD
+# Without judge (default)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
-# → creates experiment "zuoran-phase1 [run-2]" in LangSmith
+# → No judge feedback keys; no judge LLM cost
 ```
 
-> In LangSmith, open both experiments under **Experiments → Compare**. The `reply` field in each row's output is the character's response to that probe. Score each probe manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`.
+### Viewing judge scores in LangSmith
 
-```bash
-# Or run a single probe locally (output to stdout only — not submitted to LangSmith as an experiment)
-EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
-```
+1. Open **Experiments → Compare** and select two experiment runs.
+2. Each probe row shows `judge_*` feedback keys in the **Feedback** column.
+3. `judge_composite` gives a quick directional signal; individual dimension scores show which area (e.g. `judge_canon_caution`) changed.
+4. Click a run to see the judge's **rationale** for each dimension score in the feedback comment.
 
-**Probe IDs and categories:**
+### Calibration
+
+The judge's scores are directional, not authoritative. Before trusting scores for decision-making, run a calibration experiment with `EVAL_ENABLE_LLM_JUDGE=1` and compare the judge's per-probe dimension scores against the human-scored sheet in `docs/character/zuoran_internal_logic_probe_results.md`:
+
+| Check | Expected |
+|-------|----------|
+| Known-weak probes (P06, P07) | Low `judge_canon_caution` (≤2) |
+| Relationship-boundary probe (P08) | Low `judge_state_fit` / `judge_traceability` |
+| Strong probes (P09, P11) | High composite (≥4) |
+
+If the judge consistently disagrees with the human sheet on a dimension, adjust the `expected_behavior` lines in `probeScenarios.ts` or — as a last resort — the prompt wording in `internalLogicJudge.ts`.
+
+### Probe IDs and categories
 
 | ID | Category |
 |----|----------|
@@ -563,7 +593,7 @@ EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
 | `probe_social_pressure` | Social pressure |
 | `probe_regret_apology` | Regret/apology |
 
-**Note:** When viewing probe experiment results in LangSmith, the `all_assertions_pass=false` comment reads "No assertions found on example metadata." This is correct — probes are scored manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`, not by automated assertions.
+**Note:** `all_assertions_pass=false` for probes is expected — they have `assertions: []`. The judge scores (`judge_*`) are the meaningful metrics for probe rows.
 
 ### Rerank LangSmith evaluators
 
