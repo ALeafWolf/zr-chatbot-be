@@ -60,9 +60,6 @@ export interface ValidatorInput {
   signal?: AbortSignal;
 }
 
-const CANON_ATTRIBUTION_CUES =
-  /(?:提议|安排|第一次|第二次|谁先|谁提出|在.*章|根据原作|剧情中|原作中|原著|小说里)/u;
-
 const ValidationResultSchema = z.object({
   in_character: z.boolean(),
   canon_consistent: z.boolean(),
@@ -139,22 +136,6 @@ function firstPatternMatch(text: string, patterns: readonly RegExp[]): string | 
     if (m?.[0]) return m[0];
   }
   return null;
-}
-
-export function runCanonEvidenceCheck(input: {
-  draft: string;
-  wasCanonInjected?: boolean;
-}): DeterministicGuardFailure[] {
-  if (input.wasCanonInjected) return [];
-  if (!CANON_ATTRIBUTION_CUES.test(input.draft)) return [];
-  return [
-    {
-      kind: "canon_unsupported_claim",
-      matched: input.draft.slice(0, 100),
-      issue:
-        "Response asserts canon-attribution facts but no canon was injected in this turn. Rely on injected canon narrative or remove the unsupported claim.",
-    },
-  ];
 }
 
 /**

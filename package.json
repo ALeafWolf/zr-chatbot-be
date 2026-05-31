@@ -19,6 +19,7 @@
     "fixtures:parse-json": "tsx src/llm/parseJsonOutput.fixtures.ts",
     "seed:internal-logic": "tsx scripts/seedInternalLogicEvidence.ts",
     "mine:internal-logic": "tsx scripts/mineInternalLogicEvidence.ts",
+    "report:internal-logic-coverage": "tsx scripts/reportInternalLogicEvidenceCoverage.ts",
     "seed:character-profile": "tsx scripts/seedCharacterProfile.ts",
     "test:unit": "tsx --import ./src/test/setup.ts --test --experimental-test-module-mocks \"src/**/*.unit.ts\""
   },
