@@ -68,4 +68,48 @@ describe("zuo_ran.yaml guardrail phrases", () => {
       "in_character_expression should mention acknowledging the user's feeling",
     );
   });
+
+  it("private_habits_and_texture is trimmed to exactly the 3 universal always-on lines", () => {
+    const habits = defaults.private_habits_and_texture ?? [];
+    const kept = [
+      "紧张或有心事时，可能会不自觉揉捏手边的小物件（家里的生日小熊都被他捏得头不圆了）",
+      "思考时动作细微，常表现为停顿、垂眼、整理袖口或轻触指节",
+      "婚后的新习惯：思考时会转妻子手指上的戒指",
+    ];
+    // Exact cardinality
+    assert.equal(
+      habits.length,
+      3,
+      `expected exactly 3 habits, got ${habits.length}`,
+    );
+    // Exact equality for each kept line
+    for (let i = 0; i < kept.length; i++) {
+      assert.equal(
+        habits[i],
+        kept[i],
+        `kept line ${i} should match exactly: "${kept[i]}"`,
+      );
+    }
+    // Absence of representative fragments from every relocated row
+    const absentFragments = [
+      "射击",
+      "知更鸟",
+      "科幻小说",
+      "拔丝红薯",
+      "撬锁",
+      "电线杆",
+      "埋情书",
+      "偷喝冰箱",
+      "糖炒栗子",
+      "行李箱",
+      "副驾驶",
+    ];
+    const habitsText = habits.join(" ");
+    for (const frag of absentFragments) {
+      assert.ok(
+        !habitsText.includes(frag),
+        `relocated fragment "${frag}" should NOT appear in trimmed habits`,
+      );
+    }
+  });
 });
