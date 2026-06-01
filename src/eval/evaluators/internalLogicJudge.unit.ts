@@ -13,6 +13,8 @@ import {
   buildInternalLogicJudgePrompt,
   mapJudgeResultToEvaluationResults,
   internalLogicJudgeEvaluator,
+  internalLogicJudgeRunEvaluator,
+  makeInternalLogicJudgeRunEvaluator,
   JUDGE_DIMENSIONS,
   JUDGE_DIMENSION_LABELS,
 } from "./internalLogicJudge";
@@ -374,5 +376,107 @@ describe("internalLogicJudgeEvaluator", () => {
     const userMsg = capturedMessages.find((m) => m.role === "user")?.content ?? "";
     assert.ok(userMsg.includes("第二条消息"), "Should use the LAST user message");
     assert.ok(!userMsg.includes("第一条消息"), "Should NOT include earlier user messages");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// internalLogicJudgeRunEvaluator (RunEvaluator object, no traceable wrapping)
+// ---------------------------------------------------------------------------
+
+describe("internalLogicJudgeRunEvaluator", () => {
+  it("is an object with evaluateRun method", () => {
+    assert.equal(typeof internalLogicJudgeRunEvaluator, "object");
+    assert.equal(typeof internalLogicJudgeRunEvaluator.evaluateRun, "function");
+  });
+
+  it("returns 7 judge_* results for a valid probe row via evaluateRun with fake judge", async () => {
+    let judgeCalled = false;
+    const fakeJudge = async () => {
+      judgeCalled = true;
+      return VALID_JUDGE_OUTPUT;
+    };
+
+    const evaluator = makeInternalLogicJudgeRunEvaluator({ judgeFn: fakeJudge });
+    const result = await evaluator.evaluateRun(
+      {
+        id: "test-run-id",
+        outputs: { reply: "I'm fine.", mode: "agent_turn" },
+      } as unknown as import("langsmith/schemas").Run,
+      {
+        inputs: {
+          group: "probes",
+          description: "pressure",
+          messages: [{ role: "user", content: "你今天看起来不太对劲。" }],
+        },
+      } as unknown as import("langsmith/schemas").Example,
+    );
+
+    assert.equal(judgeCalled, true);
+    const results = "results" in result ? result.results : [result];
+    assert.equal(results.length, 7);
+    for (const r of results) {
+      assert.ok(r.key.startsWith("judge_"), `Key should start with judge_: ${r.key}`);
+    }
+    const composite = results.find((r) => r.key === "judge_composite");
+    assert.equal(composite?.score, 23 / 6);
+  });
+
+  it("returns empty results for non-probe rows via evaluateRun", async () => {
+    const result = await internalLogicJudgeRunEvaluator.evaluateRun(
+      {
+        id: "test-run-id",
+        outputs: { reply: "Some reply", mode: "agent_turn" },
+      } as unknown as import("langsmith/schemas").Run,
+      {
+        inputs: { group: "regression" },
+      } as unknown as import("langsmith/schemas").Example,
+    );
+
+    const results = "results" in result ? result.results : [result];
+    assert.equal(results.length, 0);
+  });
+
+  it("returns empty results for missing reply via evaluateRun", async () => {
+    const result = await internalLogicJudgeRunEvaluator.evaluateRun(
+      {
+        id: "test-run-id",
+        outputs: { reply: "", mode: "agent_turn" },
+      } as unknown as import("langsmith/schemas").Run,
+      {
+        inputs: { group: "probes" },
+      } as unknown as import("langsmith/schemas").Example,
+    );
+
+    const results = "results" in result ? result.results : [result];
+    assert.equal(results.length, 0);
+  });
+
+  it("returns empty results for non-agent-turn mode via evaluateRun", async () => {
+    const result = await internalLogicJudgeRunEvaluator.evaluateRun(
+      {
+        id: "test-run-id",
+        outputs: { reply: "Some reply", mode: "validator_only" },
+      } as unknown as import("langsmith/schemas").Run,
+      {
+        inputs: { group: "probes" },
+      } as unknown as import("langsmith/schemas").Example,
+    );
+
+    const results = "results" in result ? result.results : [result];
+    assert.equal(results.length, 0);
+  });
+
+  it("handles missing example gracefully (empty inputs)", async () => {
+    const result = await internalLogicJudgeRunEvaluator.evaluateRun(
+      {
+        id: "test-run-id",
+        outputs: {} as Record<string, unknown>,
+      } as unknown as import("langsmith/schemas").Run,
+      undefined,
+    );
+
+    const results = "results" in result ? result.results : [result];
+    // Missing group === "probes" → empty results
+    assert.equal(results.length, 0);
   });
 });

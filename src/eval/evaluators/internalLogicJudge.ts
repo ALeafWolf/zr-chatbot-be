@@ -7,9 +7,18 @@
  * (scores are tracked metrics only, never affect pass/fail).
  *
  * TG1: pure + injectable core. No LangSmith wiring.
+ *
+ * This module also exports `internalLogicJudgeRunEvaluator`, a
+ * LangSmith `RunEvaluator` object that bypasses `DynamicRunEvaluator`
+ * wrapping. Because the object has `evaluateRun`, LangSmith's
+ * `_resolveEvaluators()` does not wrap it with `traceable`, so no
+ * separate traced evaluator run is created in the `evaluators` project.
+ * Judge feedback is still logged via `logEvaluationFeedback`.
  */
 import { z } from "zod";
 import type { EvaluationResult } from "langsmith/evaluation";
+import type { RunEvaluator } from "langsmith/evaluation";
+import type { Run, Example } from "langsmith/schemas";
 import { models } from "../../config/models";
 import { chatJsonStreamWithFallback } from "../../llm/providers";
 
@@ -322,3 +331,63 @@ export async function internalLogicJudgeEvaluator(args: {
 
   return { results };
 }
+
+// ---------------------------------------------------------------------------
+// LangSmith RunEvaluator (untraced, bypasses DynamicRunEvaluator)
+// ---------------------------------------------------------------------------
+
+/**
+ * Factory: create a LangSmith `RunEvaluator` for the internal-logic judge.
+ *
+ * Because the returned object exposes `evaluateRun`, LangSmith's
+ * `_resolveEvaluators()` adds it directly without wrapping it in a
+ * `DynamicRunEvaluator`. That means no `traceable` wrapper is applied and no
+ * separate traced evaluator run is created in the `evaluators` project.
+ *
+ * The returned object's `evaluateRun` method extracts `inputs`/`outputs`/`metadata`
+ * from the LangSmith `Run` and `Example` objects, delegates to
+ * `internalLogicJudgeEvaluator`, and returns `{ results: EvaluationResult[] }`.
+ * Judge feedback is still logged to the experiment row via `logEvaluationFeedback()`.
+ *
+ * @param options.judgeFn - Optional injectable judge function for testing.
+ *   When omitted, `defaultJudgeFn` is used.
+ *
+ * @remarks
+ * - Ignores `options.tracingEnabled` and `options.project_name` — no LangSmith
+ *   evaluator tracing is created by design.
+ * - Does not call `traceable`.
+ * - Does not set `sourceRunId` to a judge/evaluator trace run.
+ */
+export function makeInternalLogicJudgeRunEvaluator(options?: {
+  judgeFn?: InternalLogicJudgeFn;
+}): RunEvaluator {
+  const { judgeFn } = options ?? {};
+  return {
+    async evaluateRun(
+      run: Run,
+      example?: Example,
+      _options?: unknown,
+    ): Promise<{ results: EvaluationResult[] }> {
+      return await internalLogicJudgeEvaluator({
+        inputs: (example?.inputs ?? {}) as Record<string, unknown>,
+        outputs: (run?.outputs ?? {}) as Record<string, unknown>,
+        metadata: (example?.metadata as Record<string, unknown>) ?? undefined,
+        judgeFn,
+      });
+    },
+  };
+}
+
+/**
+ * Production default: untraced `RunEvaluator` using the default judge function.
+ *
+ * Usage in `runLangSmithExperiment.ts`:
+ * ```
+ * evaluators: [
+ *   ...,
+ *   ...(env.EVAL_ENABLE_LLM_JUDGE ? [internalLogicJudgeRunEvaluator] : []),
+ * ]
+ * ```
+ */
+export const internalLogicJudgeRunEvaluator: RunEvaluator =
+  makeInternalLogicJudgeRunEvaluator();

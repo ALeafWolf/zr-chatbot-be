@@ -6,7 +6,12 @@ import {
   buildTraceBaseMetadata,
 } from "./traceMetadata";
 import { runRetrievalEmbeddingBatch } from "../orchestration/retrieval/retrievalEmbeddingBatch";
-import { __testing, withTraceContext } from "./langsmithTracing";
+import {
+  __testing,
+  withTraceContext,
+  withLangSmithTracingSuppressed,
+  isLangSmithTracingSuppressed,
+} from "./langsmithTracing";
 
 describe("langsmith tracing wrappers", () => {
   it("disables LangSmith emission during unit tests", () => {
@@ -174,5 +179,64 @@ describe("langsmith tracing wrappers", () => {
     assert.equal(metadata?.inputTokens, 6);
     assert.equal(metadata?.outputTokens, 4);
     assert.equal(metadata?.usage_metadata?.total_tokens, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withLangSmithTracingSuppressed
+// ---------------------------------------------------------------------------
+
+describe("withLangSmithTracingSuppressed", () => {
+  it("isLangSmithTracingSuppressed returns false outside suppressed scope", () => {
+    assert.equal(isLangSmithTracingSuppressed(), false);
+  });
+
+  it("suppresses tracing inside the scope", async () => {
+    let inside = false;
+    await withLangSmithTracingSuppressed(async () => {
+      inside = isLangSmithTracingSuppressed();
+    });
+    assert.equal(inside, true);
+  });
+
+  it("isLangSmithTracingSuppressed returns true inside scope", async () => {
+    await withLangSmithTracingSuppressed(async () => {
+      assert.equal(isLangSmithTracingSuppressed(), true);
+    });
+  });
+
+  it("restores the previous state after the scope ends", async () => {
+    assert.equal(isLangSmithTracingSuppressed(), false);
+    await withLangSmithTracingSuppressed(async () => {
+      assert.equal(isLangSmithTracingSuppressed(), true);
+    });
+    assert.equal(isLangSmithTracingSuppressed(), false);
+  });
+
+  it("suppression is scoped to the async function execution", async () => {
+    // Suppression is active only while the wrapped function runs;
+    // awaited promises within the scope inherit the ALS context.
+    let inside = false;
+    const result = await withLangSmithTracingSuppressed(async () => {
+      inside = isLangSmithTracingSuppressed();
+      return "done";
+    });
+    assert.equal(inside, true);
+    assert.equal(result, "done");
+    assert.equal(isLangSmithTracingSuppressed(), false);
+  });
+
+  it("calls the wrapped function and returns its value", async () => {
+    const result = await withLangSmithTracingSuppressed(async () => 42);
+    assert.equal(result, 42);
+  });
+
+  it("forwards rejections from the wrapped function", async () => {
+    await assert.rejects(
+      withLangSmithTracingSuppressed(async () => {
+        throw new Error("test error");
+      }),
+      /test error/,
+    );
   });
 });
