@@ -1,6 +1,72 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { loadCharacterDefaults } from "./characterDefaults";
+import { loadCharacterDefaults, compareDottedVersions } from "./characterDefaults";
+
+// ---------------------------------------------------------------------------
+// compareDottedVersions
+// ---------------------------------------------------------------------------
+
+describe("compareDottedVersions", () => {
+  it('"2.10" vs "2.9" → positive (DB 2.10 newer)', () => {
+    const result = compareDottedVersions("2.10", "2.9");
+    assert.ok(result !== null && result > 0, `expected positive, got ${result}`);
+  });
+
+  it('"2.9" vs "2.10" → negative', () => {
+    const result = compareDottedVersions("2.9", "2.10");
+    assert.ok(result !== null && result < 0, `expected negative, got ${result}`);
+  });
+
+  it('equal versions "2.1" vs "2.1" → 0', () => {
+    assert.equal(compareDottedVersions("2.1", "2.1"), 0);
+  });
+
+  it('"2.1" vs "2.1.0" → 0 (missing trailing segment treated as 0)', () => {
+    assert.equal(compareDottedVersions("2.1", "2.1.0"), 0);
+  });
+
+  it('"2.1.1" vs "2.1" → 1 (extra segment is newer)', () => {
+    const result = compareDottedVersions("2.1.1", "2.1");
+    assert.ok(result !== null && result > 0, `expected positive, got ${result}`);
+  });
+
+  it('null vs "2.1" → null', () => {
+    assert.equal(compareDottedVersions(null, "2.1"), null);
+  });
+
+  it('undefined vs "2.1" → null', () => {
+    assert.equal(compareDottedVersions(undefined, "2.1"), null);
+  });
+
+  it('"abc" vs "2.1" → null (non-numeric segment)', () => {
+    assert.equal(compareDottedVersions("abc", "2.1"), null);
+  });
+
+  it('"2.1" vs "xyz" → null (non-numeric segment)', () => {
+    assert.equal(compareDottedVersions("2.1", "xyz"), null);
+  });
+
+  it('both null → null', () => {
+    assert.equal(compareDottedVersions(null, null), null);
+  });
+
+  it('"3" vs "2" → positive (single segment)', () => {
+    const result = compareDottedVersions("3", "2");
+    assert.ok(result !== null && result > 0, `expected positive, got ${result}`);
+  });
+
+  it('disambiguates parseFloat trap: "2.10" > "2.9" (parseFloat would say 2.1 < 2.9)', () => {
+    const dotted = compareDottedVersions("2.10", "2.9");
+    assert.ok(dotted !== null && dotted > 0, `compareDottedVersions says 2.10 > 2.9`);
+
+    const parsed = parseFloat("2.10") < parseFloat("2.9");
+    assert.equal(parsed, true, "parseFloat would incorrectly say 2.10 < 2.9");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// zuo_ran.yaml guardrail phrases
+// ---------------------------------------------------------------------------
 
 describe("zuo_ran.yaml guardrail phrases", () => {
   const defaults = loadCharacterDefaults("zuo_ran");

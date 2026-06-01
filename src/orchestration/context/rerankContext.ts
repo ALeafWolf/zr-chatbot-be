@@ -273,6 +273,13 @@ export async function rerankContext(
     rerankOutput = null;
 
     const fallbackStartedAt = Date.now();
+    // Internal-logic evidence is intentionally omitted on the deterministic
+    // fallback path. Evidence is enrichment, not correctness-critical — the
+    // always-on internal_logic block already carries the character's core
+    // rules — and keeping the fallback free of evidence retrieval/selection
+    // preserves its simplicity and reliability. Ratified decision:
+    // documents/emotional_causal_model_roadmap.md, "Note on Deterministic
+    // Fallback and Evidence".
     selectedContext = doSelectDeterministic({
       memories: input.memories,
       sessionRecall: input.sessionRecall,
@@ -443,6 +450,13 @@ export async function runDeterministicSelector(
     deps?.selectPromptMemoryContext ?? selectPromptMemoryContextStatic;
 
   const startedAt = Date.now();
+  // Internal-logic evidence is intentionally omitted on the deterministic
+  // fallback path. Evidence is enrichment, not correctness-critical — the
+  // always-on internal_logic block already carries the character's core
+  // rules — and keeping the fallback free of evidence retrieval/selection
+  // preserves its simplicity and reliability. Ratified decision:
+  // documents/emotional_causal_model_roadmap.md, "Note on Deterministic
+  // Fallback and Evidence".
   const selectedContext = doSelectDeterministic({
     memories: input.memories,
     sessionRecall: input.sessionRecall,

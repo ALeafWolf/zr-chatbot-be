@@ -4,6 +4,42 @@ import yaml from "js-yaml";
 import { env } from "../config/env";
 import { getCharacterProfile } from "./characterProfiles";
 
+// ---------------------------------------------------------------------------
+// Version comparison helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare two dot-separated numeric versions segment-by-segment.
+ * Returns a negative/zero/positive number like a standard comparator,
+ * or `null` when either version is missing or has a non-numeric segment.
+ * Missing trailing segments are treated as 0, so "2.1" === "2.1.0".
+ *
+ * Examples:
+ *   compareDottedVersions("2.10", "2.9")  →  1   (DB 2.10 newer)
+ *   compareDottedVersions("2.9", "2.10")  → -1
+ *   compareDottedVersions("2.1", "2.1.0") →  0   (equal)
+ *   compareDottedVersions(null, "2.1")    → null (missing)
+ *   compareDottedVersions("abc", "2.1")   → null (non-numeric)
+ */
+export function compareDottedVersions(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number | null {
+  if (!a || !b) return null;
+  const pa = a.split(".");
+  const pb = b.split(".");
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const sa = pa[i] ?? "0";
+    const sb = pb[i] ?? "0";
+    const na = Number(sa);
+    const nb = Number(sb);
+    if (!Number.isFinite(na) || !Number.isFinite(nb)) return null;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
 export interface CharacterDefaults {
   character_id: string;
   name: string;
@@ -149,19 +185,24 @@ export async function mergeDbInternalLogic(characterId: string): Promise<void> {
       return;
     }
 
-    // Version precedence: DB version must parse and not be older than YAML version
-    const dbVersion = parseFloat(profile.version ?? "");
-    const yamlVersion = parseFloat(cached.version ?? "");
-
-    if (Number.isNaN(dbVersion) || Number.isNaN(yamlVersion) || dbVersion < yamlVersion) {
+    // Version precedence: DB version must parse and be at least the YAML version.
+    // Uses compareDottedVersions instead of parseFloat so that multi-segment
+    // versions like "2.10" are correctly ordered after "2.9".
+    const cmp = compareDottedVersions(profile.version, cached.version);
+    if (cmp === null || cmp < 0) {
       console.warn(
-        `[warmCharacterCache] DB version "${profile.version}" is missing/older than YAML version "${cached.version}" for "${characterId}" — using YAML`,
+        `[warmCharacterCache] DB version "${profile.version}" is missing/older ` +
+          `than YAML version "${cached.version}" for "${characterId}" — using YAML`,
       );
       return;
     }
 
-    // All conditions met — overlay DB internal_logic onto the cached entry.
-    // DB field values win over YAML values at the key level.
+    // Key-level PARTIAL OVERLAY, not full replacement:
+    //  - DB field values win over YAML at the key level.
+    //  - YAML keys absent from the DB row are preserved.
+    //  - Removing a key from the DB row causes the YAML value to resurface.
+    // This is intended: the DB layer customizes/overrides individual
+    // internal_logic fields without having to restate the whole YAML block.
     cached.internal_logic = {
       ...(cached.internal_logic as Record<string, string>),
       ...(profile.internalLogic as Record<string, string>),

@@ -587,6 +587,51 @@ function fuseStructMemConsolidations(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Internal-logic evidence retrieval helper (error-isolated)
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal-logic evidence retrieval with error isolation.
+ *
+ * Wraps the search function in a tight try/catch so that a missing migration,
+ * unavailable `vector` extension, or transient DB error degrades to "no
+ * evidence" instead of aborting the turn.
+ *
+ * @param searchFn - The actual search function to call (injected for testability).
+ * @param args - Arguments passed to the search function.
+ * @returns The search results, or `[]` on failure.
+ */
+export async function tryRetrieveInternalLogicEvidence(
+  searchFn: (args: {
+    characterId: string;
+    queryEmbedding: number[];
+    continuityScope?: string | null;
+    arcKeys?: string[];
+  }) => Promise<InternalLogicEvidenceHit[]>,
+  args: {
+    characterId: string;
+    queryEmbedding: number[];
+    continuityScope?: string | null;
+    arcKeys?: string[];
+  },
+): Promise<InternalLogicEvidenceHit[]> {
+  try {
+    return await searchFn(args);
+  } catch (err) {
+    console.error(
+      `[resolveContext] internal-logic evidence retrieval failed for ` +
+        `"${args.characterId}": ${(err as Error).message} — ` +
+        `continuing without evidence`,
+    );
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-rerank context builder
+// ---------------------------------------------------------------------------
+
 /**
  * Build the pre-rerank retrieval context: query planning, embeddings, parallel
  * retrieval, older recall fusion, motif probing, candidate shortlist, and all
@@ -808,9 +853,11 @@ export async function buildPreRerankContext(input: {
     : [];
   openThreadsMs = Date.now() - openThreadsStartedAt;
 
-  // Internal-logic evidence retrieval
+  // Internal-logic evidence retrieval (optional, best-effort).
+  // A retrieval failure (missing migration, vector extension, transient DB
+  // error) must degrade to "no evidence", never break the turn.
   const internalLogicEvidence = queryEmbedding.length > 0 && env.INTERNAL_LOGIC_EVIDENCE_ENABLED
-    ? await tracedSearchInternalLogicEvidence({
+    ? await tryRetrieveInternalLogicEvidence(tracedSearchInternalLogicEvidence, {
         characterId: session.characterId,
         queryEmbedding,
         continuityScope: session.continuityScope,
