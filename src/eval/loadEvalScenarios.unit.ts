@@ -1,91 +1,47 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  loadScenariosBySet,
-  loadRerankScenarios,
-} from "./loadEvalScenarios";
-import type { Scenario } from "./evalTypes";
+import { loadScenariosBySet, loadRerankScenarios } from "./loadEvalScenarios";
 
 describe("loadEvalScenarios", () => {
-  describe("loadScenariosBySet", () => {
-    it("default set loads scenarios from scenarios.json", () => {
-      const { version, scenarios } = loadScenariosBySet("default");
-      assert.equal(typeof version, "string");
-      assert.ok(version.length > 0);
-      assert.ok(Array.isArray(scenarios));
-      assert.ok(scenarios.length > 0);
-      // All default scenarios should have required fields
-      for (const s of scenarios) {
-        assert.ok(typeof s.id === "string");
-        assert.ok(typeof s.description === "string");
-        assert.ok(Array.isArray(s.assertions));
-      }
-    });
+  it("loadScenariosBySet default: returns version string and scenarios with required fields", () => {
+    const { version, scenarios } = loadScenariosBySet("default");
+    assert.equal(typeof version, "string", "version type");
+    assert.ok(version.length > 0, "version non-empty");
+    assert.ok(Array.isArray(scenarios), "scenarios is array");
+    assert.ok(scenarios.length > 0, "scenarios non-empty");
+    for (const s of scenarios) {
+      assert.ok(typeof s.id === "string", `${s.id} — id type`);
+      assert.ok(typeof s.description === "string", `${s.id} — description type`);
+      assert.ok(Array.isArray(s.assertions), `${s.id} — assertions array`);
+    }
   });
 
-  describe("loadRerankScenarios", () => {
-    it("loads rerank scenarios from the rerank scenario library", () => {
-      const scenarios = loadRerankScenarios();
-      assert.ok(Array.isArray(scenarios));
-      assert.ok(scenarios.length > 0);
-      // All rerank scenarios should have rerank in their id
-      for (const s of scenarios) {
-        assert.ok(s.id.startsWith("rerank_"), `Expected rerank_ prefix in ${s.id}`);
-        assert.equal(s.group, "rerank");
-        assert.equal(typeof s.description, "string");
+  it("loadRerankScenarios: returns rerank-prefixed scenarios with valid assertions, agent_turn", () => {
+    const scenarios = loadRerankScenarios();
+    assert.ok(Array.isArray(scenarios), "returns array");
+    assert.ok(scenarios.length > 0, "non-empty");
+    const validTypes = ["rerank_selected_ids", "rerank_rejected_ids", "rerank_context_mode", "rerank_no_fallback", "max_irrelevant_selected"];
+    for (const s of scenarios) {
+      assert.ok(s.id.startsWith("rerank_"), `${s.id} — rerank_ prefix`);
+      assert.equal(s.group, "rerank", `${s.id} — group rerank`);
+      assert.equal(typeof s.description, "string", `${s.id} — description type`);
+      assert.equal(s.eval_mode, "agent_turn", `${s.id} — eval_mode agent_turn`);
+      for (const a of s.assertions) {
+        assert.ok(validTypes.includes(a.type), `${s.id} — valid assertion type "${a.type}"`);
       }
-    });
-
-    it("all rerank scenarios have eval_mode: agent_turn so they execute through the agent_turn path", () => {
-      const scenarios = loadRerankScenarios();
-      for (const s of scenarios) {
-        assert.equal(
-          s.eval_mode,
-          "agent_turn",
-          `Scenario ${s.id} must have eval_mode "agent_turn" to be executable; got "${s.eval_mode}"`,
-        );
-      }
-    });
-
-    it("all rerank scenarios have valid assertion types", () => {
-      const scenarios = loadRerankScenarios();
-      const validTypes = [
-        "rerank_selected_ids",
-        "rerank_rejected_ids",
-        "rerank_context_mode",
-        "rerank_no_fallback",
-        "max_irrelevant_selected",
-      ];
-      for (const s of scenarios) {
-        for (const a of s.assertions) {
-          assert.ok(
-            validTypes.includes(a.type),
-            `Scenario ${s.id}: unknown assertion type "${a.type}"`,
-          );
-        }
-      }
-    });
+    }
   });
 
-  describe("loadScenariosBySet with rerank", () => {
-    it("rerank set loads only rerank scenarios", () => {
-      const { scenarios } = loadScenariosBySet("rerank");
-      assert.ok(scenarios.length > 0);
-      for (const s of scenarios) {
-        assert.ok(s.id.startsWith("rerank_"));
-      }
-    });
-
-    it("all set loads both default and rerank scenarios", () => {
-      const { scenarios } = loadScenariosBySet("all");
-      const rerankCount = scenarios.filter((s) =>
-        s.id.startsWith("rerank_"),
-      ).length;
-      const defaultCount = scenarios.filter(
-        (s) => !s.id.startsWith("rerank_"),
-      ).length;
-      assert.ok(defaultCount > 0, "Should include default scenarios");
-      assert.ok(rerankCount > 0, "Should include rerank scenarios");
-    });
+  it("loadScenariosBySet with rerank: rerank set filters; all set includes both", () => {
+    const rerankOnly = loadScenariosBySet("rerank");
+    assert.ok(rerankOnly.scenarios.length > 0, "rerank set non-empty");
+    for (const s of rerankOnly.scenarios) {
+      assert.ok(s.id.startsWith("rerank_"), `${s.id} — rerank only`);
+    }
+    const allScenarios = loadScenariosBySet("all");
+    const rerankCount = allScenarios.scenarios.filter((s) => s.id.startsWith("rerank_")).length;
+    const defaultCount = allScenarios.scenarios.filter((s) => !s.id.startsWith("rerank_")).length;
+    assert.ok(defaultCount > 0, "default scenarios in all set");
+    assert.ok(rerankCount > 0, "rerank scenarios in all set");
   });
 });

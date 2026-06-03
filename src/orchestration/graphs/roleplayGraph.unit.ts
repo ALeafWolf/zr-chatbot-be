@@ -207,79 +207,47 @@ describe("roleplayGraph", () => {
     assert.ok(state.persisted);
   });
 
-  it("captures loadSession errors with stage 'loadSession'", async () => {
-    const deps = defaultTestDeps({
-      loadSession: async () => { throw new Error("DB unavailable"); },
-    });
+  it("captures node errors, short-circuits downstream, and does not persist", async () => {
+    // loadSession error — downstream state must be undefined
+    let deps = defaultTestDeps({ loadSession: (async () => { throw new Error("DB unavailable"); }) as any });
+    let state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_nonexistent", userMessage: "test" });
+    assert.ok(state.errors, "loadSession — errors");
+    assert.strictEqual(state.errors[0].stage, "loadSession", "loadSession — stage");
+    assert.strictEqual(state.errors[0].message, "DB unavailable", "loadSession — message");
+    assert.strictEqual(state.session, undefined, "loadSession — session undefined");
+    assert.strictEqual(state.characterContext, undefined, "loadSession — characterContext undefined");
+    assert.strictEqual(state.generationResult, undefined, "loadSession — generationResult undefined");
 
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({ sessionId: "sess_nonexistent", userMessage: "test" });
+    // resolveContext error — session and characterContext still loaded; downstream undefined
+    deps = defaultTestDeps({ resolveContext: (async () => { throw new Error("context resolution failed"); }) as any });
+    state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.ok(state.errors, "resolveContext — errors");
+    assert.strictEqual(state.errors[0].stage, "resolveContext", "resolveContext — stage");
+    assert.strictEqual(state.errors[0].message, "context resolution failed", "resolveContext — message");
+    assert.ok(state.session, "resolveContext — session loaded");
+    assert.ok(state.characterContext, "resolveContext — characterContext loaded");
+    assert.strictEqual(state.promptContext, undefined, "resolveContext — promptContext undefined");
+    assert.strictEqual(state.generationResult, undefined, "resolveContext — generationResult undefined");
 
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors.length, 1);
-    assert.strictEqual(state.errors[0].stage, "loadSession");
-    assert.strictEqual(state.errors[0].message, "DB unavailable");
-    assert.strictEqual(state.session, undefined);
-    assert.strictEqual(state.characterContext, undefined);
-    assert.strictEqual(state.generationResult, undefined);
-  });
-
-  it("captures resolveContext errors with stage 'resolveContext'", async () => {
-    const deps = defaultTestDeps({
-      resolveContext: async () => { throw new Error("context resolution failed"); },
-    });
-
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
-
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].stage, "resolveContext");
-    assert.strictEqual(state.errors[0].message, "context resolution failed");
-    assert.ok(state.session);
-    assert.ok(state.characterContext);
-    assert.strictEqual(state.promptContext, undefined);
-    assert.strictEqual(state.generationResult, undefined);
-  });
-
-  it("captures generateDraft errors and routes through errorSink", async () => {
+    // characterContext error — verify downstream blocked and no persist
     let persistCalled = false;
-    const deps = defaultTestDeps({
-      generateDraftFn: async function* () {
-        throw new Error("generation crash");
-      } as any,
-      persistTurn: async () => {
-        persistCalled = true;
-        return fakePersistResult as any;
-      },
-    });
+    deps = defaultTestDeps({ loadCharacterContext: (async () => { throw new Error("character context unavailable"); }) as any, persistTurn: (async () => { persistCalled = true; return fakePersistResult as any; }) as any });
+    state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.ok(state.errors, "charContext — errors");
+    assert.strictEqual(state.errors[0].stage, "loadCharacterContext", "charContext — stage");
+    assert.strictEqual(state.errors[0].message, "character context unavailable", "charContext — message");
+    assert.strictEqual(persistCalled, false, "charContext — no persist");
+    assert.ok(state.session, "charContext — session loaded");
+    assert.strictEqual(state.characterContext, undefined, "charContext — characterContext undefined");
 
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
-
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].stage, "generateDraft");
-    assert.strictEqual(state.errors[0].message, "generation crash");
-    assert.strictEqual(state.generationResult, undefined);
-    assert.strictEqual(persistCalled, false);
-  });
-
-  it("routes characterContext error to errorSink and does not persist", async () => {
-    let persistCalled = false;
-    const deps = defaultTestDeps({
-      loadCharacterContext: async () => { throw new Error("character context unavailable"); },
-      persistTurn: async () => {
-        persistCalled = true;
-        return fakePersistResult as any;
-      },
-    });
-
-    const graph = createRoleplayGraph(deps);
-    const state = await graph.invoke({ sessionId: "sess_rp_test", userMessage: "test" });
-
-    assert.strictEqual(persistCalled, false);
-    assert.strictEqual(state.persisted, undefined);
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].stage, "loadCharacterContext");
+    // generateDraft error — verify persist not called, no generationResult
+    persistCalled = false;
+    deps = defaultTestDeps({ generateDraftFn: (async function* () { throw new Error("generation crash"); }) as any, persistTurn: (async () => { persistCalled = true; return fakePersistResult as any; }) as any });
+    state = await createRoleplayGraph(deps).invoke({ sessionId: "sess_rp_test", userMessage: "test" });
+    assert.ok(state.errors, "genDraft — errors");
+    assert.strictEqual(state.errors[0].stage, "generateDraft", "genDraft — stage");
+    assert.strictEqual(persistCalled, false, "genDraft — no persist");
+    assert.strictEqual(state.generationResult, undefined, "genDraft — generationResult undefined");
   });
 
   it("draft tool loop deflection is persisted with correct reason", async () => {

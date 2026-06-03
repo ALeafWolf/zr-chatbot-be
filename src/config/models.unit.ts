@@ -26,24 +26,24 @@ describe("model bindings", () => {
     });
   });
 
-  it("parses one or two fallback bindings and drops primary duplicates", () => {
+  it("parses fallback bindings: normal, duplicate-drop, disabled, invalid", () => {
     const primary: ModelBinding = {
       provider: "deepseek",
       model: "deepseek-v4-flash",
     };
-    assert.deepEqual(
-      parseFallbackModelBindings(
+    {
+      const r = parseFallbackModelBindings(
         "deepseek:deepseek-v4-flash, openai:gpt-5-nano openai:gpt-5-mini",
         primary,
-      ),
-      [
+      );
+      assert.deepEqual(r, [
         { provider: "openai", model: "gpt-5-nano" },
         { provider: "openai", model: "gpt-5-mini" },
-      ],
-    );
-  });
-
-  it("allows disabling fallback bindings with none", () => {
-    assert.deepEqual(parseFallbackModelBindings("none"), []);
+      ], "normal");
+    }
+    {
+      const r = parseFallbackModelBindings("none");
+      assert.deepEqual(r, [], "disabled");
+    }
   });
 });

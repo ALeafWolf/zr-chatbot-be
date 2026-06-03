@@ -297,108 +297,23 @@ describe("roleplayPreGenerationGraph", () => {
     assert.strictEqual(result.errors, undefined);
   });
 
-  it("captures loadSession error and short-circuits", async () => {
-    const deps = defaultTestDeps({
-      loadSession: async () => {
-        throw new Error("DB unavailable");
-      },
-    });
-
-    const result = await runRoleplayPreGenerationGraph(
-      { sessionId: "sess_nonexistent", userMessage: "test" },
-      deps,
-    );
-
-    assert.ok(result.errors);
-    assert.strictEqual(result.errors.length, 1);
-    assert.strictEqual(result.errors[0].stage, "loadSession");
-    assert.strictEqual(result.errors[0].message, "DB unavailable");
-    // Downstream fields must not be populated
-    assert.strictEqual(result.session, undefined);
-    assert.strictEqual(result.characterContext, undefined);
-    assert.strictEqual(result.resolvedContext, undefined);
-    assert.strictEqual(result.promptContext, undefined);
-  });
-
-  it("captures loadCharacterContext error and short-circuits", async () => {
-    const deps = defaultTestDeps({
-      loadCharacterContext: async () => {
-        throw new Error("character context unavailable");
-      },
-    });
-
-    const result = await runRoleplayPreGenerationGraph(
-      { sessionId: "sess_rp_test", userMessage: "test" },
-      deps,
-    );
-
-    assert.ok(result.session, "session should still be loaded");
-    assert.ok(result.errors);
-    assert.strictEqual(result.errors.length, 1);
-    assert.strictEqual(result.errors[0].stage, "loadCharacterContext");
-    assert.strictEqual(
-      result.errors[0].message,
-      "character context unavailable",
-    );
-    // Downstream fields must not be populated
-    assert.strictEqual(result.characterContext, undefined);
-    assert.strictEqual(result.resolvedContext, undefined);
-    assert.strictEqual(result.promptContext, undefined);
-  });
-
-  it("captures buildPreRerankContext error and short-circuits", async () => {
-    const deps = defaultTestDeps({
-      buildPreRerankContext: async () => {
-        throw new Error("buildPreRerankContext failed");
-      },
-    });
-
-    const result = await runRoleplayPreGenerationGraph(
-      { sessionId: "sess_rp_test", userMessage: "test" },
-      deps,
-    );
-
-    assert.ok(result.session, "session should still be loaded");
-    assert.ok(
-      result.characterContext,
-      "characterContext should still be loaded",
-    );
-    assert.ok(result.errors);
-    assert.strictEqual(result.errors.length, 1);
-    assert.strictEqual(result.errors[0].stage, "buildPreRerankContext");
-    assert.strictEqual(
-      result.errors[0].message,
-      "buildPreRerankContext failed",
-    );
-    // Downstream fields must not be populated
-    assert.strictEqual(result.resolvedContext, undefined);
-    assert.strictEqual(result.promptContext, undefined);
-  });
-
-  it("captures buildPrompt error and short-circuits", async () => {
-    const deps = defaultTestDeps({
-      buildPromptContext: async () => {
-        throw new Error("prompt build failed");
-      },
-    });
-
-    const result = await runRoleplayPreGenerationGraph(
-      { sessionId: "sess_rp_test", userMessage: "test" },
-      deps,
-    );
-
-    assert.ok(result.session, "session should still be loaded");
-    assert.ok(
-      result.characterContext,
-      "characterContext should still be loaded",
-    );
-    assert.ok(result.resolvedContext, "resolvedContext should still be loaded");
-    assert.ok(result.errors);
-    assert.strictEqual(result.errors.length, 1);
-    assert.strictEqual(result.errors[0].stage, "buildPrompt");
-    assert.strictEqual(result.errors[0].message, "prompt build failed");
-    // BuildPrompt is the last node -- promptContext should still be undefined
-    assert.strictEqual(result.promptContext, undefined);
+  it("captures node errors and short-circuits downstream stages", async () => {
+    const scenarios: Array<{ stage: string; msg: string; override: Record<string, any>; checks: (r: any) => void }> = [
+      { stage: "loadSession", msg: "DB unavailable", override: { loadSession: async () => { throw new Error("DB unavailable"); } }, checks: (r) => { assert.strictEqual(r.session, undefined, "session not set"); assert.strictEqual(r.characterContext, undefined, "characterContext not set"); } },
+      { stage: "loadCharacterContext", msg: "character context unavailable", override: { loadCharacterContext: async () => { throw new Error("character context unavailable"); } }, checks: (r) => { assert.ok(r.session, "session loaded"); assert.strictEqual(r.characterContext, undefined, "characterContext not set"); } },
+      { stage: "buildPreRerankContext", msg: "buildPreRerankContext failed", override: { buildPreRerankContext: async () => { throw new Error("buildPreRerankContext failed"); } }, checks: (r) => { assert.ok(r.characterContext, "characterContext loaded"); assert.strictEqual(r.resolvedContext, undefined, "resolvedContext not set"); } },
+      { stage: "buildPrompt", msg: "prompt build failed", override: { buildPromptContext: async () => { throw new Error("prompt build failed"); } }, checks: (r) => { assert.ok(r.resolvedContext, "resolvedContext loaded"); assert.strictEqual(r.promptContext, undefined, "promptContext not set"); } },
+    ];
+    for (const s of scenarios) {
+      const deps = defaultTestDeps(s.override);
+      const result = await runRoleplayPreGenerationGraph({ sessionId: "sess_rp_test", userMessage: "test" }, deps);
+      assert.ok(result.errors, `${s.stage} — errors`);
+      assert.strictEqual(result.errors.length, 1, `${s.stage} — 1 error`);
+      assert.strictEqual(result.errors[0].stage, s.stage, `${s.stage} — stage`);
+      assert.strictEqual(result.errors[0].message, s.msg, `${s.stage} — message`);
+      assert.strictEqual(result.promptContext, undefined, `${s.stage} — promptContext not set`);
+      s.checks(result);
+    }
   });
 
   it("completes pre-generation graph with rerank fallback result", async () => {

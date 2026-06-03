@@ -1,295 +1,36 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createOpenAIProvider,
-  __test_setClient,
-} from "./openaiProvider";
-import type { LLMUsage } from "./providerTypes";
+import { createOpenAIProvider, __test_setClient } from "./openaiProvider";
 
-// ---------------------------------------------------------------------------
-// OpenAI provider cache/reasoning dimension tests (non-streaming)
-//
-// Uses __test_setClient to inject a mock OpenAI client.
-// ---------------------------------------------------------------------------
-
-function assertLLMUsage(
-  actual: LLMUsage | undefined,
-  expected: Partial<LLMUsage> & { inputTokens: number; outputTokens: number },
-): void {
-  assert.ok(actual, "usage should be defined");
-  assert.equal(actual.inputTokens, expected.inputTokens);
-  assert.equal(actual.outputTokens, expected.outputTokens);
-  if (expected.cachedInputTokens !== undefined) {
-    assert.equal(actual.cachedInputTokens, expected.cachedInputTokens);
-  }
-  if (expected.reasoningTokens !== undefined) {
-    assert.equal(actual.reasoningTokens, expected.reasoningTokens);
-  }
-}
-
-function makeMockCompletion(overrides: {
-  prompt_tokens: number;
-  completion_tokens: number;
-  cached_tokens?: number;
-  reasoning_tokens?: number;
-}) {
-  return {
-    id: "mock-cmpl-1",
-    object: "chat.completion",
-    created: 1_000_000,
-    model: "gpt-5-nano",
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content: "Hello" },
-        finish_reason: "stop",
-      },
-    ],
-    usage: {
-      prompt_tokens: overrides.prompt_tokens,
-      completion_tokens: overrides.completion_tokens,
-      total_tokens: overrides.prompt_tokens + overrides.completion_tokens,
-      prompt_tokens_details: overrides.cached_tokens !== undefined
-        ? { cached_tokens: overrides.cached_tokens }
-        : undefined,
-      completion_tokens_details: overrides.reasoning_tokens !== undefined
-        ? { reasoning_tokens: overrides.reasoning_tokens }
-        : undefined,
-    },
-  };
+function mkCompletion(o: { prompt_tokens: number; completion_tokens: number; cached_tokens?: number; reasoning_tokens?: number }) {
+  return { id: "c1", object: "chat.completion", created: 1_000_000, model: "gpt-5-nano", choices: [{ index: 0, message: { role: "assistant", content: "Hello" }, finish_reason: "stop" }], usage: { prompt_tokens: o.prompt_tokens, completion_tokens: o.completion_tokens, total_tokens: o.prompt_tokens + o.completion_tokens, prompt_tokens_details: o.cached_tokens !== undefined ? { cached_tokens: o.cached_tokens } : undefined, completion_tokens_details: o.reasoning_tokens !== undefined ? { reasoning_tokens: o.reasoning_tokens } : undefined } };
 }
 
 describe("OpenAI provider — non-streaming cached input and reasoning tokens", () => {
-  it("emits cachedInputTokens and reasoningTokens when present", async () => {
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async () =>
-            makeMockCompletion({
-              prompt_tokens: 100,
-              completion_tokens: 50,
-              cached_tokens: 30,
-              reasoning_tokens: 10,
-            }),
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-nano");
-    const result = await provider.chat([{ role: "user", content: "Hi" }]);
-    assertLLMUsage(result.usage, {
-      inputTokens: 100,
-      outputTokens: 50,
-      cachedInputTokens: 30,
-      reasoningTokens: 10,
-    });
-  });
-
-  it("omits cachedInputTokens and reasoningTokens when absent", async () => {
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async () =>
-            makeMockCompletion({
-              prompt_tokens: 200,
-              completion_tokens: 80,
-            }),
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-nano");
-    const result = await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(result.usage);
-    assert.equal(result.usage.cachedInputTokens, undefined);
-    assert.equal(result.usage.reasoningTokens, undefined);
-  });
-
-  it("emits cachedInputTokens > prompt_tokens (malformed SDK — adapter passes through)", async () => {
-    // Per review-007's informational: the adapter should not paper over
-    // a malformed SDK response. This test documents that behavior.
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async () =>
-            makeMockCompletion({
-              prompt_tokens: 50,
-              completion_tokens: 20,
-              cached_tokens: 999, // > prompt_tokens (malformed)
-            }),
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-nano");
-    const result = await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(result.usage);
-    // Adapter passes through whatever the SDK reports — no clamping
-    assert.equal(result.usage.cachedInputTokens, 999);
-  });
-
-  it("handles null usage gracefully", async () => {
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async () => ({
-            id: "mock-cmpl-2",
-            object: "chat.completion",
-            created: 1_000_000,
-            model: "gpt-5-nano",
-            choices: [
-              {
-                index: 0,
-                message: { role: "assistant", content: "" },
-                finish_reason: "stop",
-              },
-            ],
-            usage: null,
-          }),
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-nano");
-    const result = await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.equal(result.inputTokens, 0);
-    assert.equal(result.outputTokens, 0);
-    assert.equal(result.usage, undefined);
+  it("emits/omits cached/reasoning tokens, passes through malformed, handles null usage", async () => {
+    const run = async (completion: any) => { __test_setClient({ chat: { completions: { create: async () => completion } } } as never); return (await createOpenAIProvider("gpt-5-nano").chat([{ role: "user", content: "Hi" }])); };
+    let r = await run(mkCompletion({ prompt_tokens: 100, completion_tokens: 50, cached_tokens: 30, reasoning_tokens: 10 }));
+    assert.equal(r.inputTokens, 100, "input passthrough"); assert.equal(r.outputTokens, 50, "output passthrough");
+    assert.equal(r.usage!.cachedInputTokens, 30, "cached present"); assert.equal(r.usage!.reasoningTokens, 10, "reasoning present");
+    r = await run(mkCompletion({ prompt_tokens: 200, completion_tokens: 80 }));
+    assert.equal(r.usage!.cachedInputTokens, undefined, "cached omitted"); assert.equal(r.usage!.reasoningTokens, undefined, "reasoning omitted");
+    r = await run(mkCompletion({ prompt_tokens: 50, completion_tokens: 20, cached_tokens: 999 }));
+    assert.equal(r.usage!.cachedInputTokens, 999, "malformed passes through");
+    r = await run({ id: "c2", object: "chat.completion", created: 1_000_000, model: "gpt-5-nano", choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }], usage: null });
+    assert.equal(r.inputTokens, 0, "null usage → 0 input"); assert.equal(r.outputTokens, 0, "null usage → 0 output"); assert.equal(r.usage, undefined, "null usage → undefined");
   });
 });
 
-describe("OpenAI provider — max_completion_tokens detection", () => {
-  it("sends max_completion_tokens for gpt-5-mini (reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
-          },
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.max_completion_tokens, 2048);
-    assert.equal(capturedParams.max_tokens, undefined);
-  });
-
-  it("sends max_tokens for gpt-4o-mini (non-reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
-          },
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-4o-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.max_tokens, 2048);
-    assert.equal(capturedParams.max_completion_tokens, undefined);
-  });
-
-  it("adds reasoning_effort default for gpt-5-mini with no caller extensions", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
-          },
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, "low");
-  });
-
-  it("respects caller-supplied reasoning_effort override", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
-          },
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-5-mini");
-    await provider.chat([{ role: "user", content: "Hi" }], {
-      openAICompatibleRequestExtensions: { reasoning_effort: "high" },
-    });
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, "high");
-  });
-
-  it("omits reasoning_effort for gpt-4o-mini (non-reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 });
-          },
-        },
-      },
-    } as never);
-
-    const provider = createOpenAIProvider("gpt-4o-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, undefined);
-  });
-});
-
-describe("OpenAI provider — temperature omission for reasoning models", () => {
-  it("omits temperature for gpt-5-mini (reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
-    } as never);
-    const provider = createOpenAIProvider("gpt-5-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal("temperature" in capturedParams, false);
-  });
-
-  it("includes temperature for gpt-5-mini even when reasoning-effort already covers it", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
-    } as never);
-    const provider = createOpenAIProvider("gpt-5-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal("temperature" in capturedParams, false);
-  });
-
-  it("includes temperature for gpt-4o-mini (non-reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    __test_setClient({
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return makeMockCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } },
-    } as never);
-    const provider = createOpenAIProvider("gpt-4o-mini");
-    await provider.chat([{ role: "user", content: "Hi" }]);
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.temperature, 1.0);
+describe("OpenAI provider — max_completion_tokens, reasoning_effort, temperature by model", () => {
+  it("tests params by model: max_completion_tokens for reasoning, max_tokens for others; reasoning_effort; temperature omission", async () => {
+    let p: any; const cap = async (model: string, opts?: any) => { __test_setClient({ chat: { completions: { create: async (params: any) => { p = params; return mkCompletion({ prompt_tokens: 10, completion_tokens: 5 }); } } } } as never); await createOpenAIProvider(model).chat([{ role: "user", content: "Hi" }], opts); };
+    await cap("gpt-5-mini"); assert.equal(p!.max_completion_tokens, 2048, "gpt-5-mini → max_completion_tokens"); assert.equal(p!.max_tokens, undefined, "gpt-5-mini → no max_tokens");
+    await cap("gpt-4o-mini"); assert.equal(p!.max_tokens, 2048, "gpt-4o-mini → max_tokens"); assert.equal(p!.max_completion_tokens, undefined, "gpt-4o-mini → no max_completion_tokens");
+    await cap("gpt-5-mini"); assert.equal(p!.reasoning_effort, "low", "gpt-5-mini → reasoning_effort");
+    await cap("gpt-5-mini", { openAICompatibleRequestExtensions: { reasoning_effort: "high" } }); assert.equal(p!.reasoning_effort, "high", "caller override");
+    await cap("gpt-4o-mini"); assert.equal(p!.reasoning_effort, undefined, "gpt-4o-mini → no reasoning_effort");
+    await cap("gpt-5-mini"); assert.equal("temperature" in p!, false, "gpt-5-mini → temperature omitted");
+    await cap("gpt-5-mini"); assert.equal("temperature" in p!, false, "gpt-5-mini with reasoning — still omitted");
+    await cap("gpt-4o-mini"); assert.equal(p!.temperature, 1.0, "gpt-4o-mini → temperature included");
   });
 });

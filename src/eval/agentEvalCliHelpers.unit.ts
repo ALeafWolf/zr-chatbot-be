@@ -1,195 +1,43 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-
-// Import only pure helpers — no live agent eval, models, or LangSmith.
-import {
-  resolveScenarioSet,
-  findScenarioForAgentEval,
-  validateCliArgs,
-} from "./agentEvalCliHelpers";
+import { resolveScenarioSet, findScenarioForAgentEval, validateCliArgs } from "./agentEvalCliHelpers";
 
 describe("agentEvalCliHelpers", () => {
-  // -----------------------------------------------------------------------
-  // resolveScenarioSet
-  // -----------------------------------------------------------------------
-
-  describe("resolveScenarioSet", () => {
-    it('returns "default" when EVAL_SCENARIO_SET is unset', () => {
-      const restore = clearEnv();
-      assert.equal(resolveScenarioSet(), "default");
-      restore();
-    });
-
-    it('returns "default" for unknown values', () => {
-      const restore = setEnv("EVAL_SCENARIO_SET", "bogus");
-      assert.equal(resolveScenarioSet(), "default");
-      restore();
-    });
-
-    it('returns "rerank" for EVAL_SCENARIO_SET=rerank', () => {
-      const restore = setEnv("EVAL_SCENARIO_SET", "rerank");
-      assert.equal(resolveScenarioSet(), "rerank");
-      restore();
-    });
-
-    it('returns "all" for EVAL_SCENARIO_SET=all', () => {
-      const restore = setEnv("EVAL_SCENARIO_SET", "all");
-      assert.equal(resolveScenarioSet(), "all");
-      restore();
-    });
-
-    it("handles case-insensitive values", () => {
-      const restore = setEnv("EVAL_SCENARIO_SET", "RERANK");
-      assert.equal(resolveScenarioSet(), "rerank");
-      restore();
-    });
+  it("resolveScenarioSet: returns correct value for env settings (unset, unknown, rerank, all, case)", () => {
+    for (const [env, expected] of [[undefined, "default"], ["bogus", "default"], ["rerank", "rerank"], ["all", "all"], ["RERANK", "rerank"]] as Array<[string | undefined, string]>) {
+      const prev = process.env.EVAL_SCENARIO_SET;
+      if (env === undefined) delete process.env.EVAL_SCENARIO_SET; else process.env.EVAL_SCENARIO_SET = env;
+      assert.equal(resolveScenarioSet(), expected, `EVAL_SCENARIO_SET=${env ?? "unset"}`);
+      if (prev === undefined) delete process.env.EVAL_SCENARIO_SET; else process.env.EVAL_SCENARIO_SET = prev;
+    }
   });
 
-  // -----------------------------------------------------------------------
-  // findScenarioForAgentEval
-  // -----------------------------------------------------------------------
-
-  describe("findScenarioForAgentEval", () => {
-    it("returns null for unknown scenario id", () => {
-      const result = findScenarioForAgentEval("nonexistent_scenario", "default");
-      assert.equal(result, null);
-    });
-
-    it("finds a scenario from scenarios.json in default set", () => {
-      const result = findScenarioForAgentEval("no_ai_claim", "default");
-      assert.ok(result !== null);
-      assert.equal(result.scenario_id, "no_ai_claim");
-      assert.equal(result.eval_mode, undefined);
-    });
-
-    it("finds a default scenario in all set", () => {
-      const result = findScenarioForAgentEval("no_ai_claim", "all");
-      assert.ok(result !== null);
-    });
-
-    it("finds a rerank scenario in rerank set", () => {
-      const result = findScenarioForAgentEval(
-        "rerank_001_immediate_action_no_memory",
-        "rerank",
-      );
-      assert.ok(result !== null);
-    });
-
-    it("finds a rerank scenario in all set", () => {
-      const result = findScenarioForAgentEval(
-        "rerank_001_immediate_action_no_memory",
-        "all",
-      );
-      assert.ok(result !== null);
-    });
-
-    it("does NOT find a default scenario in rerank set", () => {
-      const result = findScenarioForAgentEval("no_ai_claim", "rerank");
-      assert.equal(result, null);
-    });
-
-    it("preserves the scenario's actual eval_mode without defaulting", () => {
-      const result = findScenarioForAgentEval("no_ai_claim", "default");
-      assert.ok(result !== null);
-      assert.equal(result.eval_mode, undefined);
-    });
-
-    it("rerank scenarios have eval_mode agent_turn", () => {
-      const result = findScenarioForAgentEval(
-        "rerank_001_immediate_action_no_memory",
-        "rerank",
-      );
-      assert.ok(result !== null);
-      assert.equal(result.eval_mode, "agent_turn");
-    });
+  it("findScenarioForAgentEval: finds scenarios by ID across sets, returns null for unknown, preserves eval_mode", () => {
+    assert.equal(findScenarioForAgentEval("nonexistent_scenario", "default"), null, "unknown → null");
+    const d = findScenarioForAgentEval("no_ai_claim", "default")!;
+    assert.ok(d, "found default scenario"); assert.equal(d.eval_mode, undefined, "preserves undefined eval_mode");
+    assert.ok(findScenarioForAgentEval("no_ai_claim", "all"), "found in all set");
+    assert.ok(findScenarioForAgentEval("rerank_001_immediate_action_no_memory", "rerank"), "found rerank in rerank set");
+    assert.ok(findScenarioForAgentEval("rerank_001_immediate_action_no_memory", "all"), "found rerank in all set");
+    assert.equal(findScenarioForAgentEval("no_ai_claim", "rerank"), null, "default not in rerank set");
+    const rerank = findScenarioForAgentEval("rerank_001_immediate_action_no_memory", "rerank")!;
+    assert.ok(rerank, "rerank found"); assert.equal(rerank.eval_mode, "agent_turn", "rerank has agent_turn");
   });
 
-  // -----------------------------------------------------------------------
-  // validateCliArgs — CLI boundary validation (no live imports)
-  // -----------------------------------------------------------------------
+  it("validateCliArgs: rejects missing/unknown/validator-only/retrieval, accepts valid rerank", () => {
+    let r = validateCliArgs(undefined as any, "default");
+    assert.equal(r.ok, false); if (!r.ok) { assert.ok(r.error.includes("--scenario"), "missing — error msg"); assert.equal(r.exitCode, 1, "missing — exitCode"); }
 
-  describe("validateCliArgs", () => {
-    it("rejects missing --scenario with error message and exitCode 1", () => {
-      const result = validateCliArgs(undefined, "default");
-      assert.equal(result.ok, false);
-      if (!result.ok) {
-        assert.ok(result.error.includes("--scenario"));
-        assert.equal(result.exitCode, 1);
-      }
-    });
+    r = validateCliArgs("nonexistent", "default");
+    assert.equal(r.ok, false); if (!r.ok) { assert.ok(r.error.includes("not found"), "unknown — error msg"); assert.equal(r.exitCode, 1, "unknown — exitCode"); }
 
-    it("rejects unknown scenario id with error and exitCode 1", () => {
-      const result = validateCliArgs("nonexistent", "default");
-      assert.equal(result.ok, false);
-      if (!result.ok) {
-        assert.ok(result.error.includes("not found"));
-        assert.equal(result.exitCode, 1);
-      }
-    });
+    r = validateCliArgs("no_ai_claim", "default");
+    assert.equal(r.ok, false); if (!r.ok) { assert.ok(r.error.includes("(omitted)"), "no eval_mode — error msg"); assert.ok(r.error.includes('"agent_turn"'), "no eval_mode — agent_turn req"); assert.equal(r.exitCode, 1, "no eval_mode — exitCode"); }
 
-    it("rejects scenario without eval_mode (validator-only) with error and exitCode 1", () => {
-      const result = validateCliArgs("no_ai_claim", "default");
-      assert.equal(result.ok, false);
-      if (!result.ok) {
-        assert.ok(result.error.includes('(omitted)'));
-        assert.ok(result.error.includes('"agent_turn"'));
-        assert.equal(result.exitCode, 1);
-      }
-    });
+    r = validateCliArgs("canon_attribution_fenghe_first_visit", "default");
+    assert.equal(r.ok, false); if (!r.ok) { assert.ok(r.error.includes('"retrieval"'), "retrieval — error msg"); assert.equal(r.exitCode, 1, "retrieval — exitCode"); }
 
-    it("rejects retrieval scenario with error and exitCode 1", () => {
-      const result = validateCliArgs("canon_attribution_fenghe_first_visit", "default");
-      assert.equal(result.ok, false);
-      if (!result.ok) {
-        assert.ok(result.error.includes('"retrieval"'));
-        assert.equal(result.exitCode, 1);
-      }
-    });
-
-    it("accepts a valid rerank scenario with agent_turn eval_mode", () => {
-      const result = validateCliArgs(
-        "rerank_001_immediate_action_no_memory",
-        "rerank",
-      );
-      assert.equal(result.ok, true);
-      if (result.ok) {
-        assert.equal(result.scenarioId, "rerank_001_immediate_action_no_memory");
-        assert.equal(result.input.eval_mode, "agent_turn");
-      }
-    });
+    r = validateCliArgs("rerank_001_immediate_action_no_memory", "rerank");
+    assert.equal(r.ok, true); if (r.ok) { assert.equal(r.scenarioId, "rerank_001_immediate_action_no_memory", "valid — scenarioId"); assert.equal(r.input.eval_mode, "agent_turn", "valid — eval_mode"); }
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-function setEnv(key: string, value: string): () => void {
-  const previous = process.env[key];
-  process.env[key] = value;
-  return () => {
-    if (previous === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = previous;
-    }
-  };
-}
-
-function clearEnv(): () => void {
-  const keys = ["EVAL_SCENARIO_SET"];
-  const previous = {} as Record<string, string | undefined>;
-  for (const key of keys) {
-    previous[key] = process.env[key];
-    delete process.env[key];
-  }
-  return () => {
-    for (const key of keys) {
-      if (previous[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = previous[key];
-      }
-    }
-  };
-}

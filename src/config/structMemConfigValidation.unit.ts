@@ -14,33 +14,35 @@ const validFlags = {
 };
 
 describe("StructMem config validation", () => {
-  it("does not warn for a fully enabled recipe", () => {
-    assert.deepEqual(validateStructMemFlagConfig(validFlags), []);
-  });
+  it("validates StructMem flag recipe: fully enabled, consolidation-no-structmem, cross-session-write-no-read", () => {
+    assert.deepEqual(validateStructMemFlagConfig(validFlags), [], "fully enabled");
 
-  it("warns when consolidation is enabled without StructMem", () => {
-    const warnings = validateStructMemFlagConfig({
-      ...validFlags,
-      STRUCTMEM_ENABLED: false,
-    });
-    assert.ok(
-      warnings.some((warning) =>
-        warning.includes("STRUCTMEM_CONSOLIDATION_ENABLED"),
-      ),
-    );
-  });
+    {
+      const warnings = validateStructMemFlagConfig({
+        ...validFlags,
+        STRUCTMEM_ENABLED: false,
+      });
+      assert.ok(
+        warnings.some((warning) =>
+          warning.includes("STRUCTMEM_CONSOLIDATION_ENABLED"),
+        ),
+        "consolidation without StructMem",
+      );
+    }
 
-  it("warns when cross-session writes have no read or promotion path", () => {
-    const warnings = validateStructMemFlagConfig({
-      ...validFlags,
-      STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED: false,
-      STRUCTMEM_PROMOTION_TO_IME_ENABLED: false,
-    });
-    assert.ok(
-      warnings.some((warning) =>
-        warning.includes("STRUCTMEM_CROSS_SESSION_WRITE_ENABLED"),
-      ),
-    );
+    {
+      const warnings = validateStructMemFlagConfig({
+        ...validFlags,
+        STRUCTMEM_CROSS_SESSION_RETRIEVAL_ENABLED: false,
+        STRUCTMEM_PROMOTION_TO_IME_ENABLED: false,
+      });
+      assert.ok(
+        warnings.some((warning) =>
+          warning.includes("STRUCTMEM_CROSS_SESSION_WRITE_ENABLED"),
+        ),
+        "cross-session writes no read/promotion path",
+      );
+    }
   });
 
   it("emits warnings through an injected logger", () => {

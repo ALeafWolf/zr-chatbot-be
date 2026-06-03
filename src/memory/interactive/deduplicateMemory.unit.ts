@@ -15,66 +15,48 @@ const distinctJudge = async (): Promise<MemoryDedupJudgeResult> => ({
 });
 
 describe("decideMemoryDedupAction", () => {
-  it("deduplicates high-similarity candidates without the judge", async () => {
-    let called = false;
-    const result = await decideMemoryDedupAction({
-      newMemorySummary: "new",
-      candidates: [{ id: "near", summary: "old", cosineDistance: 0.05 }],
-      judge: async () => {
-        called = true;
-        return distinctJudge();
-      },
-    });
-    assert.deepEqual(result, {
-      kind: "deduplicate",
-      existingId: "near",
-      usedJudge: false,
-    });
-    assert.equal(called, false);
-  });
-
-  it("inserts low-similarity candidates without the judge", async () => {
-    let called = false;
-    const result = await decideMemoryDedupAction({
-      newMemorySummary: "new",
-      candidates: [{ id: "far", summary: "old", cosineDistance: 0.3 }],
-      judge: async () => {
-        called = true;
-        return sameJudge();
-      },
-    });
-    assert.deepEqual(result, { kind: "insert", usedJudge: false });
-    assert.equal(called, false);
-  });
-
-  it("invokes the judge for ambiguous candidates", async () => {
-    let called = false;
-    const result = await decideMemoryDedupAction({
-      newMemorySummary: "new",
-      candidates: [
-        { id: "ambiguous", summary: "old", cosineDistance: 0.15 },
-      ],
-      judge: async () => {
-        called = true;
-        return sameJudge();
-      },
-    });
-    assert.equal(called, true);
-    assert.deepEqual(result, {
-      kind: "deduplicate",
-      existingId: "ambiguous",
-      usedJudge: true,
-    });
-  });
-
-  it("inserts when the ambiguous judge says distinct", async () => {
-    const result = await decideMemoryDedupAction({
-      newMemorySummary: "new",
-      candidates: [
-        { id: "ambiguous", summary: "old", cosineDistance: 0.15 },
-      ],
-      judge: distinctJudge,
-    });
-    assert.deepEqual(result, { kind: "insert", usedJudge: true });
+  it("handles high/low/ambiguous/ambiguous-distinct similarity thresholds", async () => {
+    // high similarity → deduplicate without judge
+    {
+      let called = false;
+      const result = await decideMemoryDedupAction({
+        newMemorySummary: "new",
+        candidates: [{ id: "near", summary: "old", cosineDistance: 0.05 }],
+        judge: async () => { called = true; return distinctJudge(); },
+      });
+      assert.deepEqual(result, { kind: "deduplicate", existingId: "near", usedJudge: false }, "high");
+      assert.equal(called, false, "high — judge not called");
+    }
+    // low similarity → insert without judge
+    {
+      let called = false;
+      const result = await decideMemoryDedupAction({
+        newMemorySummary: "new",
+        candidates: [{ id: "far", summary: "old", cosineDistance: 0.3 }],
+        judge: async () => { called = true; return sameJudge(); },
+      });
+      assert.deepEqual(result, { kind: "insert", usedJudge: false }, "low");
+      assert.equal(called, false, "low — judge not called");
+    }
+    // ambiguous → invokes judge, deduplicates when judge says same
+    {
+      let called = false;
+      const result = await decideMemoryDedupAction({
+        newMemorySummary: "new",
+        candidates: [{ id: "ambiguous", summary: "old", cosineDistance: 0.15 }],
+        judge: async () => { called = true; return sameJudge(); },
+      });
+      assert.equal(called, true, "ambiguous — judge called");
+      assert.deepEqual(result, { kind: "deduplicate", existingId: "ambiguous", usedJudge: true }, "ambiguous");
+    }
+    // ambiguous judge says distinct → insert
+    {
+      const result = await decideMemoryDedupAction({
+        newMemorySummary: "new",
+        candidates: [{ id: "ambiguous", summary: "old", cosineDistance: 0.15 }],
+        judge: distinctJudge,
+      });
+      assert.deepEqual(result, { kind: "insert", usedJudge: true }, "ambiguous-distinct");
+    }
   });
 });

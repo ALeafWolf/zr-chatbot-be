@@ -2,601 +2,64 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type OpenAI from "openai";
 import { streamOpenAICompatibleChat } from "./openaiStream";
-import type { LLMUsage } from "./providerTypes";
 
-// ---------------------------------------------------------------------------
-// OpenAI streaming cached-input accumulation tests
-//
-// streamOpenAICompatibleChat accepts an OpenAI client directly, so we don't
-// need a module-level test seam — just pass a mock client.
-// ---------------------------------------------------------------------------
-
-function mockChunk(overrides: {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  cached_tokens?: number;
-  reasoning_tokens?: number;
-  content?: string;
-  finish_reason?: string | null;
-}) {
-  const usage =
-    overrides.prompt_tokens !== undefined
-      ? {
-          prompt_tokens: overrides.prompt_tokens,
-          completion_tokens: overrides.completion_tokens ?? 0,
-          total_tokens: (overrides.prompt_tokens ?? 0) + (overrides.completion_tokens ?? 0),
-          prompt_tokens_details:
-            overrides.cached_tokens !== undefined
-              ? { cached_tokens: overrides.cached_tokens }
-              : undefined,
-          completion_tokens_details:
-            overrides.reasoning_tokens !== undefined
-              ? { reasoning_tokens: overrides.reasoning_tokens }
-              : undefined,
-        }
-      : undefined;
-
-  return {
-    id: "chunk_1",
-    object: "chat.completion.chunk",
-    created: 1_000_000,
-    model: "gpt-5-nano",
-    choices: [
-      {
-        index: 0,
-        delta: {
-          content: overrides.content ?? null,
-          ...(overrides.reasoning_tokens !== undefined
-            ? { reasoning_content: "thinking..." }
-            : {}),
-        },
-        finish_reason: overrides.finish_reason ?? null,
-      },
-    ],
-    usage: usage ?? null,
-  };
+function mockChunk(o: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number; reasoning_tokens?: number; content?: string; finish_reason?: string | null; prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) {
+  const usage = o.prompt_tokens !== undefined ? { prompt_tokens: o.prompt_tokens, completion_tokens: o.completion_tokens ?? 0, total_tokens: (o.prompt_tokens ?? 0) + (o.completion_tokens ?? 0), prompt_tokens_details: o.cached_tokens !== undefined ? { cached_tokens: o.cached_tokens } : undefined, completion_tokens_details: o.reasoning_tokens !== undefined ? { reasoning_tokens: o.reasoning_tokens } : undefined, prompt_cache_hit_tokens: o.prompt_cache_hit_tokens ?? null, prompt_cache_miss_tokens: o.prompt_cache_miss_tokens ?? null } : undefined;
+  return { id: "c1", object: "chat.completion.chunk", created: 1_000_000, model: "gpt-5-nano", choices: [{ index: 0, delta: { content: o.content ?? null }, finish_reason: o.finish_reason ?? null }], usage: usage ?? null };
 }
-
-/** Build an async iterable from an array of chunks. */
-async function* chunksToStream<T>(
-  chunks: T[],
-): AsyncIterable<T> {
-  for (const c of chunks) {
-    yield c;
-  }
+async function* toStream<T>(chunks: T[]): AsyncIterable<T> { for (const c of chunks) yield c; }
+async function drain(client: OpenAI, model = "gpt-5-nano", opts?: Record<string, unknown>): Promise<any[]> {
+  const evs: any[] = []; for await (const e of streamOpenAICompatibleChat(client, model, [{ role: "user", content: "Hi" }], opts)) evs.push(e); return evs;
 }
+function makeClient(chunks: any[]): OpenAI { return { chat: { completions: { create: async () => toStream(chunks) } } } as any; }
 
 describe("OpenAI stream — cached input token accumulation", () => {
-  it("accumulates cachedInputTokens from the final chunk's usage", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockChunk({ content: "Hello", finish_reason: null }),
-              mockChunk({
-                content: "",
-                finish_reason: "stop",
-                prompt_tokens: 100,
-                completion_tokens: 50,
-                cached_tokens: 30,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-nano",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.equal(events.length, 2);
-    assert.equal((events[0] as { type: string }).type, "delta");
-
-    const done = events[1] as { type: string; usage: LLMUsage };
-    assert.equal(done.type, "assistant_done");
-    assert.equal(done.usage.inputTokens, 100);
-    assert.equal(done.usage.outputTokens, 50);
-    assert.equal(done.usage.cachedInputTokens, 30);
-  });
-
-  it("accumulates reasoningTokens alongside cachedInputTokens", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: null }),
-              mockChunk({
-                content: "",
-                finish_reason: "stop",
-                prompt_tokens: 200,
-                completion_tokens: 80,
-                cached_tokens: 50,
-                reasoning_tokens: 20,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-nano",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    const done = events[events.length - 1] as { type: string; usage: LLMUsage };
-    assert.equal(done.usage.inputTokens, 200);
-    assert.equal(done.usage.outputTokens, 80);
-    assert.equal(done.usage.cachedInputTokens, 50);
-    assert.equal(done.usage.reasoningTokens, 20);
-  });
-
-  it("omits cachedInputTokens when no caching occurred", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockChunk({
-                content: "No cache",
-                finish_reason: "stop",
-                prompt_tokens: 50,
-                completion_tokens: 25,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-nano",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    const done = events[events.length - 1] as { type: string; usage: LLMUsage };
-    assert.equal(done.usage.cachedInputTokens, undefined);
-  });
-
-  it("passes through cached_tokens > prompt_tokens (malformed — no clamping)", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockChunk({
-                content: "Bad",
-                finish_reason: "stop",
-                prompt_tokens: 50,
-                completion_tokens: 10,
-                cached_tokens: 999, // malformed
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-nano",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    const done = events[events.length - 1] as { type: string; usage: LLMUsage };
-    // Adapter passes through whatever the SDK reports
-    assert.equal(done.usage.cachedInputTokens, 999);
+  it("accumulates cachedInputTokens/reasoningTokens, omits when no caching, passes through malformed", async () => {
+    const cases: Array<{ chunks: any[]; checks: (evs: any[]) => void }> = [
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 100, completion_tokens: 50, cached_tokens: 30 })], checks: (e) => { assert.equal(e.length, 2, "delta + done"); assert.equal(e[0].type, "delta", "first delta"); assert.equal(e[1].type, "assistant_done", "final done"); assert.equal(e[1].usage.inputTokens, 100, "input passthrough"); assert.equal(e[1].usage.outputTokens, 50, "output passthrough"); assert.equal(e[1].usage.cachedInputTokens, 30, "cached"); } },
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 200, completion_tokens: 80, cached_tokens: 50, reasoning_tokens: 20 })], checks: (e) => { assert.equal(e[1].usage.inputTokens, 200, "input"); assert.equal(e[1].usage.outputTokens, 80, "output"); assert.equal(e[1].usage.cachedInputTokens, 50, "cached+reason"); assert.equal(e[1].usage.reasoningTokens, 20, "reason"); } },
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 50, completion_tokens: 25 })], checks: (e) => { assert.equal(e[1].usage.cachedInputTokens, undefined, "no cache"); } },
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 50, completion_tokens: 10, cached_tokens: 999 })], checks: (e) => { assert.equal(e[1].usage.cachedInputTokens, 999, "malformed"); } },
+    ];
+    for (const c of cases) { const evs = await drain(makeClient(c.chunks)); c.checks(evs); }
   });
 });
-
-// ---------------------------------------------------------------------------
-// DeepSeek-style streaming — flat cache hit/miss fields
-// ---------------------------------------------------------------------------
-
-/** Build a DeepSeek-shaped chunk. Returns `unknown` because its `usage`
- *  shape (flat `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`)
- *  differs from the OpenAI-shaped chunks used in the tests above. */
-function mockDSChunk(overrides: {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  prompt_cache_hit_tokens?: number;
-  prompt_cache_miss_tokens?: number;
-  reasoning_tokens?: number;
-  content?: string;
-  finish_reason?: string | null;
-}) {
-  const usage =
-    overrides.prompt_tokens !== undefined
-      ? {
-          prompt_tokens: overrides.prompt_tokens,
-          completion_tokens: overrides.completion_tokens ?? 0,
-          total_tokens: (overrides.prompt_tokens ?? 0) + (overrides.completion_tokens ?? 0),
-          // DeepSeek flat cache fields — NOT nested
-          prompt_cache_hit_tokens: overrides.prompt_cache_hit_tokens ?? null,
-          prompt_cache_miss_tokens: overrides.prompt_cache_miss_tokens ?? null,
-          completion_tokens_details:
-            overrides.reasoning_tokens !== undefined
-              ? { reasoning_tokens: overrides.reasoning_tokens }
-              : undefined,
-        }
-      : undefined;
-
-  return {
-    id: "ds_chunk_1",
-    object: "chat.completion.chunk",
-    created: 1_000_000,
-    model: "deepseek-v4-flash",
-    choices: [
-      {
-        index: 0,
-        delta: {
-          content: overrides.content ?? null,
-        },
-        finish_reason: overrides.finish_reason ?? null,
-      },
-    ],
-    usage: usage ?? null,
-  };
-}
 
 describe("DeepSeek stream — flat cache hit/miss accumulation", () => {
-  it("accumulates cacheHitInputTokens and cacheMissInputTokens from final chunk", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockDSChunk({ content: "Hello", finish_reason: null }),
-              mockDSChunk({
-                content: "",
-                finish_reason: "stop",
-                prompt_tokens: 200,
-                completion_tokens: 80,
-                prompt_cache_hit_tokens: 150,
-                prompt_cache_miss_tokens: 50,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "deepseek-v4-flash",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.equal(events.length, 2);
-    const done = events[1] as { type: string; usage: LLMUsage };
-    assert.equal(done.usage.cacheHitInputTokens, 150);
-    assert.equal(done.usage.cacheMissInputTokens, 50);
-  });
-
-  it("accumulates reasoning tokens alongside cache hit/miss", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockDSChunk({ content: "Hi", finish_reason: null }),
-              mockDSChunk({
-                content: "",
-                finish_reason: "stop",
-                prompt_tokens: 300,
-                completion_tokens: 120,
-                prompt_cache_hit_tokens: 100,
-                prompt_cache_miss_tokens: 200,
-                reasoning_tokens: 30,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "deepseek-v4-flash",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    const done = events[events.length - 1] as { type: string; usage: LLMUsage };
-    assert.equal(done.usage.cacheHitInputTokens, 100);
-    assert.equal(done.usage.cacheMissInputTokens, 200);
-    assert.equal(done.usage.reasoningTokens, 30);
-  });
-
-  it("omits cache fields when no caching occurred", async () => {
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async () =>
-            chunksToStream([
-              mockDSChunk({
-                content: "No cache",
-                finish_reason: "stop",
-                prompt_tokens: 50,
-                completion_tokens: 25,
-              }),
-            ]),
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "deepseek-v4-flash",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    const done = events[events.length - 1] as { type: string; usage: LLMUsage };
-    assert.equal(done.usage.cacheHitInputTokens, undefined);
-    assert.equal(done.usage.cacheMissInputTokens, undefined);
+  it("accumulates cacheHit/MissInputTokens and reasoningTokens, omits when no caching", async () => {
+    const cases: Array<{ chunks: any[]; checks: (evs: any[]) => void }> = [
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 200, completion_tokens: 80, prompt_cache_hit_tokens: 150, prompt_cache_miss_tokens: 50 })], checks: (e) => { assert.equal(e.length, 2, "delta + done"); assert.equal(e[1].usage.cacheHitInputTokens, 150, "hit"); assert.equal(e[1].usage.cacheMissInputTokens, 50, "miss"); } },
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 300, completion_tokens: 120, prompt_cache_hit_tokens: 100, prompt_cache_miss_tokens: 200, reasoning_tokens: 30 })], checks: (e) => { assert.equal(e[1].usage.cacheHitInputTokens, 100, "hit"); assert.equal(e[1].usage.cacheMissInputTokens, 200, "miss"); assert.equal(e[1].usage.reasoningTokens, 30, "reason"); } },
+      { chunks: [mockChunk({ content: "H", finish_reason: null }), mockChunk({ content: "", finish_reason: "stop", prompt_tokens: 50, completion_tokens: 25 })], checks: (e) => { assert.equal(e[1].usage.cacheHitInputTokens, undefined, "no hit"); assert.equal(e[1].usage.cacheMissInputTokens, undefined, "no miss"); } },
+    ];
+    for (const c of cases) { const evs = await drain(makeClient(c.chunks)); c.checks(evs); }
   });
 });
 
-describe("OpenAI stream — max_completion_tokens detection", () => {
-  it("sends max_completion_tokens for gpt-5-mini (reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-mini",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.max_completion_tokens, 2048);
-    assert.equal(capturedParams.max_tokens, undefined);
-  });
-
-  it("sends max_tokens for gpt-4o-mini (non-reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-4o-mini",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.max_tokens, 2048);
-    assert.equal(capturedParams.max_completion_tokens, undefined);
-  });
-
-  it("sends max_tokens for deepseek-v4-pro (regression guard)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "deepseek-v4-pro",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    // DeepSeek does NOT use max_completion_tokens — this is the regression guard
-    assert.equal(capturedParams.max_tokens, 2048);
-    assert.equal(capturedParams.max_completion_tokens, undefined);
+describe("OpenAI stream — max_completion_tokens / max_tokens", () => {
+  it("sends max_completion_tokens for reasoning models, max_tokens for non-reasoning and DeepSeek", async () => {
+    let p: any; const capture = async (model: string) => { const client = { chat: { completions: { create: async (params: any) => { p = params; return toStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } } } as any; await drain(client, model); };
+    await capture("gpt-5-mini"); assert.equal(p.max_completion_tokens, 2048, "gpt-5-mini → max_completion_tokens"); assert.equal(p.max_tokens, undefined, "gpt-5-mini → no max_tokens");
+    await capture("gpt-4o-mini"); assert.equal(p.max_tokens, 2048, "gpt-4o-mini → max_tokens"); assert.equal(p.max_completion_tokens, undefined, "gpt-4o-mini → no max_completion_tokens");
+    await capture("deepseek-v4-pro"); assert.equal(p.max_tokens, 2048, "deepseek → max_tokens"); assert.equal(p.max_completion_tokens, undefined, "deepseek → no max_completion_tokens");
   });
 });
 
-describe("OpenAI stream — reasoning_effort default", () => {
-  it("adds reasoning_effort: low for gpt-5-mini with no caller extensions", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-mini",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, "low");
-  });
-
-  it("respects caller-supplied reasoning_effort override", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-5-mini",
-      [{ role: "user", content: "Hi" }],
-      { openAICompatibleRequestExtensions: { reasoning_effort: "medium" } },
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, "medium");
-  });
-
-  it("omits reasoning_effort for gpt-4o-mini (non-reasoning)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "gpt-4o-mini",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, undefined);
-  });
-
-  it("omits reasoning_effort for deepseek-v4-pro (regression guard)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: {
-        completions: {
-          create: async (params: Record<string, unknown>) => {
-            capturedParams = params;
-            return chunksToStream([
-              mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 }),
-            ]);
-          },
-        },
-      },
-    } as unknown as OpenAI;
-
-    const events: unknown[] = [];
-    for await (const ev of streamOpenAICompatibleChat(
-      mockClient,
-      "deepseek-v4-pro",
-      [{ role: "user", content: "Hi" }],
-    )) {
-      events.push(ev);
-    }
-
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.reasoning_effort, undefined);
+describe("OpenAI stream — reasoning_effort", () => {
+  it("adds reasoning_effort for reasoning models, respects caller override, omits for non-reasoning and DeepSeek", async () => {
+    let p: any; const capture = async (model: string, opts?: any) => { const client = { chat: { completions: { create: async (params: any) => { p = params; return toStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } } } as any; await drain(client, model, opts); };
+    await capture("gpt-5-mini"); assert.equal(p.reasoning_effort, "low", "default");
+    await capture("gpt-5-mini", { openAICompatibleRequestExtensions: { reasoning_effort: "medium" } } as any); assert.equal(p.reasoning_effort, "medium", "override");
+    await capture("gpt-4o-mini"); assert.equal(p.reasoning_effort, undefined, "gpt-4o-mini");
+    await capture("deepseek-v4-pro"); assert.equal(p.reasoning_effort, undefined, "deepseek");
   });
 });
 
 describe("OpenAI stream — temperature omission for reasoning models", () => {
-  function makeMockClient() {
-    return {
-      chat: { completions: { create: async (params: Record<string, unknown>) => ({ params, [Symbol.asyncIterator]() { return this; }, next: async () => ({ done: true, value: undefined }) }) } },
-    } as unknown as OpenAI;
-  }
-
-  it("omits temperature for gpt-5-mini (reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
-    } as unknown as OpenAI;
-    for await (const _ of streamOpenAICompatibleChat(mockClient, "gpt-5-mini", [{ role: "user", content: "Hi" }])) { /* drain */ }
-    assert.ok(capturedParams);
-    assert.equal("temperature" in capturedParams, false);
-  });
-
-  it("includes temperature for gpt-4o-mini (non-reasoning model)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
-    } as unknown as OpenAI;
-    for await (const _ of streamOpenAICompatibleChat(mockClient, "gpt-4o-mini", [{ role: "user", content: "Hi" }])) { /* drain */ }
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.temperature, 1.0);
-  });
-
-  it("includes temperature for deepseek-v4-pro (regression guard — non-reasoning)", async () => {
-    let capturedParams: Record<string, unknown> | undefined;
-    const mockClient = {
-      chat: { completions: { create: async (params: Record<string, unknown>) => { capturedParams = params; return chunksToStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } },
-    } as unknown as OpenAI;
-    for await (const _ of streamOpenAICompatibleChat(mockClient, "deepseek-v4-pro", [{ role: "user", content: "Hi" }])) { /* drain */ }
-    assert.ok(capturedParams);
-    assert.equal(capturedParams.temperature, 1.0);
+  it("omits temperature for reasoning models, includes for non-reasoning and DeepSeek", async () => {
+    let p: any; const capture = async (model: string) => { const client = { chat: { completions: { create: async (params: any) => { p = params; return toStream([mockChunk({ content: "Hi", finish_reason: "stop", prompt_tokens: 10, completion_tokens: 5 })]); } } } } as any; await drain(client, model); };
+    await capture("gpt-5-mini"); assert.equal("temperature" in p, false, "gpt-5-mini");
+    await capture("gpt-4o-mini"); assert.equal(p.temperature, 1.0, "gpt-4o-mini");
+    await capture("deepseek-v4-pro"); assert.equal(p.temperature, 1.0, "deepseek");
   });
 });

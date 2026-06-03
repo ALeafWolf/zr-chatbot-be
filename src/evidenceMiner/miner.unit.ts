@@ -97,38 +97,25 @@ const FIXTURE_INTERNAL_LOGIC: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 describe("buildMinerSystemPrompt", () => {
-  it("includes all 8 node descriptions in Chinese", () => {
+  it("includes all node descriptions, Chinese rules, and handles empty input", () => {
+    // All 8 nodes present
     const prompt = buildMinerSystemPrompt(FIXTURE_INTERNAL_LOGIC);
     for (const node of INTERNAL_LOGIC_NODES) {
-      // Node key appears as English enum key (e.g. "core_belief")
-      assert.ok(
-        prompt.includes(node),
-        `prompt should mention node "${node}"`,
-      );
+      assert.ok(prompt.includes(node), `prompt should mention node "${node}"`);
     }
-  });
-
-  it("includes Chinese grounding rules (no invent, chunkRef, confidenceScore)", () => {
-    const prompt = buildMinerSystemPrompt(FIXTURE_INTERNAL_LOGIC);
-    // Rules are in Chinese now
+    // Chinese grounding rules
     assert.ok(prompt.includes("chunkRef"));
     assert.ok(prompt.includes("confidenceScore"));
     assert.ok(prompt.includes("不得编造"));
     assert.ok(prompt.includes("内在逻辑节点"));
     assert.ok(prompt.includes("归因规则"));
     assert.ok(prompt.includes("左然"));
-  });
-
-  it("handles empty internalLogic gracefully", () => {
-    const prompt = buildMinerSystemPrompt({});
+    // Empty internalLogic
+    const promptEmpty = buildMinerSystemPrompt({});
     for (const node of INTERNAL_LOGIC_NODES) {
-      assert.ok(
-        prompt.includes(node),
-        `prompt should mention node "${node}" even without descriptions`,
-      );
+      assert.ok(promptEmpty.includes(node), `prompt should mention node "${node}" even without descriptions`);
     }
-    // Should show (无描述) instead of (no description available)
-    assert.ok(prompt.includes("无描述"));
+    assert.ok(promptEmpty.includes("无描述"));
   });
 });
 
@@ -137,43 +124,31 @@ describe("buildMinerSystemPrompt", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildBatchUserMessage", () => {
-  it("includes chunk indices and provenance in Chinese format", () => {
+  it("includes chunk indices, provenance, text, speaker, and context", () => {
     const msg = buildBatchUserMessage(FIXTURE_CHUNKS, 0);
-    // Chinese format uses 片断 instead of Chunk
-    assert.ok(msg.includes("[片断 0]"));
-    assert.ok(msg.includes("[片断 1]"));
-    assert.ok(msg.includes("[片断 2]"));
-    assert.ok(msg.includes("main_zhiai"));
-    assert.ok(msg.includes("evidence_chapter"));
-  });
-
-  it("includes chunk text content and speaker", () => {
-    const msg = buildBatchUserMessage(FIXTURE_CHUNKS, 0);
-    assert.ok(msg.includes("courtroom"));
-    assert.ok(msg.includes("small gift"));
-    assert.ok(msg.includes("changed the subject"));
-    // Speaker info should be present
-    assert.ok(msg.includes("发言人"));
-  });
-
-  it("includes context before/after when present", () => {
+    assert.ok(msg.includes("[片断 0]"), "index 0");
+    assert.ok(msg.includes("[片断 1]"), "index 1");
+    assert.ok(msg.includes("[片断 2]"), "index 2");
+    assert.ok(msg.includes("main_zhiai"), "arcKey");
+    assert.ok(msg.includes("evidence_chapter"), "chapterKey");
+    assert.ok(msg.includes("courtroom"), "chunk 0 text");
+    assert.ok(msg.includes("small gift"), "chunk 1 text");
+    assert.ok(msg.includes("changed the subject"), "chunk 2 text");
+    assert.ok(msg.includes("发言人"), "speaker label");
+    // Context before/after
     const chunksWithContext: CanonChunk[] = [
       {
         ...FIXTURE_CHUNKS[0]!,
-        contextBefore: [
-          { text: "Previous line.", speaker: "narrator", unitIndex: 4 },
-        ],
-        contextAfter: [
-          { text: "Next line.", speaker: "左然", unitIndex: 6 },
-        ],
+        contextBefore: [{ text: "Previous line.", speaker: "narrator", unitIndex: 4 }],
+        contextAfter: [{ text: "Next line.", speaker: "左然", unitIndex: 6 }],
       },
     ];
-    const msg = buildBatchUserMessage(chunksWithContext, 0);
-    assert.ok(msg.includes("上文"));
-    assert.ok(msg.includes("下文"));
-    assert.ok(msg.includes("Previous line."));
-    assert.ok(msg.includes("Next line."));
-    assert.ok(msg.includes("左然"));
+    const ctxMsg = buildBatchUserMessage(chunksWithContext, 0);
+    assert.ok(ctxMsg.includes("上文"));
+    assert.ok(ctxMsg.includes("下文"));
+    assert.ok(ctxMsg.includes("Previous line."));
+    assert.ok(ctxMsg.includes("Next line."));
+    assert.ok(ctxMsg.includes("左然"));
   });
 });
 
@@ -182,8 +157,9 @@ describe("buildBatchUserMessage", () => {
 // ---------------------------------------------------------------------------
 
 describe("mapAndValidateProposals", () => {
-  it("maps chunkRef to correct provenance", () => {
-    const proposals: LlmProposal[] = [
+  it("maps valid proposals, drops invalid nodes/refs, preserves fields, handles empty", () => {
+    // Valid mapping
+    const validProps: LlmProposal[] = [
       {
         chunkRef: 0,
         node: "core_belief",
@@ -199,104 +175,46 @@ describe("mapAndValidateProposals", () => {
         confidenceScore: 0.9,
       },
     ];
+    let { valid, dropped, warnings } = mapAndValidateProposals(validProps, FIXTURE_CHUNKS);
+    assert.equal(valid.length, 2, "valid — count");
+    assert.equal(dropped, 0, "valid — dropped");
+    assert.equal(warnings.length, 0, "valid — warnings");
+    assert.equal(valid[0]!.chunk.storySceneId, "00000000-0000-0000-0000-000000000001", "valid — sceneId 0");
+    assert.equal(valid[0]!.node, "core_belief", "valid — node 0");
+    assert.equal(valid[1]!.chunk.storySceneId, "00000000-0000-0000-0000-000000000002", "valid — sceneId 1");
+    assert.equal(valid[1]!.node, "core_motivation", "valid — node 1");
+    assert.equal(valid[1]!.confidenceScore, 0.9, "valid — score 1");
 
-    const { valid, dropped, warnings } = mapAndValidateProposals(
-      proposals,
-      FIXTURE_CHUNKS,
-    );
-
-    assert.equal(valid.length, 2);
-    assert.equal(dropped, 0);
-    assert.equal(warnings.length, 0);
-
-    assert.equal(
-      valid[0]!.chunk.storySceneId,
-      "00000000-0000-0000-0000-000000000001",
-    );
-    assert.equal(valid[0]!.node, "core_belief");
-    assert.equal(valid[1]!.chunk.storySceneId, "00000000-0000-0000-0000-000000000002");
-    assert.equal(valid[1]!.node, "core_motivation");
-    assert.equal(valid[1]!.confidenceScore, 0.9);
-  });
-
-  it("drops proposals with invalid node names", () => {
-    const proposals: LlmProposal[] = [
-      {
-        chunkRef: 0,
-        node: "core_belief",
-        claimText: "Valid claim",
-        evidenceText: "Some evidence",
-        confidenceScore: 0.8,
-      },
-      {
-        chunkRef: 1,
-        node: "nonexistent_node",
-        claimText: "Invalid node",
-        evidenceText: "Some evidence",
-        confidenceScore: 0.7,
-      },
-      {
-        chunkRef: 2,
-        node: "NOT_A_NODE",
-        claimText: "Also invalid",
-        evidenceText: "Some evidence",
-        confidenceScore: 0.6,
-      },
+    // Invalid node names
+    const invalidNodeProps: LlmProposal[] = [
+      { chunkRef: 0, node: "core_belief", claimText: "Valid claim", evidenceText: "Some evidence", confidenceScore: 0.8 },
+      { chunkRef: 1, node: "nonexistent_node", claimText: "Invalid node", evidenceText: "Some evidence", confidenceScore: 0.7 },
+      { chunkRef: 2, node: "NOT_A_NODE", claimText: "Also invalid", evidenceText: "Some evidence", confidenceScore: 0.6 },
     ];
-
-    const { valid, dropped, warnings } = mapAndValidateProposals(
-      proposals,
-      FIXTURE_CHUNKS,
-    );
-
-    assert.equal(valid.length, 1);
-    assert.equal(dropped, 2);
-    assert.equal(warnings.length, 2);
-    assert.equal(valid[0]!.node, "core_belief");
+    ({ valid, dropped, warnings } = mapAndValidateProposals(invalidNodeProps, FIXTURE_CHUNKS));
+    assert.equal(valid.length, 1, "invalid node — count");
+    assert.equal(dropped, 2, "invalid node — dropped");
+    assert.equal(warnings.length, 2, "invalid node — warnings");
+    assert.equal(valid[0]!.node, "core_belief", "invalid node — kept");
     const warnText = warnings.join(" ");
-    assert.ok(warnText.includes("nonexistent_node"));
-    assert.ok(warnText.includes("NOT_A_NODE"));
-  });
+    assert.ok(warnText.includes("nonexistent_node"), "invalid node — warn for nonexistent_node");
+    assert.ok(warnText.includes("NOT_A_NODE"), "invalid node — warn for NOT_A_NODE");
 
-  it("drops proposals with out-of-range chunkRef", () => {
-    const proposals: LlmProposal[] = [
-      {
-        chunkRef: 0,
-        node: "core_belief",
-        claimText: "Valid",
-        evidenceText: "Text",
-        confidenceScore: 0.8,
-      },
-      {
-        chunkRef: 999,
-        node: "core_fear",
-        claimText: "Out of range",
-        evidenceText: "Text",
-        confidenceScore: 0.7,
-      },
-      {
-        chunkRef: -1,
-        node: "core_motivation",
-        claimText: "Negative ref",
-        evidenceText: "Text",
-        confidenceScore: 0.6,
-      },
+    // Out-of-range chunkRef
+    const oobProps: LlmProposal[] = [
+      { chunkRef: 0, node: "core_belief", claimText: "Valid", evidenceText: "Text", confidenceScore: 0.8 },
+      { chunkRef: 999, node: "core_fear", claimText: "Out of range", evidenceText: "Text", confidenceScore: 0.7 },
+      { chunkRef: -1, node: "core_motivation", claimText: "Negative ref", evidenceText: "Text", confidenceScore: 0.6 },
     ];
+    ({ valid, dropped, warnings } = mapAndValidateProposals(oobProps, FIXTURE_CHUNKS));
+    assert.equal(valid.length, 1, "OOB — count");
+    assert.equal(dropped, 2, "OOB — dropped");
+    const oobWarnText = warnings.join(" ");
+    assert.ok(oobWarnText.includes("999"), "OOB — warn 999");
+    assert.ok(oobWarnText.includes("-1"), "OOB — warn -1");
 
-    const { valid, dropped, warnings } = mapAndValidateProposals(
-      proposals,
-      FIXTURE_CHUNKS,
-    );
-
-    assert.equal(valid.length, 1);
-    assert.equal(dropped, 2);
-    const warnText = warnings.join(" ");
-    assert.ok(warnText.includes("999"));
-    assert.ok(warnText.includes("-1"));
-  });
-
-  it("preserves all fields on valid proposals", () => {
-    const proposals: LlmProposal[] = [
+    // Preserves all fields on valid proposal
+    const fieldProps: LlmProposal[] = [
       {
         chunkRef: 2,
         node: "defense_mechanism",
@@ -305,22 +223,19 @@ describe("mapAndValidateProposals", () => {
         confidenceScore: 0.75,
       },
     ];
+    ({ valid } = mapAndValidateProposals(fieldProps, FIXTURE_CHUNKS));
+    assert.equal(valid.length, 1, "fields — count");
+    assert.equal(valid[0]!.node, "defense_mechanism", "fields — node");
+    assert.equal(valid[0]!.claimText, "He deflects when emotions surface.", "fields — claimText");
+    assert.equal(valid[0]!.evidenceText, "He changed the subject when asked about feelings.", "fields — evidenceText");
+    assert.equal(valid[0]!.confidenceScore, 0.75, "fields — score");
+    assert.equal(valid[0]!.chunk.storySceneId, "00000000-0000-0000-0000-000000000003", "fields — sceneId");
 
-    const { valid } = mapAndValidateProposals(proposals, FIXTURE_CHUNKS);
-
-    assert.equal(valid.length, 1);
-    assert.equal(valid[0]!.node, "defense_mechanism");
-    assert.equal(valid[0]!.claimText, "He deflects when emotions surface.");
-    assert.equal(valid[0]!.evidenceText, "He changed the subject when asked about feelings.");
-    assert.equal(valid[0]!.confidenceScore, 0.75);
-    assert.equal(valid[0]!.chunk.storySceneId, "00000000-0000-0000-0000-000000000003");
-  });
-
-  it("returns empty arrays for empty input", () => {
-    const { valid, dropped, warnings } = mapAndValidateProposals([], FIXTURE_CHUNKS);
-    assert.equal(valid.length, 0);
-    assert.equal(dropped, 0);
-    assert.equal(warnings.length, 0);
+    // Empty input
+    ({ valid, dropped, warnings } = mapAndValidateProposals([], FIXTURE_CHUNKS));
+    assert.equal(valid.length, 0, "empty — count");
+    assert.equal(dropped, 0, "empty — dropped");
+    assert.equal(warnings.length, 0, "empty — warnings");
   });
 });
 
@@ -329,25 +244,7 @@ describe("mapAndValidateProposals", () => {
 // ---------------------------------------------------------------------------
 
 describe("batchChunks", () => {
-  it("splits into correct batch sizes", () => {
-    const batches = batchChunks(FIXTURE_CHUNKS, 2);
-    assert.equal(batches.length, 2);
-    assert.equal(batches[0]!.length, 2);
-    assert.equal(batches[1]!.length, 1);
-  });
-
-  it("returns single batch if batchSize >= chunks.length", () => {
-    const batches = batchChunks(FIXTURE_CHUNKS, 10);
-    assert.equal(batches.length, 1);
-    assert.equal(batches[0]!.length, 3);
-  });
-
-  it("returns empty array for empty input", () => {
-    const batches = batchChunks([], 5);
-    assert.equal(batches.length, 0);
-  });
-
-  it("uses default BATCH_SIZE when not specified", () => {
+  it("splits into batches of correct sizes, handles edge cases", () => {
     const manyChunks: CanonChunk[] = Array.from({ length: 40 }, (_, i) => ({
       text: `Chunk ${i}`,
       speaker: null,
@@ -360,9 +257,16 @@ describe("batchChunks", () => {
       contextBefore: [],
       contextAfter: [],
     }));
-    const batches = batchChunks(manyChunks);
-    for (const b of batches) {
-      assert.ok(b.length <= 15, `batch should not exceed 15, got ${b.length}`);
+
+    const cases = [
+      { name: "explicit batchSize 2", args: { chunks: FIXTURE_CHUNKS, size: 2 }, expect: (bs: CanonChunk[][]) => { assert.equal(bs.length, 2, "size2 — batches"); assert.equal(bs[0]!.length, 2, "size2 — batch0"); assert.equal(bs[1]!.length, 1, "size2 — batch1"); } },
+      { name: "batchSize >= length", args: { chunks: FIXTURE_CHUNKS, size: 10 }, expect: (bs: CanonChunk[][]) => { assert.equal(bs.length, 1, "large — batches"); assert.equal(bs[0]!.length, 3, "large — batch0"); } },
+      { name: "empty input", args: { chunks: [], size: 5 }, expect: (bs: CanonChunk[][]) => { assert.equal(bs.length, 0, "empty — batches"); } },
+      { name: "default BATCH_SIZE (15)", args: { chunks: manyChunks }, expect: (bs: CanonChunk[][]) => { for (const b of bs) assert.ok(b.length <= 15, `batch should not exceed 15, got ${b.length}`); } },
+    ];
+    for (const c of cases) {
+      const batches = batchChunks(c.args.chunks, c.args.size as number | undefined);
+      c.expect(batches);
     }
   });
 });
@@ -372,69 +276,31 @@ describe("batchChunks", () => {
 // ---------------------------------------------------------------------------
 
 describe("callLlmForBatch", () => {
-  it("returns proposals from injected LLM", async () => {
-    const fakeLlm = async (_system: string, _user: string) => {
-      return {
-        ok: true as const,
-        data: {
-          proposals: [
-            {
-              chunkRef: 0,
-              node: "core_belief",
-              claimText: "Thorough preparation",
-              evidenceText: "Reviewed documents twice",
-              confidenceScore: 0.8,
-            },
-          ],
-        } as LlmProposalOutput,
-      };
-    };
+  it("returns proposals on success, handles LLM failure and thrown errors", async () => {
+    // Success
+    const fakeLlm = async (_system: string, _user: string) => ({
+      ok: true as const,
+      data: { proposals: [{ chunkRef: 0, node: "core_belief", claimText: "Thorough preparation", evidenceText: "Reviewed documents twice", confidenceScore: 0.8 }] },
+    });
+    let result = await callLlmForBatch("system", FIXTURE_CHUNKS.slice(0, 1), 0, fakeLlm);
+    assert.ok(result.ok, "success — ok");
+    assert.equal(result.proposals.length, 1, "success — proposals length");
+    assert.equal(result.proposals[0]!.node, "core_belief", "success — node");
+    assert.equal(result.proposals[0]!.chunkRef, 0, "success — chunkRef");
 
-    const result = await callLlmForBatch(
-      "system",
-      FIXTURE_CHUNKS.slice(0, 1),
-      0,
-      fakeLlm,
-    );
+    // LLM failure (ok: false)
+    const failingLlm = async (_system: string, _user: string) => ({ ok: false as const, error: "LLM rate limited" });
+    result = await callLlmForBatch("system", FIXTURE_CHUNKS.slice(0, 1), 0, failingLlm);
+    assert.ok(!result.ok, "fail — !ok");
+    assert.equal(result.proposals.length, 0, "fail — proposals length");
+    assert.ok(result.error?.includes("LLM rate limited"), "fail — error message");
 
-    assert.ok(result.ok);
-    assert.equal(result.proposals.length, 1);
-    assert.equal(result.proposals[0]!.node, "core_belief");
-    assert.equal(result.proposals[0]!.chunkRef, 0);
-  });
-
-  it("handles LLM failure gracefully", async () => {
-    const failingLlm = async (_system: string, _user: string) => {
-      return { ok: false as const, error: "LLM rate limited" };
-    };
-
-    const result = await callLlmForBatch(
-      "system",
-      FIXTURE_CHUNKS.slice(0, 1),
-      0,
-      failingLlm,
-    );
-
-    assert.ok(!result.ok);
-    assert.equal(result.proposals.length, 0);
-    assert.ok(result.error?.includes("LLM rate limited"));
-  });
-
-  it("handles thrown errors gracefully", async () => {
-    const throwingLlm = async (_system: string, _user: string) => {
-      throw new Error("Network error");
-    };
-
-    const result = await callLlmForBatch(
-      "system",
-      FIXTURE_CHUNKS.slice(0, 1),
-      0,
-      throwingLlm,
-    );
-
-    assert.ok(!result.ok);
-    assert.equal(result.proposals.length, 0);
-    assert.ok(result.error?.includes("Network error"));
+    // Thrown error
+    const throwingLlm = async (_system: string, _user: string) => { throw new Error("Network error"); };
+    result = await callLlmForBatch("system", FIXTURE_CHUNKS.slice(0, 1), 0, throwingLlm);
+    assert.ok(!result.ok, "throw — !ok");
+    assert.equal(result.proposals.length, 0, "throw — proposals length");
+    assert.ok(result.error?.includes("Network error"), "throw — error message");
   });
 });
 
@@ -443,44 +309,23 @@ describe("callLlmForBatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("filterByConfidence", () => {
-  const makeProposal = (node: string, score: number): MappedProposal => ({
-    chunk: FIXTURE_CHUNKS[0]!,
-    node: node as InternalLogicNode,
-    claimText: "Test claim",
-    evidenceText: "Test evidence",
-    confidenceScore: score,
-  });
-
-  it("keeps proposals above or equal to threshold", () => {
-    const proposals = [makeProposal("core_belief", 0.8), makeProposal("core_fear", 0.6)];
-    const { kept, dropped } = filterByConfidence(proposals, 0.6);
-    assert.equal(kept.length, 2);
-    assert.equal(dropped, 0);
-  });
-
-  it("drops proposals below threshold", () => {
-    const proposals = [
-      makeProposal("core_belief", 0.8),
-      makeProposal("core_fear", 0.4),
-      makeProposal("core_motivation", 0.2),
+  it("filters by threshold, handles all above/below/empty", () => {
+    const makeProposal = (node: string, score: number): MappedProposal => ({
+      chunk: FIXTURE_CHUNKS[0]!, node: node as InternalLogicNode,
+      claimText: "Test claim", evidenceText: "Test evidence", confidenceScore: score,
+    });
+    const cases = [
+      { name: "all above threshold", input: [makeProposal("core_belief", 0.8), makeProposal("core_fear", 0.6)], threshold: 0.6, expectKept: 2, expectDropped: 0, expectNode: null },
+      { name: "some below threshold", input: [makeProposal("core_belief", 0.8), makeProposal("core_fear", 0.4), makeProposal("core_motivation", 0.2)], threshold: 0.6, expectKept: 1, expectDropped: 2, expectNode: "core_belief" },
+      { name: "all below threshold", input: [makeProposal("core_belief", 0.3), makeProposal("core_fear", 0.5)], threshold: 0.6, expectKept: 0, expectDropped: 2, expectNode: null },
+      { name: "empty input", input: [], threshold: 0.6, expectKept: 0, expectDropped: 0, expectNode: null },
     ];
-    const { kept, dropped } = filterByConfidence(proposals, 0.6);
-    assert.equal(kept.length, 1);
-    assert.equal(dropped, 2);
-    assert.equal(kept[0]!.node, "core_belief");
-  });
-
-  it("keeps nothing when all below threshold", () => {
-    const proposals = [makeProposal("core_belief", 0.3), makeProposal("core_fear", 0.5)];
-    const { kept, dropped } = filterByConfidence(proposals, 0.6);
-    assert.equal(kept.length, 0);
-    assert.equal(dropped, 2);
-  });
-
-  it("handles empty input", () => {
-    const { kept, dropped } = filterByConfidence([], 0.6);
-    assert.equal(kept.length, 0);
-    assert.equal(dropped, 0);
+    for (const c of cases) {
+      const { kept, dropped } = filterByConfidence(c.input, c.threshold);
+      assert.equal(kept.length, c.expectKept, `kept — ${c.name}`);
+      assert.equal(dropped, c.expectDropped, `dropped — ${c.name}`);
+      if (c.expectNode !== null) assert.equal(kept[0]!.node, c.expectNode, `node — ${c.name}`);
+    }
   });
 });
 
@@ -489,72 +334,29 @@ describe("filterByConfidence", () => {
 // ---------------------------------------------------------------------------
 
 describe("dedupByExactMatch", () => {
-  const makeProposal = (node: string, evidenceText: string): MappedProposal => ({
-    chunk: FIXTURE_CHUNKS[0]!,
-    node: node as InternalLogicNode,
-    claimText: "Test claim",
-    evidenceText,
-    confidenceScore: 0.8,
-  });
+  it("skips exact matches (case-insensitive, whitespace-normalized), distinguishes nodes, handles empty", () => {
+    const makeProposal = (node: string, evidenceText: string): MappedProposal => ({
+      chunk: FIXTURE_CHUNKS[0]!, node: node as InternalLogicNode,
+      claimText: "Test claim", evidenceText, confidenceScore: 0.8,
+    });
+    const makeExisting = (node: string, evidenceText: string): ExistingEvidenceRow => ({
+      id: "existing-id", node, evidenceText, embedding: null,
+    });
+    const characterId = "zuo_ran";
 
-  const makeExisting = (node: string, evidenceText: string): ExistingEvidenceRow => ({
-    id: "existing-id",
-    node,
-    evidenceText,
-    embedding: null,
-  });
-
-  it("skips proposals with exact matching (characterId, node, evidenceText)", () => {
-    const proposals = [
-      makeProposal("core_belief", "Zuo Ran prepared thoroughly."),
-      makeProposal("core_fear", "He was afraid of letting others down."),
+    const cases = [
+      { name: "exact match skips", proposals: [makeProposal("core_belief", "Zuo Ran prepared thoroughly."), makeProposal("core_fear", "He was afraid of letting others down.")], existing: [makeExisting("core_belief", "Zuo Ran prepared thoroughly.")], expectKept: 1, expectSkipped: 1, expectNode: "core_fear" },
+      { name: "case-insensitive", proposals: [makeProposal("core_belief", "Zuo Ran Prepared Thoroughly.")], existing: [makeExisting("core_belief", "zuo ran prepared thoroughly.")], expectKept: 0, expectSkipped: 1, expectNode: null },
+      { name: "whitespace normalization", proposals: [makeProposal("core_belief", "Zuo  Ran   Prepared Thoroughly.")], existing: [makeExisting("core_belief", "Zuo Ran Prepared Thoroughly.")], expectKept: 0, expectSkipped: 1, expectNode: null },
+      { name: "different nodes distinguished", proposals: [makeProposal("core_belief", "Same evidence text.")], existing: [makeExisting("core_fear", "Same evidence text.")], expectKept: 1, expectSkipped: 0, expectNode: null },
+      { name: "empty existing", proposals: [makeProposal("core_belief", "Some text")], existing: [], expectKept: 1, expectSkipped: 0, expectNode: null },
     ];
-    const existing = [makeExisting("core_belief", "Zuo Ran prepared thoroughly.")];
-
-    const { kept, skipped } = dedupByExactMatch(proposals, "zuo_ran", existing);
-    assert.equal(kept.length, 1);
-    assert.equal(skipped, 1);
-    assert.equal(kept[0]!.node, "core_fear");
-  });
-
-  it("is case-insensitive for evidence text", () => {
-    const proposals = [
-      makeProposal("core_belief", "Zuo Ran Prepared Thoroughly."),
-    ];
-    const existing = [makeExisting("core_belief", "zuo ran prepared thoroughly.")];
-
-    const { kept, skipped } = dedupByExactMatch(proposals, "zuo_ran", existing);
-    assert.equal(kept.length, 0);
-    assert.equal(skipped, 1);
-  });
-
-  it("normalizes whitespace for comparison", () => {
-    const proposals = [
-      makeProposal("core_belief", "Zuo  Ran   Prepared Thoroughly."),
-    ];
-    const existing = [makeExisting("core_belief", "Zuo Ran Prepared Thoroughly.")];
-
-    const { kept, skipped } = dedupByExactMatch(proposals, "zuo_ran", existing);
-    assert.equal(kept.length, 0);
-    assert.equal(skipped, 1);
-  });
-
-  it("distinguishes same text under different nodes", () => {
-    const proposals = [
-      makeProposal("core_belief", "Same evidence text."),
-    ];
-    const existing = [makeExisting("core_fear", "Same evidence text.")];
-
-    const { kept, skipped } = dedupByExactMatch(proposals, "zuo_ran", existing);
-    assert.equal(kept.length, 1);
-    assert.equal(skipped, 0);
-  });
-
-  it("handles empty existing rows", () => {
-    const proposals = [makeProposal("core_belief", "Some text")];
-    const { kept, skipped } = dedupByExactMatch(proposals, "zuo_ran", []);
-    assert.equal(kept.length, 1);
-    assert.equal(skipped, 0);
+    for (const c of cases) {
+      const { kept, skipped } = dedupByExactMatch(c.proposals, characterId, c.existing);
+      assert.equal(kept.length, c.expectKept, `kept — ${c.name}`);
+      assert.equal(skipped, c.expectSkipped, `skipped — ${c.name}`);
+      if (c.expectNode !== null) assert.equal(kept[0]!.node, c.expectNode, `node — ${c.name}`);
+    }
   });
 });
 
@@ -563,16 +365,15 @@ describe("dedupByExactMatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("normalizeEvidenceText", () => {
-  it("lowercases text", () => {
-    assert.equal(normalizeEvidenceText("HELLO World"), "hello world");
-  });
-
-  it("trims whitespace", () => {
-    assert.equal(normalizeEvidenceText("  hello  "), "hello");
-  });
-
-  it("collapses internal whitespace", () => {
-    assert.equal(normalizeEvidenceText("hello   world\n  foo"), "hello world foo");
+  it("lowercases, trims, and collapses whitespace", () => {
+    const cases = [
+      { name: "lowercase", input: "HELLO World", expected: "hello world" },
+      { name: "trim", input: "  hello  ", expected: "hello" },
+      { name: "collapse whitespace", input: "hello   world\n  foo", expected: "hello world foo" },
+    ];
+    for (const c of cases) {
+      assert.equal(normalizeEvidenceText(c.input), c.expected, c.name);
+    }
   });
 });
 
@@ -581,29 +382,19 @@ describe("normalizeEvidenceText", () => {
 // ---------------------------------------------------------------------------
 
 describe("cosineSimilarity", () => {
-  it("returns 1 for identical vectors", () => {
-    assert.equal(cosineSimilarity([1, 2, 3], [1, 2, 3]), 1);
-  });
-
-  it("returns 0 for orthogonal vectors", () => {
-    assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
-  });
-
-  it("returns a value between 0 and 1 for non-identical vectors", () => {
-    const sim = cosineSimilarity([1, 2, 3], [1, 2, 0]);
-    assert.ok(sim > 0 && sim < 1);
-  });
-
-  it("returns 0 for empty vectors", () => {
-    assert.equal(cosineSimilarity([], []), 0);
-  });
-
-  it("returns 0 for mismatched lengths", () => {
-    assert.equal(cosineSimilarity([1, 2], [1, 2, 3]), 0);
-  });
-
-  it("returns 0 when magnitude is 0", () => {
-    assert.equal(cosineSimilarity([0, 0], [1, 2]), 0);
+  it("computes similarity for various vector pairs", () => {
+    const cases = [
+      { name: "identical", a: [1, 2, 3], b: [1, 2, 3], expect: (v: number) => v === 1 },
+      { name: "orthogonal", a: [1, 0], b: [0, 1], expect: (v: number) => v === 0 },
+      { name: "between 0 and 1", a: [1, 2, 3], b: [1, 2, 0], expect: (v: number) => v > 0 && v < 1 },
+      { name: "empty vectors", a: [], b: [], expect: (v: number) => v === 0 },
+      { name: "mismatched lengths", a: [1, 2], b: [1, 2, 3], expect: (v: number) => v === 0 },
+      { name: "zero magnitude", a: [0, 0], b: [1, 2], expect: (v: number) => v === 0 },
+    ];
+    for (const c of cases) {
+      const sim = cosineSimilarity(c.a, c.b);
+      assert.ok(c.expect(sim), c.name);
+    }
   });
 });
 
@@ -612,37 +403,28 @@ describe("cosineSimilarity", () => {
 // ---------------------------------------------------------------------------
 
 describe("isEmbeddingDuplicate", () => {
-  it("returns true when embedding exceeds threshold for same node", () => {
+  it("returns correct boolean for threshold, node, embedding availability, and empty", () => {
     const existing: ExistingEvidenceRow[] = [
       { id: "1", node: "core_belief", evidenceText: "", embedding: [1, 0, 0] },
     ];
-    assert.ok(isEmbeddingDuplicate([1, 0, 0], "core_belief", existing, 0.9));
-  });
-
-  it("returns false when embedding is below threshold for same node", () => {
-    const existing: ExistingEvidenceRow[] = [
-      { id: "1", node: "core_belief", evidenceText: "", embedding: [1, 0, 0] },
-    ];
-    assert.ok(!isEmbeddingDuplicate([0, 1, 0], "core_belief", existing, 0.9));
-  });
-
-  it("ignores rows from different nodes", () => {
-    const existing: ExistingEvidenceRow[] = [
+    const existingOtherNode: ExistingEvidenceRow[] = [
       { id: "1", node: "core_fear", evidenceText: "", embedding: [1, 0, 0] },
     ];
-    // Even though embedding matches, different node
-    assert.ok(!isEmbeddingDuplicate([1, 0, 0], "core_belief", existing, 0.9));
-  });
-
-  it("ignores rows without embeddings", () => {
-    const existing: ExistingEvidenceRow[] = [
+    const existingNullEmbedding: ExistingEvidenceRow[] = [
       { id: "1", node: "core_belief", evidenceText: "", embedding: null },
     ];
-    assert.ok(!isEmbeddingDuplicate([1, 0, 0], "core_belief", existing, 0.9));
-  });
-
-  it("returns false for empty existing rows", () => {
-    assert.ok(!isEmbeddingDuplicate([1, 0, 0], "core_belief", [], 0.9));
+    const cases = [
+      { name: "above threshold same node", embedding: [1, 0, 0], node: "core_belief", existing, threshold: 0.9, expected: true },
+      { name: "below threshold same node", embedding: [0, 1, 0], node: "core_belief", existing, threshold: 0.9, expected: false },
+      { name: "different node (same embedding)", embedding: [1, 0, 0], node: "core_belief", existing: existingOtherNode, threshold: 0.9, expected: false },
+      { name: "null embedding ignored", embedding: [1, 0, 0], node: "core_belief", existing: existingNullEmbedding, threshold: 0.9, expected: false },
+      { name: "empty existing rows", embedding: [1, 0, 0], node: "core_belief", existing: [], threshold: 0.9, expected: false },
+    ];
+    for (const c of cases) {
+      const result = isEmbeddingDuplicate(c.embedding, c.node, c.existing, c.threshold);
+      if (c.expected) assert.ok(result, c.name);
+      else assert.ok(!result, c.name);
+    }
   });
 });
 
@@ -651,65 +433,22 @@ describe("isEmbeddingDuplicate", () => {
 // ---------------------------------------------------------------------------
 
 describe("dedupEmbeddedProposals", () => {
-  it("skips proposals whose embedding matches an existing row", () => {
-    const proposals: Array<{ proposal: MappedProposal; embedding: number[] }> = [
-      {
-        proposal: {
-          chunk: FIXTURE_CHUNKS[0]!,
-          node: "core_belief",
-          claimText: "Claim",
-          evidenceText: "Evidence",
-          confidenceScore: 0.8,
-        },
-        embedding: [1, 0, 0],
-      },
-      {
-        proposal: {
-          chunk: FIXTURE_CHUNKS[1]!,
-          node: "core_fear",
-          claimText: "Claim 2",
-          evidenceText: "Evidence 2",
-          confidenceScore: 0.7,
-        },
-        embedding: [0, 1, 0],
-      },
+  it("skips matching embeddings, keeps all when none have embeddings, handles empty", () => {
+    const makeEntry = (node: string, embedding: number[]) => ({
+      proposal: { chunk: FIXTURE_CHUNKS[0]!, node: node as InternalLogicNode, claimText: "Claim", evidenceText: "Evidence", confidenceScore: 0.8 },
+      embedding,
+    } as const);
+    const cases = [
+      { name: "match skips", proposals: [makeEntry("core_belief", [1, 0, 0]), makeEntry("core_fear", [0, 1, 0])], existing: [{ id: "e1", node: "core_belief", evidenceText: "", embedding: [1, 0, 0] }], expectKept: 1, expectSkipped: 1, expectNode: "core_fear" },
+      { name: "no embeddings in existing", proposals: [makeEntry("core_belief", [1, 0, 0])], existing: [{ id: "e1", node: "core_belief", evidenceText: "", embedding: null }], expectKept: 1, expectSkipped: 0, expectNode: null },
+      { name: "empty input", proposals: [], existing: [], expectKept: 0, expectSkipped: 0, expectNode: null },
     ];
-    const existing: ExistingEvidenceRow[] = [
-      { id: "e1", node: "core_belief", evidenceText: "", embedding: [1, 0, 0] },
-    ];
-
-    const { kept, skipped } = dedupEmbeddedProposals(proposals, existing);
-    assert.equal(kept.length, 1);
-    assert.equal(skipped, 1);
-    assert.equal(kept[0]!.proposal.node, "core_fear");
-  });
-
-  it("keeps all when no existing rows have embeddings", () => {
-    const proposals: Array<{ proposal: MappedProposal; embedding: number[] }> = [
-      {
-        proposal: {
-          chunk: FIXTURE_CHUNKS[0]!,
-          node: "core_belief",
-          claimText: "Claim",
-          evidenceText: "Evidence",
-          confidenceScore: 0.8,
-        },
-        embedding: [1, 0, 0],
-      },
-    ];
-    const existing: ExistingEvidenceRow[] = [
-      { id: "e1", node: "core_belief", evidenceText: "", embedding: null },
-    ];
-
-    const { kept, skipped } = dedupEmbeddedProposals(proposals, existing);
-    assert.equal(kept.length, 1);
-    assert.equal(skipped, 0);
-  });
-
-  it("handles empty input", () => {
-    const { kept, skipped } = dedupEmbeddedProposals([], []);
-    assert.equal(kept.length, 0);
-    assert.equal(skipped, 0);
+    for (const c of cases) {
+      const { kept, skipped } = dedupEmbeddedProposals(c.proposals, c.existing);
+      assert.equal(kept.length, c.expectKept, `kept — ${c.name}`);
+      assert.equal(skipped, c.expectSkipped, `skipped — ${c.name}`);
+      if (c.expectNode !== null) assert.equal(kept[0]!.proposal.node, c.expectNode, `node — ${c.name}`);
+    }
   });
 });
 
@@ -718,140 +457,60 @@ describe("dedupEmbeddedProposals", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEvidenceRowData", () => {
-  const proposal: MappedProposal = {
-    chunk: FIXTURE_CHUNKS[0]!,
-    node: "core_belief",
-    claimText: "Zuo Ran believes in thorough preparation.",
-    evidenceText: "He reviewed every document twice before presenting.",
-    confidenceScore: 0.85,
-  };
+  it("populates basic fields (status, sourceKind, metadata source, model, characterId, scope, minedBatchId)", () => {
+    const proposal: MappedProposal = {
+      chunk: FIXTURE_CHUNKS[0]!,
+      node: "core_belief",
+      claimText: "Zuo Ran believes in thorough preparation.",
+      evidenceText: "He reviewed every document twice before presenting.",
+      confidenceScore: 0.85,
+    };
+    const metadata = { model: "openai:gpt-4" as const, promptVersion: "1", minedBatchId: "test_batch_001" };
+    const row = buildEvidenceRowData(proposal, "zuo_ran", null, metadata);
+    assert.equal(row.status, "proposed", "status");
+    assert.equal(row.sourceKind, "canon", "sourceKind");
+    assert.equal(row.metadata.source, "evidence_miner", "metadata.source");
+    assert.equal(row.characterId, "zuo_ran", "characterId");
+    assert.deepEqual(row.scopeApplicability, {}, "scopeApplicability");
+    assert.equal(row.metadata.minedBatchId, "test_batch_001", "minedBatchId");
 
-  it("sets status to 'proposed'", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.status, "proposed");
+    // Different metadata values
+    const row2 = buildEvidenceRowData(proposal, "zuo_ran", null, { model: "openai:gpt-4", promptVersion: "v2", minedBatchId: "batch_1" });
+    assert.equal(row2.metadata.model, "openai:gpt-4", "model");
+    assert.equal(row2.metadata.promptVersion, "v2", "promptVersion");
   });
 
-  it("sets sourceKind to 'canon'", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.sourceKind, "canon");
-  });
-
-  it("sets metadata.source to 'evidence_miner'", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.metadata.source, "evidence_miner");
-  });
-
-  it("includes model and promptVersion in metadata", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "v2",
-      minedBatchId: "batch_1",
-    });
-    assert.equal(row.metadata.model, "openai:gpt-4");
-    assert.equal(row.metadata.promptVersion, "v2");
-  });
-
-  it("includes provenance from chunk", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.arcKey, "main_zhiai");
-    assert.equal(row.chapterKey, "evidence_chapter");
-    assert.equal(row.episodeLabel, "Episode 1");
-    assert.equal(row.sceneOrder, 3);
-    assert.equal(row.unitIndex, 5);
-    assert.equal(row.storySceneId, "00000000-0000-0000-0000-000000000001");
-  });
-
-  it("includes confidenceScore from proposal", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.confidenceScore, 0.85);
-  });
-
-  it("sets embedding to the provided value", () => {
+  it("populates provenance, confidence, embedding, minedAt, and tracking metadata", () => {
+    const proposal: MappedProposal = {
+      chunk: FIXTURE_CHUNKS[0]!,
+      node: "core_belief",
+      claimText: "Zuo Ran believes in thorough preparation.",
+      evidenceText: "He reviewed every document twice before presenting.",
+      confidenceScore: 0.85,
+    };
+    const metadata = { model: "openai:gpt-4" as const, promptVersion: "1", minedBatchId: "test_batch_001" };
+    const row = buildEvidenceRowData(proposal, "zuo_ran", null, metadata);
+    // Provenance from chunk
+    assert.equal(row.arcKey, "main_zhiai", "arcKey");
+    assert.equal(row.chapterKey, "evidence_chapter", "chapterKey");
+    assert.equal(row.episodeLabel, "Episode 1", "episodeLabel");
+    assert.equal(row.sceneOrder, 3, "sceneOrder");
+    assert.equal(row.unitIndex, 5, "unitIndex");
+    assert.equal(row.storySceneId, "00000000-0000-0000-0000-000000000001", "storySceneId");
+    // Confidence
+    assert.equal(row.confidenceScore, 0.85, "confidenceScore");
+    // Embedding set and null
+    assert.equal(row.embedding, null, "embedding null");
     const embedding = [0.1, 0.2, 0.3];
-    const row = buildEvidenceRowData(proposal, "zuo_ran", embedding, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.deepEqual(row.embedding, embedding);
-  });
-
-  it("sets embedding to null when not provided", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.embedding, null);
-  });
-
-  it("includes sourceUnitIndex and sourceSceneOrder in metadata", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.metadata.sourceUnitIndex, 5);
-    assert.equal(row.metadata.sourceSceneOrder, 3);
-  });
-
-  it("includes minedAt as an ISO string in metadata", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(typeof row.metadata.minedAt, "string");
-    assert.ok(row.metadata.minedAt.length > 0);
-    // Should parse as valid ISO date
-    assert.ok(!Number.isNaN(Date.parse(row.metadata.minedAt)));
-  });
-
-  it("sets characterId correctly", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.equal(row.characterId, "zuo_ran");
-  });
-
-  it("sets scopeApplicability to empty object", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "test_batch_001",
-    });
-    assert.deepEqual(row.scopeApplicability, {});
-  });
-
-  it("includes minedBatchId in metadata", () => {
-    const row = buildEvidenceRowData(proposal, "zuo_ran", null, {
-      model: "openai:gpt-4",
-      promptVersion: "1",
-      minedBatchId: "batch_abc_123",
-    });
-    assert.equal(row.metadata.minedBatchId, "batch_abc_123");
+    const rowWithEmb = buildEvidenceRowData(proposal, "zuo_ran", embedding, metadata);
+    assert.deepEqual(rowWithEmb.embedding, embedding, "embedding set");
+    // Tracking metadata
+    assert.equal(row.metadata.sourceUnitIndex, 5, "sourceUnitIndex");
+    assert.equal(row.metadata.sourceSceneOrder, 3, "sourceSceneOrder");
+    // minedAt ISO
+    assert.equal(typeof row.metadata.minedAt, "string", "minedAt type");
+    assert.ok(row.metadata.minedAt.length > 0, "minedAt length");
+    assert.ok(!Number.isNaN(Date.parse(row.metadata.minedAt)), "minedAt parseable");
   });
 });
 
@@ -860,67 +519,38 @@ describe("buildEvidenceRowData", () => {
 // ---------------------------------------------------------------------------
 
 describe("listProposedRows", () => {
-  const makeFakeDb = (rows: ProposedRow[]): ReviewDb => ({
-    fetchProposed: async () => rows,
-    updateStatus: async () => 0,
-  });
+  it("orders by node then confidence desc, handles null confidence, and empty input", async () => {
+    const makeFakeDb = (rows: ProposedRow[]): ReviewDb => ({
+      fetchProposed: async () => rows,
+      updateStatus: async () => 0,
+    });
+    const characterId = "zuo_ran";
 
-  it("returns rows ordered by node then confidence desc", async () => {
+    // Normal ordering
     const rows: ProposedRow[] = [
-      {
-        id: "3", node: "core_fear", claimText: "Fear claim",
-        evidenceText: "Fear evidence", arcKey: null, chapterKey: null,
-        episodeLabel: null, sceneOrder: null, unitIndex: null,
-        confidenceScore: 0.7, createdAt: new Date(), metadata: {},
-      },
-      {
-        id: "1", node: "core_belief", claimText: "Belief claim",
-        evidenceText: "Belief evidence", arcKey: null, chapterKey: null,
-        episodeLabel: null, sceneOrder: null, unitIndex: null,
-        confidenceScore: 0.9, createdAt: new Date(), metadata: {},
-      },
-      {
-        id: "2", node: "core_belief", claimText: "Another belief",
-        evidenceText: "More evidence", arcKey: null, chapterKey: null,
-        episodeLabel: null, sceneOrder: null, unitIndex: null,
-        confidenceScore: 0.8, createdAt: new Date(), metadata: {},
-      },
+      { id: "3", node: "core_fear", claimText: "Fear claim", evidenceText: "Fear evidence", arcKey: null, chapterKey: null, episodeLabel: null, sceneOrder: null, unitIndex: null, confidenceScore: 0.7, createdAt: new Date(), metadata: {} },
+      { id: "1", node: "core_belief", claimText: "Belief claim", evidenceText: "Belief evidence", arcKey: null, chapterKey: null, episodeLabel: null, sceneOrder: null, unitIndex: null, confidenceScore: 0.9, createdAt: new Date(), metadata: {} },
+      { id: "2", node: "core_belief", claimText: "Another belief", evidenceText: "More evidence", arcKey: null, chapterKey: null, episodeLabel: null, sceneOrder: null, unitIndex: null, confidenceScore: 0.8, createdAt: new Date(), metadata: {} },
     ];
+    let result = await listProposedRows(characterId, makeFakeDb(rows));
+    assert.equal(result.length, 3, "ordering — count");
+    assert.equal(result[0]!.id, "1", "ordering — first (belief 0.9)");
+    assert.equal(result[1]!.id, "2", "ordering — second (belief 0.8)");
+    assert.equal(result[2]!.id, "3", "ordering — third (fear 0.7)");
 
-    const result = await listProposedRows("zuo_ran", makeFakeDb(rows));
-    assert.equal(result.length, 3);
-    // Order: core_belief (0.9), core_belief (0.8), core_fear (0.7)
-    assert.equal(result[0]!.id, "1");
-    assert.equal(result[1]!.id, "2");
-    assert.equal(result[2]!.id, "3");
-  });
-
-  it("handles null confidenceScore by treating as 0", async () => {
-    const rows: ProposedRow[] = [
-      {
-        id: "a", node: "core_belief", claimText: "A",
-        evidenceText: "a", arcKey: null, chapterKey: null,
-        episodeLabel: null, sceneOrder: null, unitIndex: null,
-        confidenceScore: null, createdAt: new Date(), metadata: {},
-      },
-      {
-        id: "b", node: "core_belief", claimText: "B",
-        evidenceText: "b", arcKey: null, chapterKey: null,
-        episodeLabel: null, sceneOrder: null, unitIndex: null,
-        confidenceScore: 0.5, createdAt: new Date(), metadata: {},
-      },
+    // Null confidenceScore → treated as 0
+    const nullRows: ProposedRow[] = [
+      { id: "a", node: "core_belief", claimText: "A", evidenceText: "a", arcKey: null, chapterKey: null, episodeLabel: null, sceneOrder: null, unitIndex: null, confidenceScore: null, createdAt: new Date(), metadata: {} },
+      { id: "b", node: "core_belief", claimText: "B", evidenceText: "b", arcKey: null, chapterKey: null, episodeLabel: null, sceneOrder: null, unitIndex: null, confidenceScore: 0.5, createdAt: new Date(), metadata: {} },
     ];
+    result = await listProposedRows(characterId, makeFakeDb(nullRows));
+    assert.equal(result.length, 2, "null score — count");
+    assert.equal(result[0]!.id, "b", "null score — b (0.5) first");
+    assert.equal(result[1]!.id, "a", "null score — a (null=0) second");
 
-    const result = await listProposedRows("zuo_ran", makeFakeDb(rows));
-    assert.equal(result.length, 2);
-    // null sorts as 0, so "b" (0.5) comes first, then "a" (null=0)
-    assert.equal(result[0]!.id, "b");
-    assert.equal(result[1]!.id, "a");
-  });
-
-  it("returns empty array for empty DB", async () => {
-    const result = await listProposedRows("zuo_ran", makeFakeDb([]));
-    assert.equal(result.length, 0);
+    // Empty input
+    result = await listProposedRows(characterId, makeFakeDb([]));
+    assert.equal(result.length, 0, "empty — count");
   });
 });
 
@@ -929,33 +559,27 @@ describe("listProposedRows", () => {
 // ---------------------------------------------------------------------------
 
 describe("promoteRows", () => {
-  it("updates status to 'active' via injectable DB", async () => {
+  it("updates status to 'active' and returns 0 for empty ids", async () => {
     let updatedStatus = "";
     let updatedIds: string[] = [];
     const db: ReviewDb = {
       fetchProposed: async () => [],
-      updateStatus: async (ids, status) => {
-        updatedIds = ids;
-        updatedStatus = status;
-        return ids.length;
-      },
+      updateStatus: async (ids, status) => { updatedIds = ids; updatedStatus = status; return ids.length; },
     };
-
     const count = await promoteRows(["id1", "id2"], db);
-    assert.equal(count, 2);
-    assert.equal(updatedStatus, "active");
-    assert.deepEqual(updatedIds, ["id1", "id2"]);
-  });
+    assert.equal(count, 2, "promote — count");
+    assert.equal(updatedStatus, "active", "promote — status");
+    assert.deepEqual(updatedIds, ["id1", "id2"], "promote — ids");
 
-  it("returns 0 for empty ids", async () => {
+    // Empty ids
     let called = false;
-    const db: ReviewDb = {
+    const emptyDb: ReviewDb = {
       fetchProposed: async () => [],
       updateStatus: async () => { called = true; return 0; },
     };
-    const count = await promoteRows([], db);
-    assert.equal(count, 0);
-    assert.equal(called, false);
+    const emptyCount = await promoteRows([], emptyDb);
+    assert.equal(emptyCount, 0, "empty — count");
+    assert.equal(called, false, "empty — not called");
   });
 });
 
@@ -964,32 +588,26 @@ describe("promoteRows", () => {
 // ---------------------------------------------------------------------------
 
 describe("rejectRows", () => {
-  it("updates status to 'superseded' with reviewOutcome via injectable DB", async () => {
+  it("updates status to 'superseded' with reviewOutcome and returns 0 for empty ids", async () => {
     let updatedStatus = "";
     let updatedExtra: Record<string, unknown> | undefined;
     const db: ReviewDb = {
       fetchProposed: async () => [],
-      updateStatus: async (ids, status, extra) => {
-        updatedStatus = status;
-        updatedExtra = extra;
-        return ids.length;
-      },
+      updateStatus: async (ids, status, extra) => { updatedStatus = status; updatedExtra = extra; return ids.length; },
     };
-
     const count = await rejectRows(["id1"], db);
-    assert.equal(count, 1);
-    assert.equal(updatedStatus, "superseded");
-    assert.deepEqual(updatedExtra, { reviewOutcome: "rejected" });
-  });
+    assert.equal(count, 1, "reject — count");
+    assert.equal(updatedStatus, "superseded", "reject — status");
+    assert.deepEqual(updatedExtra, { reviewOutcome: "rejected" }, "reject — extra");
 
-  it("returns 0 for empty ids", async () => {
+    // Empty ids
     let called = false;
-    const db: ReviewDb = {
+    const emptyDb: ReviewDb = {
       fetchProposed: async () => [],
       updateStatus: async () => { called = true; return 0; },
     };
-    const count = await rejectRows([], db);
-    assert.equal(count, 0);
-    assert.equal(called, false);
+    const emptyCount = await rejectRows([], emptyDb);
+    assert.equal(emptyCount, 0, "empty — count");
+    assert.equal(called, false, "empty — not called");
   });
 });

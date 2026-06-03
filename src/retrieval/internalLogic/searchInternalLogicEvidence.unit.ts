@@ -1,170 +1,100 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  isScopeCompatible,
-  computeFinalScore,
-  computeFetchCap,
-} from "./searchInternalLogicEvidence";
+import { isScopeCompatible, computeFinalScore, computeFetchCap } from "./searchInternalLogicEvidence";
 
-// ---------------------------------------------------------------------------
-// isScopeCompatible
-// ---------------------------------------------------------------------------
 describe("isScopeCompatible", () => {
-  it("passes when scopeApplicability is empty", () => {
-    assert.equal(isScopeCompatible({}, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(null, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(undefined, "main_relationship", undefined), true);
-  });
+  it("handles empty scope, continuityScopes, minContinuityScope, arcKeys, and combined", () => {
+    // Empty scopeApplicability — always passes
+    assert.equal(isScopeCompatible({}, "main_relationship", undefined), true, "empty obj — pass");
+    assert.equal(isScopeCompatible(null, "main_relationship", undefined), true, "null — pass");
+    assert.equal(isScopeCompatible(undefined, "main_relationship", undefined), true, "undefined — pass");
 
-  it("passes when continuityScopes includes the current scope", () => {
+    // continuityScopes includes current scope
     const sa = { continuityScopes: ["main_relationship", "main_married"] };
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_married", undefined), true);
-  });
+    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true, "contScopes — relationship");
+    assert.equal(isScopeCompatible(sa, "main_married", undefined), true, "contScopes — married");
 
-  it("fails when continuityScopes does not include the current scope", () => {
-    const sa = { continuityScopes: ["main_married"] };
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), false);
-    assert.equal(isScopeCompatible(sa, "main_pre_relationship", undefined), false);
-  });
+    // continuityScopes does not include current scope
+    assert.equal(isScopeCompatible(sa, "main_pre_relationship", undefined), false, "contScopes — not included");
 
-  it("passes when continuityScopes is empty array", () => {
-    const sa = { continuityScopes: [] };
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
-  });
+    // continuityScopes empty array
+    assert.equal(isScopeCompatible({ continuityScopes: [] }, "main_relationship", undefined), true, "contScopes empty — pass");
 
-  it("fails closed when continuityScopes is set but continuityScope is missing", () => {
-    const sa = { continuityScopes: ["main_married"] };
-    assert.equal(isScopeCompatible(sa, null, undefined), false);
-    assert.equal(isScopeCompatible(sa, undefined, undefined), false);
-  });
+    // Fails closed when continuityScope is missing/unrecognized
+    assert.equal(isScopeCompatible({ continuityScopes: ["main_married"] }, null, undefined), false, "contScopes — null scope");
+    assert.equal(isScopeCompatible({ continuityScopes: ["main_married"] }, undefined, undefined), false, "contScopes — undefined scope");
+    assert.equal(isScopeCompatible({ continuityScopes: ["main_married"] }, "unknown_scope", undefined), false, "contScopes — unknown scope");
 
-  it("fails closed when continuityScopes is set but continuityScope is unrecognized", () => {
-    const sa = { continuityScopes: ["main_married"] };
-    assert.equal(isScopeCompatible(sa, "unknown_scope", undefined), false);
-  });
+    // minContinuityScope: pass when scope meets minimum
+    const minSa = { minContinuityScope: "main_relationship" };
+    assert.equal(isScopeCompatible(minSa, "main_relationship", undefined), true, "minScope — at minimum");
+    assert.equal(isScopeCompatible(minSa, "main_engaged", undefined), true, "minScope — above");
+    assert.equal(isScopeCompatible(minSa, "main_married", undefined), true, "minScope — above 2");
 
-  it("passes when current scope meets minContinuityScope", () => {
-    const sa = { minContinuityScope: "main_relationship" };
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_engaged", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_married", undefined), true);
-  });
+    // minContinuityScope: fail when scope below
+    assert.equal(isScopeCompatible({ minContinuityScope: "main_married" }, "main_pre_relationship", undefined), false, "minScope — below");
+    assert.equal(isScopeCompatible({ minContinuityScope: "main_married" }, "main_relationship", undefined), false, "minScope — below 2");
 
-  it("fails when current scope is below minContinuityScope", () => {
-    const sa = { minContinuityScope: "main_married" };
-    assert.equal(isScopeCompatible(sa, "main_pre_relationship", undefined), false);
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), false);
-  });
+    // Fails closed when minContinuityScope set but scope missing
+    assert.equal(isScopeCompatible({ minContinuityScope: "main_married" }, null, undefined), false, "minScope — null");
+    assert.equal(isScopeCompatible({ minContinuityScope: "main_married" }, undefined, undefined), false, "minScope — undefined");
+    assert.equal(isScopeCompatible({ minContinuityScope: "main_married" }, "unknown_scope", undefined), false, "minScope — unknown");
 
-  it("fails closed when recognized minContinuityScope is set but continuityScope is missing", () => {
-    const sa = { minContinuityScope: "main_married" };
-    assert.equal(isScopeCompatible(sa, null, undefined), false);
-    assert.equal(isScopeCompatible(sa, undefined, undefined), false);
-  });
+    // Unrecognized minContinuityScope → fail-open
+    assert.equal(isScopeCompatible({ minContinuityScope: "unknown_scope" }, "main_relationship", undefined), true, "minScope unknown — pass");
+    assert.equal(isScopeCompatible({ minContinuityScope: "unknown_scope" }, null, undefined), true, "minScope unknown — null pass");
 
-  it("fails closed when recognized minContinuityScope is set but continuityScope is unrecognized", () => {
-    const sa = { minContinuityScope: "main_married" };
-    assert.equal(isScopeCompatible(sa, "unknown_scope", undefined), false);
-  });
+    // arcKeys overlap
+    const arcSa = { arcKeys: ["main_zhiai", "main_weiming"] };
+    assert.equal(isScopeCompatible(arcSa, "main_married", ["main_zhiai"]), true, "arcKeys — zhiai");
+    assert.equal(isScopeCompatible(arcSa, "main_married", ["main_weiming"]), true, "arcKeys — weiming");
+    assert.equal(isScopeCompatible(arcSa, "main_married", ["main_zhiai", "main_tianmi"]), true, "arcKeys — mixed");
 
-  it("passes when minContinuityScope is not a recognized scope (fail-open)", () => {
-    const sa = { minContinuityScope: "unknown_scope" };
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(sa, null, undefined), true); // also pass when missing
-  });
+    // arcKeys no overlap
+    assert.equal(isScopeCompatible({ arcKeys: ["main_zhiai"] }, "main_married", ["main_tianmi"]), false, "arcKeys — no overlap");
+    assert.equal(isScopeCompatible({ arcKeys: ["main_zhiai"] }, "main_married", ["main_weiming"]), false, "arcKeys — no overlap 2");
 
-  it("passes when arcKeys overlap", () => {
-    const sa = { arcKeys: ["main_zhiai", "main_weiming"] };
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_zhiai"]), true);
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_weiming"]), true);
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_zhiai", "main_tianmi"]), true);
-  });
+    // No arcKeys provided → fail-open
+    assert.equal(isScopeCompatible(arcSa, "main_married", undefined), true, "arcKeys — undefined passthrough");
+    assert.equal(isScopeCompatible(arcSa, "main_married", []), true, "arcKeys — empty passthrough");
 
-  it("fails when arcKeys do not overlap", () => {
-    const sa = { arcKeys: ["main_zhiai"] };
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_tianmi"]), false);
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_weiming"]), false);
-  });
+    // No arcKeys on hit → pass
+    assert.equal(isScopeCompatible({ continuityScopes: ["main_married"] }, "main_married", ["main_zhiai"]), true, "no hit arcKeys — pass");
 
-  it("passes when no arcKeys are provided for filtering (fail-open)", () => {
-    const sa = { arcKeys: ["main_zhiai"] };
-    assert.equal(isScopeCompatible(sa, "main_married", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_married", []), true);
-  });
+    // Combined continuityScopes + minContinuityScope
+    const combinedSa = { continuityScopes: ["main_relationship", "main_married"], minContinuityScope: "main_relationship" };
+    assert.equal(isScopeCompatible(combinedSa, "main_married", undefined), true, "combined — married");
+    assert.equal(isScopeCompatible(combinedSa, "main_relationship", undefined), true, "combined — relationship");
+    assert.equal(isScopeCompatible(combinedSa, "main_pre_relationship", undefined), false, "combined — below scope");
 
-  it("passes when no arcKeys on the hit", () => {
-    const sa = { continuityScopes: ["main_married"] };
-    assert.equal(isScopeCompatible(sa, "main_married", ["main_zhiai"]), true);
-  });
-
-  it("passes with combined continuityScopes and minContinuityScope", () => {
-    // Row requires minContinuityScope >= main_relationship AND scope in continuityScopes
-    const sa = {
-      continuityScopes: ["main_relationship", "main_married"],
-      minContinuityScope: "main_relationship",
-    };
-    assert.equal(isScopeCompatible(sa, "main_married", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_relationship", undefined), true);
-    assert.equal(isScopeCompatible(sa, "main_pre_relationship", undefined), false);
-  });
-
-  it("fails closed with combined restrictions and missing scope", () => {
-    const sa = {
-      continuityScopes: ["main_married"],
-      minContinuityScope: "main_relationship",
-    };
-    assert.equal(isScopeCompatible(sa, null, undefined), false);
+    // Combined with missing scope
+    assert.equal(isScopeCompatible(combinedSa, null, undefined), false, "combined — null scope");
   });
 });
 
-// ---------------------------------------------------------------------------
-// computeFinalScore
-// ---------------------------------------------------------------------------
 describe("computeFetchCap", () => {
-  it("returns expected cap for default limit (4)", () => {
-    // limit=4: max(4*5=20, 16) = 20, min(40, 20) = 20
-    assert.equal(computeFetchCap(4), 20);
-  });
-
-  it("returns expected cap for limit=1", () => {
-    // limit=1: max(1*5=5, 16) = 16, min(40, 16) = 16
-    assert.equal(computeFetchCap(1), 16);
-  });
-
-  it("returns expected cap for limit=8", () => {
-    // limit=8: max(8*5=40, 16) = 40, min(40, 40) = 40
-    assert.equal(computeFetchCap(8), 40);
-  });
-
-  it("never exceeds 40", () => {
-    assert.equal(computeFetchCap(10), 40);
-    assert.equal(computeFetchCap(100), 40);
+  it("returns expected cap with floor at 16 and ceiling at 40", () => {
+    const cases = [
+      { name: "default limit 4", limit: 4, expected: 20 },
+      { name: "limit 1 (floor)", limit: 1, expected: 16 },
+      { name: "limit 8 (ceiling)", limit: 8, expected: 40 },
+      { name: "limit 10 (clamped)", limit: 10, expected: 40 },
+      { name: "limit 100 (clamped)", limit: 100, expected: 40 },
+    ];
+    for (const c of cases) {
+      assert.equal(computeFetchCap(c.limit), c.expected, c.name);
+    }
   });
 });
 
 describe("computeFinalScore", () => {
-  it("returns cosineSimilarity when confidenceScore is null", () => {
-    assert.equal(computeFinalScore(0.5, null), 0.5);
-  });
-
-  it("returns cosineSimilarity when confidenceScore is 0", () => {
-    assert.equal(computeFinalScore(0.5, 0), 0.5);
-  });
-
-  it("applies small boost from confidenceScore", () => {
-    const score = computeFinalScore(0.5, 0.9);
-    assert.equal(score, 0.5 + 0.9 * 0.05);
-  });
-
-  it("boost from high confidence does not dominate similarity", () => {
+  it("returns cosineSimilarity when confidence is null/0, applies boost otherwise, and handles edge cases", () => {
+    assert.equal(computeFinalScore(0.5, null), 0.5, "null confidence");
+    assert.equal(computeFinalScore(0.5, 0), 0.5, "zero confidence");
+    assert.equal(computeFinalScore(0.5, 0.9), 0.5 + 0.9 * 0.05, "boost applied");
     const highSim = computeFinalScore(0.8, 0.0);
     const lowSimWithBoost = computeFinalScore(0.5, 1.0);
-    // Even with max confidence boost, similarity should still dominate
-    assert.ok(highSim > lowSimWithBoost, "similarity should dominate final score");
-  });
-
-  it("handles edge case of zero similarity and zero confidence", () => {
-    assert.equal(computeFinalScore(0, 0), 0);
+    assert.ok(highSim > lowSimWithBoost, "similarity dominates over max boost");
+    assert.equal(computeFinalScore(0, 0), 0, "zero all");
   });
 });
