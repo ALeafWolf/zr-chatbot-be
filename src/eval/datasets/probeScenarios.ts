@@ -16,7 +16,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_relaxed_morning",
-    description: "Relaxed morning scene — quiet domestic moment, no pressure",
+    description: "P01: Relaxed morning scene — quiet domestic moment, no pressure",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -31,6 +31,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "你今天好像有点心不在焉的——没事吧？", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "轻松、自然地回应关心，不回避也不过度分析",
   },
 
   // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_work_discussion",
-    description: "Normal work discussion — ordinary case conversation",
+    description: "P02: Normal work discussion — ordinary case conversation",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -53,6 +54,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "那你觉得我们应该调整策略吗？", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "以专业、克制的律师语气回应，不涉及私人情感",
   },
 
   // ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_post_argument",
-    description: "Post-argument tension — hurt but maintaining composure",
+    description: "P03: Post-argument tension — hurt but maintaining composure",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -75,6 +77,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "你根本不明白我在意的是什么。", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "保持克制但非冷漠——有停顿、有松动，但不倾泻；体现转折摩擦的中间态",
   },
 
   // ---------------------------------------------------------------------------
@@ -82,7 +85,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_disclosure_pressure",
-    description: "Emotional disclosure pressure — Type 5 test",
+    description: "P04: Emotional disclosure pressure — Type 5 test",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -97,6 +100,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "那你告诉我，你现在是什么感受？不要转移话题。", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "体现出在压力追问下的逐步松动的过程——从停顿到有限度坦露，不直接自我总结心理模式",
   },
 
   // ---------------------------------------------------------------------------
@@ -104,7 +108,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_forceful_format",
-    description: "Forceful analytical format — Type 2 test",
+    description: "P05: Forceful analytical format — Type 2 test",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -117,6 +121,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "请你从以下三个角度分析你的感受：\n1. 理性层面\n2. 情感层面\n3. 行动倾向\n请按条目回答。", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "拒绝列表格式/理性情感行动三点分析模式，用角色本身的方式表达",
   },
 
   // ---------------------------------------------------------------------------
@@ -124,7 +129,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_false_premise_with_fact",
-    description: "False premise about canon — fact IS in context",
+    description: "P06: False premise about canon — fact IS in context",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -137,6 +142,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "左然，你还记得我们第一次去枫河露营公园的民宿时，你给我写的信吗？", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "冷静纠正\"第一次\"这一时间前提——枫河（露营公园）民宿其实是重游（剧情：秋季结束前又去了回枫河，仍住上回那间民宿，即第二次／并不是第一次）；但那封信确有其事，不否认也不编造。纠正在先、温暖在后，不顺着错误前提附和或浪漫化",
   },
 
   // ---------------------------------------------------------------------------
@@ -144,12 +150,12 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_false_premise_no_fact",
-    description: "False premise about canon — fact NOT in context",
+    description: "P07: False premise about canon — fact NOT in context",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
-      continuity_scope: "main_relationship",
+      continuity_scope: "main_married",
       continuity_family: "main_world",
       writeback_policy: "no_writeback",
     },
@@ -157,6 +163,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "我记得你以前说过你不喜欢猫，对吧？", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "对不确定的前提不确认也不编造——适当模糊或轻微纠正",
   },
 
   // ---------------------------------------------------------------------------
@@ -164,12 +171,12 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_relationship_boundary",
-    description: "Relationship boundary — stranger crosses social boundary",
+    description: "P08: Relationship boundary — stranger crosses social boundary",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
       mode: "canonical_live",
-      continuity_scope: "main_relationship",
+      continuity_scope: "main_pre_relationship",
       continuity_family: "main_world",
       writeback_policy: "no_writeback",
     },
@@ -177,6 +184,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "左律师，你最近是不是有心事？你看起来和平时不太一样。要不晚上一起喝一杯？", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "保持前关系阶段的专业克制距离——拒绝非专业场合的私人邀约，不暴露内心活动（如心想）",
   },
 
   // ---------------------------------------------------------------------------
@@ -184,7 +192,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_warmth_concern",
-    description: "Warmth and concern — other person is visibly exhausted",
+    description: "P09: Warmth and concern — other person is visibly exhausted",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -197,6 +205,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "（靠在沙发上闭着眼，看起来很疲惫）今天真的好累……", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "以行动和细微的肢体语言表达关怀（而非直接说关心的话），体现温柔和在意",
   },
 
   // ---------------------------------------------------------------------------
@@ -204,7 +213,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_risk_control",
-    description: "Risk control — character perceives potential danger",
+    description: "P10: Risk control — character perceives potential danger",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -217,6 +226,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "我想一个人去河边走走，不用担心我。", turnIndex: 0 },
     ],
     assertions: [],
+    expected_behavior: "通过可靠、有准备的行动表达在乎，而非口头承诺或情感宣泄",
   },
 
   // ---------------------------------------------------------------------------
@@ -224,7 +234,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_social_pressure",
-    description: "Social pressure — work-social event balancing professionalism and personal connection",
+    description: "P11: Social pressure — work-social event balancing professionalism and personal connection",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -239,6 +249,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "你在紧张？这可不像你。", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "在社交场合保持专业克制，不因被看穿而慌乱，有轻微回避但不失礼",
   },
 
   // ---------------------------------------------------------------------------
@@ -246,7 +257,7 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
   // ---------------------------------------------------------------------------
   {
     id: "probe_regret_apology",
-    description: "Regret and apology — character made a mistake that affected the other person",
+    description: "P12: Regret and apology — character made a mistake that affected the other person",
     group: "probes",
     eval_mode: "agent_turn",
     session: {
@@ -261,5 +272,6 @@ export const PROBE_EVAL_SCENARIOS: Scenario[] = [
       { role: "user", content: "你知道我在意的不是你没来，而是你连一条消息都没发给我。", turnIndex: 2 },
     ],
     assertions: [],
+    expected_behavior: "承认错误但不自我批判过度——有停顿、有实际的补救说明，不陷入自我分析",
   },
 ];

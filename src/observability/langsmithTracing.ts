@@ -61,6 +61,13 @@ export interface TraceWrapperOptions {
 
 const traceContextStorage = new AsyncLocalStorage<TraceRuntimeContext>();
 
+/**
+ * AsyncLocalStorage flag for suppressing LangSmith tracing within a scope.
+ * When set to `true`, `shouldTraceLangSmith()` returns `false` regardless
+ * of `LANGSMITH_TRACING` env. Used by `withLangSmithTracingSuppressed`.
+ */
+const tracingSuppressedStorage = new AsyncLocalStorage<boolean>();
+
 function isTestProcess(): boolean {
   return (
     process.env.NODE_ENV === "test" ||
@@ -72,7 +79,34 @@ function isTestProcess(): boolean {
 
 function shouldTraceLangSmith(): boolean {
   if (process.env.LANGSMITH_TRACING === "false") return false;
+  if (tracingSuppressedStorage.getStore()) return false;
   return env.LANGSMITH_TRACING && !isTestProcess();
+}
+
+/**
+ * Returns `true` if the current async scope has LangSmith tracing suppressed.
+ * Useful for testing without live LangSmith calls.
+ */
+export function isLangSmithTracingSuppressed(): boolean {
+  return tracingSuppressedStorage.getStore() === true;
+}
+
+/**
+ * Run a function with LangSmith tracing actively suppressed.
+ *
+ * While inside the suppressed scope, `shouldTraceLangSmith()` returns
+ * `false`, preventing `traceLLMStage`, `traceStage`, and similar wrappers
+ * from emitting LangSmith traces. This is useful for commands like
+ * `npm run eval:probe-gate` that want a trace-free local run even when
+ * `LANGSMITH_TRACING=true`.
+ *
+ * The suppression is scoped via `AsyncLocalStorage` and does not affect
+ * concurrent async operations running outside the suppressed scope.
+ */
+export function withLangSmithTracingSuppressed<T>(
+  fn: () => Promise<T>,
+): Promise<T> {
+  return tracingSuppressedStorage.run(true, fn);
 }
 
 export function getTraceContext(): TraceRuntimeContext | undefined {
@@ -371,6 +405,7 @@ export const __testing = {
   buildMetadata,
   buildProcessOutputs,
   extractLlmMetadata,
+  isLangSmithTracingSuppressed,
   isTestProcess,
   shouldTraceLangSmith,
   withLlmOutputMetadata,

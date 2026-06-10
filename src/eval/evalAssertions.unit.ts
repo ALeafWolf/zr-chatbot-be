@@ -3,60 +3,25 @@ import { describe, it } from "node:test";
 import { buildRerankAssertionContext } from "./evalAssertions";
 
 describe("buildRerankAssertionContext", () => {
-  it("returns undefined when rerank is null", () => {
-    assert.equal(buildRerankAssertionContext(null), undefined);
-  });
+  it("returns undefined for null/undefined rerank, maps selectedIds/sources/finalContextMode/fallbackUsed, handles empty/omitted", () => {
+    assert.equal(buildRerankAssertionContext(null), undefined, "null → undefined");
+    assert.equal(buildRerankAssertionContext(undefined), undefined, "undefined → undefined");
 
-  it("returns undefined when rerank is undefined", () => {
-    assert.equal(buildRerankAssertionContext(undefined), undefined);
-  });
+    let r = buildRerankAssertionContext({ selected: [{ id: "mem_1", source: "interactive_memory" }, { id: "mem_2", source: "session_chunk" }], finalContextMode: "selected_memory", fallbackUsed: false } as any);
+    assert.deepEqual(r?.rerank.selectedIds, ["mem_1", "mem_2"], "selectedIds");
+    assert.deepEqual(r?.rerank.selectedSources, ["interactive_memory", "session_chunk"], "selectedSources");
+    assert.equal(r?.rerank.finalContextMode, "selected_memory", "finalContextMode");
+    assert.equal(r?.rerank.fallbackUsed, false, "fallbackUsed");
 
-  it("maps selected items to selectedIds and selectedSources", () => {
-    const result = buildRerankAssertionContext({
-      selected: [
-        { id: "mem_1", source: "interactive_memory" },
-        { id: "mem_2", source: "session_chunk" },
-      ],
-      finalContextMode: "selected_memory",
-      fallbackUsed: false,
-    });
+    r = buildRerankAssertionContext({ selected: [], finalContextMode: "recent_only", fallbackUsed: true } as any);
+    assert.deepEqual(r?.rerank.selectedIds, [], "empty selectedIds");
+    assert.deepEqual(r?.rerank.selectedSources, [], "empty selectedSources");
+    assert.equal(r?.rerank.finalContextMode, "recent_only", "finalContextMode with empty");
+    assert.equal(r?.rerank.fallbackUsed, true, "fallbackUsed with empty");
 
-    assert.deepEqual(result?.rerank.selectedIds, ["mem_1", "mem_2"]);
-    assert.deepEqual(result?.rerank.selectedSources, [
-      "interactive_memory",
-      "session_chunk",
-    ]);
-  });
-
-  it("maps finalContextMode and fallbackUsed", () => {
-    const result = buildRerankAssertionContext({
-      selected: [],
-      finalContextMode: "recent_only",
-      fallbackUsed: true,
-    });
-
-    assert.equal(result?.rerank.finalContextMode, "recent_only");
-    assert.equal(result?.rerank.fallbackUsed, true);
-  });
-
-  it("handles empty selected array", () => {
-    const result = buildRerankAssertionContext({
-      selected: [],
-      finalContextMode: "selected_memory",
-      fallbackUsed: false,
-    });
-
-    assert.deepEqual(result?.rerank.selectedIds, []);
-    assert.deepEqual(result?.rerank.selectedSources, []);
-  });
-
-  it("omits fields not present on the snapshot", () => {
-    const result = buildRerankAssertionContext({
-      selected: [{ id: "mem_1", source: "interactive_memory" }],
-    });
-
-    assert.deepEqual(result?.rerank.selectedIds, ["mem_1"]);
-    assert.equal(result?.rerank.finalContextMode, undefined);
-    assert.equal(result?.rerank.fallbackUsed, undefined);
+    r = buildRerankAssertionContext({ selected: [{ id: "mem_1", source: "interactive_memory" }] } as any);
+    assert.deepEqual(r?.rerank.selectedIds, ["mem_1"], "selectedIds without extra fields");
+    assert.equal(r?.rerank.finalContextMode, undefined, "finalContextMode omitted when absent");
+    assert.equal(r?.rerank.fallbackUsed, undefined, "fallbackUsed omitted when absent");
   });
 });

@@ -16,68 +16,53 @@ function generationMaxTokensTransform(v: string | undefined): number {
 }
 
 describe("GENERATION_MAX_TOKENS default and clamp", () => {
-  it("defaults to 8192", async () => {
+  it("defaults to 8192, is above 4096, clamps low, passes mid, caps high, handles invalid", async () => {
+    // Default
     const { env } = await import("../../config/env");
-    assert.equal(env.GENERATION_MAX_TOKENS, 8192);
-  });
+    assert.equal(env.GENERATION_MAX_TOKENS, 8192, "default 8192");
+    assert.ok(env.GENERATION_MAX_TOKENS > 4096, "above 4096");
 
-  it("is above the previous hard-coded 4096", async () => {
-    const { env } = await import("../../config/env");
-    assert.ok(env.GENERATION_MAX_TOKENS > 4096);
-  });
+    // Clamps at or below 4096 → 8192
+    assert.equal(generationMaxTokensTransform("1"), 8192, "1 → 8192");
+    assert.equal(generationMaxTokensTransform("500"), 8192, "500 → 8192");
+    assert.equal(generationMaxTokensTransform("4096"), 8192, "4096 → 8192");
 
-  it("clamps values at or below 4096 back to 8192", () => {
-    assert.equal(generationMaxTokensTransform("1"), 8192);
-    assert.equal(generationMaxTokensTransform("500"), 8192);
-    assert.equal(generationMaxTokensTransform("4096"), 8192);
-  });
+    // Passes through values above 4096 within range
+    assert.equal(generationMaxTokensTransform("8192"), 8192, "8192 → 8192");
+    assert.equal(generationMaxTokensTransform("10000"), 10000, "10000 → 10000");
+    assert.equal(generationMaxTokensTransform("16384"), 16384, "16384 → 16384");
 
-  it("passes values above 4096 through unchanged when within range", () => {
-    assert.equal(generationMaxTokensTransform("8192"), 8192);
-    assert.equal(generationMaxTokensTransform("10000"), 10000);
-    assert.equal(generationMaxTokensTransform("16384"), 16384);
-  });
+    // Caps above 16384
+    assert.equal(generationMaxTokensTransform("20000"), 16384, "20000 → 16384");
+    assert.equal(generationMaxTokensTransform("99999"), 16384, "99999 → 16384");
 
-  it("caps values above 16384 at 16384", () => {
-    assert.equal(generationMaxTokensTransform("20000"), 16384);
-    assert.equal(generationMaxTokensTransform("99999"), 16384);
-  });
-
-  it("returns 8192 for missing, empty, or invalid input", () => {
-    assert.equal(generationMaxTokensTransform(undefined), 8192);
-    assert.equal(generationMaxTokensTransform(""), 8192);
-    assert.equal(generationMaxTokensTransform("not_a_number"), 8192);
-    assert.equal(generationMaxTokensTransform("0"), 8192);
-    assert.equal(generationMaxTokensTransform("-1"), 8192);
+    // Invalid/missing/empty
+    assert.equal(generationMaxTokensTransform(undefined), 8192, "undefined → 8192");
+    assert.equal(generationMaxTokensTransform(""), 8192, "empty → 8192");
+    assert.equal(generationMaxTokensTransform("not_a_number"), 8192, "NaN → 8192");
+    assert.equal(generationMaxTokensTransform("0"), 8192, "0 → 8192");
+    assert.equal(generationMaxTokensTransform("-1"), 8192, "-1 → 8192");
   });
 });
 
 // ---------------------------------------------------------------------------
 // generateWithToolsStream diagnostics tests
-//
-// mock.module can only be called ONCE per specifier per process, so we
-// set it at the top level. Each test redefines a mutable delegate to
-// control what the mock provider returns per scenario.
 // ---------------------------------------------------------------------------
 
-/** Mutable delegate — each test sets this before consuming the stream. */
+/** Mutable delegate — each scenario sets this before consuming the stream. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _mockEvents: () => AsyncGenerator<any>;
 
-// Set up the single module mock at the top level.
 mock.module("../../llm/providers", {
   namedExports: {
     getProvider: () => ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      streamChat: async function* (..._args: any[]) {
-        yield* _mockEvents();
-      },
+      streamChat: async function* (..._args: any[]) { yield* _mockEvents(); },
       chat: () => ({ content: "", inputTokens: 0, outputTokens: 0 }),
     }),
   },
 });
 
-// Module-level vars filled by the before() call.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let generateWithToolsStream: any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,173 +74,86 @@ describe("generateWithToolsStream diagnostics", () => {
     env = (await import("../../config/env")).env;
   });
 
-  it("reports hasContent:true and contentChars for non-empty content (single round, no tools)", async () => {
+  it("reports hasContent, reasoning, tool tracking, and reasoningTokens on done event", async () => {
+    // hasContent:true, non-empty
     _mockEvents = async function* () {
-      yield {
-        type: "assistant_done" as const,
-        content: "Hello world",
-        toolCalls: undefined,
-        usage: { inputTokens: 10, outputTokens: 5 },
-        finishReason: "stop",
-      };
+      yield { type: "assistant_done" as const, content: "Hello world", toolCalls: undefined, usage: { inputTokens: 10, outputTokens: 5 }, finishReason: "stop" };
     };
-
-    const results: unknown[] = [];
-    const gen = generateWithToolsStream({
-      messages: [{ role: "user", content: "hi" }],
-      ctx: {},
-      enableTools: false,
-    });
+    let results: unknown[] = [];
+    let gen = generateWithToolsStream({ messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: false });
     for await (const ev of gen) results.push(ev);
+    let done = results.find((r) => (r as { type: string }).type === "done") as Record<string, unknown>;
+    assert.ok(done, "hasContent — done exists");
+    assert.equal(done.hasContent, true, "hasContent — true");
+    assert.equal(done.contentChars, 11, "hasContent — contentChars");
+    assert.equal(done.finishReason, "stop", "hasContent — finishReason");
+    assert.equal(done.maxTokens, env.GENERATION_MAX_TOKENS, "hasContent — maxTokens");
+    assert.equal(done.generationRounds, 1, "hasContent — rounds");
+    assert.equal(done.toolCallCount, 0, "hasContent — toolCallCount");
+    assert.deepEqual(done.toolCallNames, [], "hasContent — toolCallNames");
 
-    const done = results.find(
-      (r) => (r as { type: string }).type === "done",
-    ) as Record<string, unknown>;
-    assert.ok(done);
-    assert.equal(done.hasContent, true);
-    assert.equal(done.contentChars, 11);
-    assert.equal(done.finishReason, "stop");
-    assert.equal(done.maxTokens, env.GENERATION_MAX_TOKENS);
-    assert.equal(done.generationRounds, 1);
-    assert.equal(done.toolCallCount, 0);
-    assert.deepEqual(done.toolCallNames, []);
-  });
-
-  it("reports hasContent:false for empty content with finishReason:stop (single round, no tools)", async () => {
+    // hasContent:false, empty content
     _mockEvents = async function* () {
-      yield {
-        type: "assistant_done" as const,
-        content: "",
-        toolCalls: undefined,
-        usage: { inputTokens: 10, outputTokens: 5 },
-        finishReason: "stop",
-      };
+      yield { type: "assistant_done" as const, content: "", toolCalls: undefined, usage: { inputTokens: 10, outputTokens: 5 }, finishReason: "stop" };
     };
-
-    const results: unknown[] = [];
-    const gen = generateWithToolsStream({
-      messages: [{ role: "user", content: "hi" }],
-      ctx: {},
-      enableTools: false,
-    });
+    results = [];
+    gen = generateWithToolsStream({ messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: false });
     for await (const ev of gen) results.push(ev);
+    done = results.find((r) => (r as { type: string }).type === "done") as Record<string, unknown>;
+    assert.ok(done, "empty — done exists");
+    assert.equal(done.hasContent, false, "empty — hasContent false");
+    assert.equal(done.contentChars, 0, "empty — contentChars");
+    assert.equal(done.finishReason, "stop", "empty — finishReason");
 
-    const done = results.find(
-      (r) => (r as { type: string }).type === "done",
-    ) as Record<string, unknown>;
-    assert.ok(done);
-    assert.equal(done.hasContent, false);
-    assert.equal(done.contentChars, 0);
-    assert.equal(done.finishReason, "stop");
-  });
-
-  it("reports reasoningChars and hasReasoning when reasoning is streamed", async () => {
+    // reasoning streamed
     _mockEvents = async function* () {
       yield { type: "delta" as const, reasoning: "Let me think about this..." };
       yield { type: "delta" as const, text: "Here is the answer." };
-      yield {
-        type: "assistant_done" as const,
-        content: "Here is the answer.",
-        toolCalls: undefined,
-        usage: { inputTokens: 15, outputTokens: 8 },
-        finishReason: "stop",
-      };
+      yield { type: "assistant_done" as const, content: "Here is the answer.", toolCalls: undefined, usage: { inputTokens: 15, outputTokens: 8 }, finishReason: "stop" };
     };
-
-    const results: unknown[] = [];
-    const gen = generateWithToolsStream({
-      messages: [{ role: "user", content: "hi" }],
-      ctx: {},
-      enableTools: false,
-    });
+    results = [];
+    gen = generateWithToolsStream({ messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: false });
     for await (const ev of gen) results.push(ev);
+    done = results.find((r) => (r as { type: string }).type === "done") as Record<string, unknown>;
+    assert.ok(done, "reasoning — done exists");
+    assert.ok((done.reasoningChars as number) > 0, "reasoning — reasoningChars > 0");
+    assert.equal(done.hasReasoning, true, "reasoning — hasReasoning");
 
-    const done = results.find(
-      (r) => (r as { type: string }).type === "done",
-    ) as Record<string, unknown>;
-    assert.ok(done);
-    assert.ok((done.reasoningChars as number) > 0);
-    assert.equal(done.hasReasoning, true);
-  });
-
-  it("propagates reasoningTokens from provider assistant_done.usage to done event", async () => {
+    // reasoningTokens propagated from provider
     _mockEvents = async function* () {
-      yield {
-        type: "assistant_done" as const,
-        content: "Final answer.",
-        toolCalls: undefined,
-        usage: { inputTokens: 50, outputTokens: 20, reasoningTokens: 42 },
-        finishReason: "stop",
-      };
+      yield { type: "assistant_done" as const, content: "Final answer.", toolCalls: undefined, usage: { inputTokens: 50, outputTokens: 20, reasoningTokens: 42 }, finishReason: "stop" };
     };
-
-    const results: unknown[] = [];
-    const gen = generateWithToolsStream({
-      messages: [{ role: "user", content: "hi" }],
-      ctx: {},
-      enableTools: false,
-    });
+    results = [];
+    gen = generateWithToolsStream({ messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: false });
     for await (const ev of gen) results.push(ev);
+    done = results.find((r) => (r as { type: string }).type === "done") as Record<string, unknown>;
+    assert.ok(done, "reasoningTokens — done exists");
+    assert.equal(done.reasoningTokens, 42, "reasoningTokens — 42");
 
-    const done = results.find(
-      (r) => (r as { type: string }).type === "done",
-    ) as Record<string, unknown>;
-    assert.ok(done);
-    assert.equal(
-      done.reasoningTokens,
-      42,
-      "reasoningTokens from provider usage should appear on done event",
-    );
-  });
-
-  it("tracks tool calls across rounds and reports empty content on final round", async () => {
+    // Tool calls across rounds
     let round = 0;
     _mockEvents = async function* () {
       round++;
       if (round === 1) {
-        yield {
-          type: "assistant_done" as const,
-          content: "",
-          toolCalls: [{ id: "c1", name: "web_search", arguments: '{"q":"weather"}' }],
-          usage: { inputTokens: 20, outputTokens: 15 },
-          finishReason: "tool_calls",
-        };
+        yield { type: "assistant_done" as const, content: "", toolCalls: [{ id: "c1", name: "web_search", arguments: '{"q":"weather"}' }], usage: { inputTokens: 20, outputTokens: 15 }, finishReason: "tool_calls" };
       } else {
-        yield {
-          type: "assistant_done" as const,
-          content: "",
-          toolCalls: undefined,
-          usage: { inputTokens: 30, outputTokens: 5 },
-          finishReason: "stop",
-        };
+        yield { type: "assistant_done" as const, content: "", toolCalls: undefined, usage: { inputTokens: 30, outputTokens: 5 }, finishReason: "stop" };
       }
     };
-
-    const results: unknown[] = [];
-    const gen = generateWithToolsStream({
-      messages: [{ role: "user", content: "test" }],
-      ctx: { signal: new AbortController().signal },
-      enableTools: true,
-      allowedToolNames: ["nonexistent_tool"],
-    });
+    results = [];
+    gen = generateWithToolsStream({ messages: [{ role: "user", content: "test" }], ctx: { signal: new AbortController().signal }, enableTools: true, allowedToolNames: ["nonexistent_tool"] });
     for await (const ev of gen) results.push(ev);
-
-    // Tool events
-    assert.equal(results.filter((r) => (r as { type: string }).type === "before_tool").length, 1);
-    assert.equal(results.filter((r) => (r as { type: string }).type === "after_tool").length, 1);
-
-    // Done event diagnostics
-    const done = results.find(
-      (r) => (r as { type: string }).type === "done",
-    ) as Record<string, unknown>;
-    assert.ok(done);
-    assert.equal(done.content, "");
-    assert.equal(done.finishReason, "stop");
-    assert.equal(done.contentChars, 0);
-    assert.equal(done.hasContent, false);
-    assert.equal(done.toolCallCount, 1);
-    assert.deepEqual(done.toolCallNames, ["web_search"]);
-    assert.equal(done.maxTokens, env.GENERATION_MAX_TOKENS);
-    assert.equal(done.generationRounds, 2);
+    assert.equal(results.filter((r) => (r as { type: string }).type === "before_tool").length, 1, "tool — before_tool count");
+    assert.equal(results.filter((r) => (r as { type: string }).type === "after_tool").length, 1, "tool — after_tool count");
+    done = results.find((r) => (r as { type: string }).type === "done") as Record<string, unknown>;
+    assert.ok(done, "tool — done exists");
+    assert.equal(done.content, "", "tool — content");
+    assert.equal(done.finishReason, "stop", "tool — finishReason");
+    assert.equal(done.contentChars, 0, "tool — contentChars");
+    assert.equal(done.hasContent, false, "tool — hasContent");
+    assert.equal(done.toolCallCount, 1, "tool — toolCallCount");
+    assert.deepEqual(done.toolCallNames, ["web_search"], "tool — toolCallNames");
+    assert.equal(done.maxTokens, env.GENERATION_MAX_TOKENS, "tool — maxTokens");
+    assert.equal(done.generationRounds, 2, "tool — generationRounds");
   });
 });

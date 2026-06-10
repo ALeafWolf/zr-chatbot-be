@@ -16,6 +16,7 @@ import {
   scenarioToEvalInputs,
   type ScenarioSet,
 } from "./loadEvalScenarios";
+import type { Scenario } from "./evalTypes";
 
 function requireLangSmithKey(): void {
   if (!env.LANGSMITH_API_KEY?.trim()) {
@@ -37,6 +38,42 @@ async function clearDatasetExamples(
   for (let i = 0; i < ids.length; i += chunk) {
     await client.deleteExamples(ids.slice(i, i + chunk));
   }
+}
+
+/**
+ * Build the metadata object for a LangSmith example from a scenario.
+ * Pure function — no LangSmith client dependency, unit-testable.
+ */
+export function buildExampleMetadata(
+  scenario: Scenario,
+  version: string,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    assertions: scenario.assertions,
+    scenarios_file_version: version,
+  };
+
+  if (scenario.group !== undefined) {
+    metadata.group = scenario.group;
+  }
+  if (scenario.description !== undefined) {
+    metadata.description = scenario.description;
+  }
+  if (scenario.expected_behavior !== undefined) {
+    metadata.expected_behavior = scenario.expected_behavior;
+  }
+
+  if (scenario.expected_selected_ids !== undefined) {
+    metadata.expected_selected_ids = scenario.expected_selected_ids;
+  }
+  if (scenario.expected_rejected_ids !== undefined) {
+    metadata.expected_rejected_ids = scenario.expected_rejected_ids;
+  }
+  if (scenario.expected_final_context_mode !== undefined) {
+    metadata.expected_final_context_mode = scenario.expected_final_context_mode;
+  }
+
+  return metadata;
 }
 
 async function main(): Promise<void> {
@@ -66,29 +103,11 @@ async function main(): Promise<void> {
 
     await clearDatasetExamples(client, datasetName);
 
-    const uploads: ExampleCreate[] = allScenarios.map((scenario) => {
-      const metadata: Record<string, unknown> = {
-        assertions: scenario.assertions,
-        scenarios_file_version: version,
-      };
-
-      // Include optional rerank metadata fields
-      if (scenario.expected_selected_ids !== undefined) {
-        metadata.expected_selected_ids = scenario.expected_selected_ids;
-      }
-      if (scenario.expected_rejected_ids !== undefined) {
-        metadata.expected_rejected_ids = scenario.expected_rejected_ids;
-      }
-      if (scenario.expected_final_context_mode !== undefined) {
-        metadata.expected_final_context_mode = scenario.expected_final_context_mode;
-      }
-
-      return {
-        dataset_id: dataset.id,
-        inputs: scenarioToEvalInputs(scenario),
-        metadata,
-      };
-    });
+    const uploads: ExampleCreate[] = allScenarios.map((scenario) => ({
+      dataset_id: dataset.id,
+      inputs: scenarioToEvalInputs(scenario),
+      metadata: buildExampleMetadata(scenario, version),
+    }));
 
     await client.createExamples(uploads);
 
@@ -102,7 +121,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error("pushLangSmithDataset error:", err);
-  process.exitCode = 1;
-});
+// Only run main() when executed directly, not when imported (e.g. by unit tests)
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("pushLangSmithDataset error:", err);
+    process.exitCode = 1;
+  });
+}

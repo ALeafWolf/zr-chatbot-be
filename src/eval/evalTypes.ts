@@ -43,6 +43,8 @@ export interface Scenario {
   /** Fixture canon excerpt for validator-only Tier 4 attribution evals. */
   validator_retrieved_canon?: string;
   assertions: Assertion[];
+  /** Per-probe expected behavior for the LLM judge (probe scenarios only). */
+  expected_behavior?: string;
   /** Expected substring in retrieved canon for retrieval-quality metrics. */
   retrieval_expected_needle?: string;
 

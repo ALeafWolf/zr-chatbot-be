@@ -3,227 +3,135 @@ import { describe, it } from "node:test";
 import { __testing, generateDraft, validateDraft, rewriteDraft, safeDeflection, buildValidatorContext } from "./generateAndValidate";
 
 describe("decorateUserMessageForGeneration", () => {
-  it("returns content and marker metadata as an object regardless of injection", () => {
-    const result = __testing.decorateUserMessageForGeneration({
-      userMessage: "你好。",
-      isFirstUserTurn: true,
-    });
-    assert.equal(typeof result.content, "string");
-    assert.equal(typeof result.markerInjected, "boolean");
-    assert.equal(typeof result.markerReason, "string");
-  });
+  it("returns content, marker metadata, and passes isFirstUserTurn", () => {
+    let result = __testing.decorateUserMessageForGeneration({ userMessage: "你好。", isFirstUserTurn: true });
+    assert.equal(typeof result.content, "string", "content type");
+    assert.equal(typeof result.markerInjected, "boolean", "markerInjected type");
+    assert.equal(typeof result.markerReason, "string", "markerReason type");
 
-  it("passes isFirstUserTurn through to the helper", () => {
-    const result = __testing.decorateUserMessageForGeneration({
-      userMessage: "test",
-      isFirstUserTurn: true,
-    });
-    assert.equal(typeof result.markerInjected, "boolean");
+    result = __testing.decorateUserMessageForGeneration({ userMessage: "test", isFirstUserTurn: true });
+    assert.equal(typeof result.markerInjected, "boolean", "passes isFirstUserTurn");
   });
 });
 
 describe("traceInputsForGenerationToolLoop", () => {
-  const systemPrompt = "[SYSTEM]\n你是左然，一个虚构角色。";
+  it("preserves/omits all trace fields", () => {
+    const systemPrompt = "[SYSTEM]\n你是左然，一个虚构角色。";
 
-  function buildInput(messages: Array<{ role: string; content: string }>, overrides?: Record<string, unknown>) {
-    // LangSmith traceable wraps function inputs as { input: actualArgs }
-    return {
-      input: {
-        messages,
-        ctx: {},
-        enableTools: true,
-        allowedToolNames: ["web_search"],
-        ...overrides,
-      },
-    };
-  }
+    // Preserves messages array
+    let messages = [{ role: "system", content: systemPrompt }, { role: "user", content: "你好" }];
+    let output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true, allowedToolNames: ["web_search"] } });
+    assert.ok(Array.isArray(output.messages), "messages — is array");
+    assert.equal(output.messages.length, 2, "messages — length");
+    assert.equal(output.messages[0].role, "system", "messages — role");
+    assert.equal(output.messages[0].content, systemPrompt, "messages — content");
 
-  it("preserves the messages array", () => {
-    const messages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: "你好" },
-    ];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.ok(Array.isArray(output.messages));
-    assert.equal(output.messages.length, 2);
-    assert.equal(output.messages[0].role, "system");
-    assert.equal(output.messages[0].content, systemPrompt);
-  });
+    // systemPromptChars
+    messages = [{ role: "system", content: systemPrompt }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.equal(output.systemPromptChars, systemPrompt.length, "systemPromptChars");
 
-  it("preserves systemPromptChars", () => {
-    const messages = [{ role: "system", content: systemPrompt }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.equal(output.systemPromptChars, systemPrompt.length);
-  });
+    // conversationMessageCount
+    messages = [{ role: "system", content: "sys" }, { role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.equal(output.conversationMessageCount, 4, "conversationMessageCount");
 
-  it("preserves conversationMessageCount", () => {
-    const messages = [
-      { role: "system", content: "sys" },
-      { role: "user", content: "a" },
-      { role: "assistant", content: "b" },
-      { role: "user", content: "c" },
-    ];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.equal(output.conversationMessageCount, 4);
-  });
-
-  it("preserves userMessageChars and userMessagePreview", () => {
+    // userMessageChars and userMessagePreview
     const userContent = "这是一个测试消息，用于验证追踪输入。";
-    const messages = [
-      { role: "user", content: "earlier" },
-      { role: "user", content: userContent },
-    ];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.equal(output.userMessageChars, userContent.length);
-    assert.equal(output.userMessagePreview, userContent.slice(0, 200));
-  });
+    messages = [{ role: "user", content: "earlier" }, { role: "user", content: userContent }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.equal(output.userMessageChars, userContent.length, "userMessageChars");
+    assert.equal(output.userMessagePreview, userContent.slice(0, 200), "userMessagePreview");
 
-  it("preserves allowedToolNames and enableTools", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop(
-      buildInput(messages, { allowedToolNames: ["web_search"], enableTools: true }),
-    );
-    assert.deepEqual(output.allowedToolNames, ["web_search"]);
-    assert.equal(output.enableTools, true);
-  });
+    // allowedToolNames and enableTools
+    messages = [{ role: "user", content: "hi" }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true, allowedToolNames: ["web_search"] } });
+    assert.deepEqual(output.allowedToolNames, ["web_search"], "allowedToolNames");
+    assert.equal(output.enableTools, true, "enableTools true");
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: false } });
+    assert.equal(output.enableTools, false, "enableTools false");
 
-  it("sets enableTools false when disabled", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop(
-      buildInput(messages, { enableTools: false }),
-    );
-    assert.equal(output.enableTools, false);
-  });
+    // No systemPromptPreview
+    messages = [{ role: "system", content: systemPrompt }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.ok(!("systemPromptPreview" in output), "no systemPromptPreview");
 
-  it("does not include systemPromptPreview", () => {
-    const messages = [{ role: "system", content: systemPrompt }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.ok(!("systemPromptPreview" in output), "systemPromptPreview should not be present");
-  });
+    // Empty messages
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages: [], ctx: {}, enableTools: true } });
+    assert.equal(output.systemPromptChars, 0, "empty — systemPromptChars");
+    assert.equal(output.conversationMessageCount, 0, "empty — conversationMessageCount");
+    assert.equal(output.userMessageChars, 0, "empty — userMessageChars");
+    assert.equal(output.userMessagePreview, "", "empty — userMessagePreview");
+    assert.ok(Array.isArray(output.messages), "empty — messages array");
+    assert.equal(output.messages.length, 0, "empty — messages length");
 
-  it("handles empty messages gracefully", () => {
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput([]));
-    assert.equal(output.systemPromptChars, 0);
-    assert.equal(output.conversationMessageCount, 0);
-    assert.equal(output.userMessageChars, 0);
-    assert.equal(output.userMessagePreview, "");
-    assert.ok(Array.isArray(output.messages));
-    assert.equal(output.messages.length, 0);
-  });
+    // DeepSeek marker fields present
+    messages = [{ role: "user", content: "hi" }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true, deepseekThinkingMode: "inner_os", deepseekThinkingMarkerInjected: true, deepseekThinkingMarkerReason: "injected", deepseekThinkingMarkerPlacement: "current_user_message", deepseekThinkingTargetModel: "deepseek:deepseek-v4-pro" } });
+    assert.equal(output.deepseekThinkingMode, "inner_os", "ds — mode");
+    assert.equal(output.deepseekThinkingMarkerInjected, true, "ds — injected");
+    assert.equal(output.deepseekThinkingMarkerReason, "injected", "ds — reason");
+    assert.equal(output.deepseekThinkingMarkerPlacement, "current_user_message", "ds — placement");
+    assert.equal(output.deepseekThinkingTargetModel, "deepseek:deepseek-v4-pro", "ds — targetModel");
 
-  it("includes deepseek marker trace fields when present in input", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop({
-      input: {
-        messages,
-        ctx: {},
-        enableTools: true,
-        deepseekThinkingMode: "inner_os",
-        deepseekThinkingMarkerInjected: true,
-        deepseekThinkingMarkerReason: "injected",
-        deepseekThinkingMarkerPlacement: "current_user_message",
-        deepseekThinkingTargetModel: "deepseek:deepseek-v4-pro",
-      },
-    });
-    assert.equal(output.deepseekThinkingMode, "inner_os");
-    assert.equal(output.deepseekThinkingMarkerInjected, true);
-    assert.equal(output.deepseekThinkingMarkerReason, "injected");
-    assert.equal(output.deepseekThinkingMarkerPlacement, "current_user_message");
-    assert.equal(output.deepseekThinkingTargetModel, "deepseek:deepseek-v4-pro");
-  });
+    // DeepSeek marker fields absent
+    messages = [{ role: "user", content: "hi" }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.equal(output.deepseekThinkingMode, undefined, "no ds — mode");
+    assert.equal(output.deepseekThinkingMarkerInjected, undefined, "no ds — injected");
+    assert.equal(output.deepseekThinkingMarkerReason, undefined, "no ds — reason");
+    assert.equal(output.deepseekThinkingMarkerPlacement, undefined, "no ds — placement");
+    assert.equal(output.deepseekThinkingTargetModel, undefined, "no ds — targetModel");
 
-  it("omits deepseek marker trace fields when not present in input", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.equal(output.deepseekThinkingMode, undefined);
-    assert.equal(output.deepseekThinkingMarkerInjected, undefined);
-    assert.equal(output.deepseekThinkingMarkerReason, undefined);
-    assert.equal(output.deepseekThinkingMarkerPlacement, undefined);
-    assert.equal(output.deepseekThinkingTargetModel, undefined);
-  });
+    // Rewrite placement
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: true, deepseekThinkingMarkerPlacement: "rewrite_current_user_message", deepseekThinkingMarkerInjected: true, deepseekThinkingMarkerReason: "injected" } });
+    assert.equal(output.deepseekThinkingMarkerPlacement, "rewrite_current_user_message", "rewrite — placement");
+    assert.equal(output.deepseekThinkingMarkerInjected, true, "rewrite — injected");
 
-  it("includes rewrite placement in marker trace fields", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop({
-      input: {
-        messages,
-        ctx: {},
-        enableTools: true,
-        deepseekThinkingMarkerPlacement: "rewrite_current_user_message",
-        deepseekThinkingMarkerInjected: true,
-        deepseekThinkingMarkerReason: "injected",
-      },
-    });
-    assert.equal(output.deepseekThinkingMarkerPlacement, "rewrite_current_user_message");
-    assert.equal(output.deepseekThinkingMarkerInjected, true);
-  });
+    // Marker scope present
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages: [{ role: "user", content: "hi" }], ctx: {}, enableTools: true, deepseekThinkingMarkerScope: "every_generation" } });
+    assert.equal(output.deepseekThinkingMarkerScope, "every_generation", "scope — present");
 
-  it("includes marker scope in trace fields when present", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop({
-      input: {
-        messages,
-        ctx: {},
-        enableTools: true,
-        deepseekThinkingMarkerScope: "every_generation",
-      },
-    });
-    assert.equal(output.deepseekThinkingMarkerScope, "every_generation");
-  });
+    // Marker scope absent
+    messages = [{ role: "user", content: "hi" }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    assert.equal(output.deepseekThinkingMarkerScope, undefined, "scope — absent");
 
-  it("omits marker scope from trace fields when not present", () => {
-    const messages = [{ role: "user", content: "hi" }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    assert.equal(output.deepseekThinkingMarkerScope, undefined);
-  });
-
-  it("sanitizes userMessagePreview when decorated content includes a marker", () => {
+    // Sanitizes marker from userMessagePreview
     const text = "你好。";
     const decorated = `${text}\n\n【角色沉浸要求】在你的思考过程（<think>标签内）中，请遵守以下规则：`;
-    const messages = [{ role: "user", content: decorated }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
+    messages = [{ role: "user", content: decorated }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
     const preview = output.userMessagePreview as string;
-    assert.ok(!preview.includes("【角色沉浸要求】"));
-    assert.ok(preview.startsWith(text));
-  });
+    assert.ok(!preview.includes("【角色沉浸要求】"), "sanitize — marker removed");
+    assert.ok(preview.startsWith(text), "sanitize — text preserved");
 
-  it("sanitizes marker when marker prefix begins near the 200-char preview boundary", () => {
-    // Original text is 195 chars — the appended marker starts at char 197,
-    // so a naive slice(0,200) would cut into the marker prefix.
-    const text = "a".repeat(195);
-    const decorated = `${text}\n\n【角色沉浸要求】后面的内容被截断了测试`;
-    const messages = [{ role: "user", content: decorated }];
-    const output = __testing.traceInputsForGenerationToolLoop(buildInput(messages));
-    const preview = output.userMessagePreview as string;
-    // The preview must not contain any part of the marker prefix.
-    assert.ok(!preview.includes("【角色沉浸要求】"));
-    // The preview should contain the full original text (sanitize before truncate).
-    assert.ok(preview === text || preview.startsWith(text));
-    assert.equal(preview.length, Math.min(text.length, 200));
+    // Marker near preview boundary (195 chars + marker)
+    const longText = "a".repeat(195);
+    const decoratedLong = `${longText}\n\n【角色沉浸要求】后面的内容被截断了测试`;
+    messages = [{ role: "user", content: decoratedLong }];
+    output = __testing.traceInputsForGenerationToolLoop({ input: { messages, ctx: {}, enableTools: true } });
+    const preview2 = output.userMessagePreview as string;
+    assert.ok(!preview2.includes("【角色沉浸要求】"), "boundary — marker removed");
+    assert.ok(preview2 === longText || preview2.startsWith(longText), "boundary — text preserved");
+    assert.equal(preview2.length, Math.min(longText.length, 200), "boundary — length");
   });
 });
 
 describe("generateDraft", () => {
   it("is an exported async generator function with correct return shape", async () => {
-    const thoughtsAcc: import("../thought/thoughtTypes").Thought[] = [];
     const gen = generateDraft({
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] } as any,
       userMessage: "hello",
       session: { sessionId: "sess_test", characterId: "zuo_ran", thinking: true } as any,
       characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran" } as any,
       toolCtx: { sessionId: "sess_test", characterId: "zuo_ran", memoryNamespace: "main", continuityScope: "main", continuityFamily: "main_world", signal: new AbortController().signal } as any,
-      thoughtSummaryCache: new Map(),
-      thoughtsAcc,
-      isFirstUserTurn: false,
-      voiceHints: "formal, restrained",
-      openAICompatibleRequestExtensions: undefined,
+      thoughtSummaryCache: new Map(), thoughtsAcc: [], isFirstUserTurn: false,
+      voiceHints: "formal, restrained", openAICompatibleRequestExtensions: undefined,
       buildMessages: () => ({ messages: [{ role: "system", content: "sys" }, { role: "user", content: "hi" }], markerInjected: false, markerReason: "" }),
     });
     assert.ok(gen, "generateDraft should return an async generator");
     assert.equal(typeof gen[Symbol.asyncIterator], "function");
-    // The generator integrates with the real tracedResponseGeneration which needs
-    // provider keys. Full integration requires provider credentials.
-    // This test verifies the function is callable and returns the correct shape.
   });
 });
 
@@ -236,21 +144,15 @@ describe("validateDraft", () => {
 
 describe("rewriteDraft", () => {
   it("is an exported async generator function", () => {
-    assert.equal(typeof rewriteDraft, "function");
-    // rewriteDraft is an async generator — verify it returns an async iterable
     const gen = rewriteDraft({
       promptContext: { systemPrompt: "[SYSTEM]", conversationHistory: [] } as any,
       userMessage: "hello",
       session: { sessionId: "sess_test", characterId: "zuo_ran", thinking: true } as any,
       characterDefaults: { character_id: "zuo_ran", name: "Zuo Ran" } as any,
       toolCtx: { signal: new AbortController().signal } as any,
-      thoughtSummaryCache: new Map(),
-      thoughtsAcc: [],
-      isFirstUserTurn: false,
-      voiceHints: "formal, restrained",
-      openAICompatibleRequestExtensions: undefined,
-      issues: ["issue 1"],
-      rewriteIntro: "rewriting...",
+      thoughtSummaryCache: new Map(), thoughtsAcc: [], isFirstUserTurn: false,
+      voiceHints: "formal, restrained", openAICompatibleRequestExtensions: undefined,
+      issues: ["issue 1"], rewriteIntro: "rewriting...",
       buildRewriteMessages: () => ({ messages: [{ role: "system", content: "rewrite" }, { role: "user", content: "fix" }], markerInjected: false, markerReason: "" }),
     });
     assert.ok(gen);
@@ -260,15 +162,7 @@ describe("rewriteDraft", () => {
 
 describe("safeDeflection", () => {
   it("is an exported async generator function", () => {
-    assert.equal(typeof safeDeflection, "function");
-    const gen = safeDeflection({
-      characterName: "Zuo Ran",
-      safeDeflectionText: "I am not sure.",
-      reason: "tool_loop_exceeded",
-      thoughtSummaryCache: new Map(),
-      thoughtsAcc: [],
-      voiceHints: "formal, restrained",
-    });
+    const gen = safeDeflection({ characterName: "Zuo Ran", safeDeflectionText: "I am not sure.", reason: "tool_loop_exceeded", thoughtSummaryCache: new Map(), thoughtsAcc: [], voiceHints: "formal, restrained" });
     assert.ok(gen);
     assert.equal(typeof gen[Symbol.asyncIterator], "function");
   });
@@ -279,97 +173,50 @@ describe("message builder decoration", () => {
   const userMessage = "你好。";
   const rewriteSystemPrompt = "[REWRITE]\n请修正。";
 
-  function makePromptContext() {
-    return {
-      systemPrompt,
-      conversationHistory: [] as Array<{ role: string; content: string }>,
-    } as const;
-  }
+  it("buildToolMessages and buildRewriteToolMessages produce correct message arrays and metadata", () => {
+    // buildToolMessages: basic
+    let result = __testing.buildToolMessages({ systemPrompt, conversationHistory: [] } as Parameters<typeof __testing.buildToolMessages>[0], userMessage);
+    assert.ok(Array.isArray(result.messages), "tool — is array");
+    assert.equal(result.messages.length, 2, "tool — length");
+    assert.equal(result.messages[0].role, "system", "tool — role");
+    assert.equal(result.messages[0].content, systemPrompt, "tool — content");
+    assert.equal(result.messages[1].role, "user", "tool — user role");
+    assert.equal(typeof result.markerInjected, "boolean", "tool — markerInjected");
+    assert.equal(typeof result.markerReason, "string", "tool — markerReason");
 
-  describe("buildToolMessages", () => {
-    it("returns messages array with system prompt, history, and user message", () => {
-      const promptContext = makePromptContext() as Parameters<typeof __testing.buildToolMessages>[0];
-      const result = __testing.buildToolMessages(promptContext, userMessage);
-      assert.ok(Array.isArray(result.messages));
-      assert.equal(result.messages.length, 2);
-      assert.equal(result.messages[0].role, "system");
-      assert.equal(result.messages[0].content, systemPrompt);
-      assert.equal(result.messages[1].role, "user");
-    });
+    // buildToolMessages: with history
+    result = __testing.buildToolMessages({ systemPrompt, conversationHistory: [{ role: "assistant", content: "你好！" }] } as Parameters<typeof __testing.buildToolMessages>[0], userMessage, { isFirstUserTurn: false });
+    assert.equal(result.messages.length, 3, "tool history — length");
+    assert.equal(result.messages[1].role, "assistant", "tool history — role");
+    assert.equal(result.messages[1].content, "你好！", "tool history — content");
 
-    it("returns marker metadata as part of result", () => {
-      const promptContext = makePromptContext() as Parameters<typeof __testing.buildToolMessages>[0];
-      const result = __testing.buildToolMessages(promptContext, userMessage);
-      assert.equal(typeof result.markerInjected, "boolean");
-      assert.equal(typeof result.markerReason, "string");
-    });
-
-    it("includes conversation history in messages", () => {
-      const promptContext = makePromptContext() as Parameters<typeof __testing.buildToolMessages>[0];
-      promptContext.conversationHistory = [
-        { role: "assistant", content: "你好！" },
-      ];
-      const result = __testing.buildToolMessages(promptContext, userMessage, {
-        isFirstUserTurn: false,
-      });
-      assert.equal(result.messages.length, 3);
-      assert.equal(result.messages[1].role, "assistant");
-      assert.equal(result.messages[1].content, "你好！");
-    });
-  });
-
-  describe("buildRewriteToolMessages", () => {
-    it("returns messages array with rewrite system prompt, history, and user message", () => {
-      const promptContext = makePromptContext() as Parameters<typeof __testing.buildToolMessages>[0];
-      const result = __testing.buildRewriteToolMessages(
-        promptContext,
-        userMessage,
-        rewriteSystemPrompt,
-      );
-      assert.ok(Array.isArray(result.messages));
-      assert.equal(result.messages.length, 2);
-      assert.equal(result.messages[0].content, rewriteSystemPrompt);
-      assert.equal(result.messages[1].role, "user");
-    });
-
-    it("returns marker metadata matching draft signature", () => {
-      const promptContext = makePromptContext() as Parameters<typeof __testing.buildToolMessages>[0];
-      const result = __testing.buildRewriteToolMessages(
-        promptContext,
-        userMessage,
-        rewriteSystemPrompt,
-      );
-      assert.equal(typeof result.markerInjected, "boolean");
-      assert.equal(typeof result.markerReason, "string");
-    });
+    // buildRewriteToolMessages: basic
+    let rewriteResult = __testing.buildRewriteToolMessages({ systemPrompt, conversationHistory: [] } as Parameters<typeof __testing.buildToolMessages>[0], userMessage, rewriteSystemPrompt);
+    assert.ok(Array.isArray(rewriteResult.messages), "rewrite — is array");
+    assert.equal(rewriteResult.messages.length, 2, "rewrite — length");
+    assert.equal(rewriteResult.messages[0].content, rewriteSystemPrompt, "rewrite — system");
+    assert.equal(rewriteResult.messages[1].role, "user", "rewrite — user");
+    assert.equal(typeof rewriteResult.markerInjected, "boolean", "rewrite — markerInjected");
+    assert.equal(typeof rewriteResult.markerReason, "string", "rewrite — markerReason");
   });
 });
 
 describe("buildValidatorContext canonTruthMode propagation", () => {
-  it("passes canonTruthMode from promptContext to validator input", () => {
-    const ctx = buildValidatorContext({
+  it("passes canonTruthMode from promptContext and defaults to undefined when not set", () => {
+    let ctx = buildValidatorContext({
       session: { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" },
       personaOverlay: { max_nsfw_level: "medium", escalation_rule: "none", out_of_scope_chapter_behavior: "deflect" },
-      promptContext: {
-        conversationHistory: [],
-        retrievedCanonNarrative: "Some canon narrative about Fenghe.",
-        selectedMemorySources: [],
-        canonTruthMode: "strict_canon_recall",
-      },
+      promptContext: { conversationHistory: [], retrievedCanonNarrative: "Some canon narrative about Fenghe.", selectedMemorySources: [], canonTruthMode: "strict_canon_recall" },
       userMessage: "你还记得那封信吗？",
     });
-    assert.equal(ctx.canonTruthMode, "strict_canon_recall");
-  });
+    assert.equal(ctx.canonTruthMode, "strict_canon_recall", "propagated");
 
-  it("defaults canonTruthMode to undefined when not set in promptContext", () => {
-    const ctx = buildValidatorContext({
+    ctx = buildValidatorContext({
       session: { characterId: "zuo_ran", continuityScope: "main", mode: "canonical_live" },
       personaOverlay: { max_nsfw_level: "medium", escalation_rule: "none", out_of_scope_chapter_behavior: "deflect" },
-      promptContext: {
-        conversationHistory: [],
-      },
+      promptContext: { conversationHistory: [] },
       userMessage: "你好",
     });
-    assert.equal(ctx.canonTruthMode, undefined);
+    assert.equal(ctx.canonTruthMode, undefined, "default undefined");
   });
 });

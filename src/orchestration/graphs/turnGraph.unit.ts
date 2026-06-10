@@ -2,82 +2,27 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createTurnGraph, type TurnRunner } from "./turnGraph";
 
-const FAKE_RESULT = {
-  assistantMessageId: "msg_abc123",
-  content: "Hello from the fake runner!",
-  wasRewritten: false,
-  wasDeflected: false,
-  turnIndex: 5,
-  route: "roleplay_turn",
-};
+const FAKE_RESULT = { assistantMessageId: "msg_abc123", content: "Hello from the fake runner!", wasRewritten: false, wasDeflected: false, turnIndex: 5, route: "roleplay_turn" };
 
 describe("turnGraph - createTurnGraph", () => {
-  it("passes sessionId and userMessage to the injected runner", async () => {
+  it("passes sessionId/userMessage to runner, returns TurnOutput on success, captures errors", async () => {
     const calls: Array<{ sessionId: string; userMessage: string }> = [];
-    const fakeRunner: TurnRunner = async (input) => {
-      calls.push({ sessionId: input.sessionId, userMessage: input.userMessage });
-      return FAKE_RESULT;
-    };
+    let state = await createTurnGraph(async (input) => { calls.push({ sessionId: input.sessionId, userMessage: input.userMessage }); return FAKE_RESULT; }).invoke({ sessionId: "sess_001", userMessage: "test message" });
+    assert.strictEqual(calls.length, 1, "runner called once");
+    assert.strictEqual(calls[0].sessionId, "sess_001", "sessionId passed");
+    assert.strictEqual(calls[0].userMessage, "test message", "userMessage passed");
+    assert.deepEqual(state.result, FAKE_RESULT, "TurnOutput shape passes through");
 
-    const graph = createTurnGraph(fakeRunner);
-    await graph.invoke({
-      sessionId: "sess_001",
-      userMessage: "test message",
-    });
+    // Error as Error object
+    state = await createTurnGraph(async () => { throw new Error("DB connection failed"); }).invoke({ sessionId: "sess_003", userMessage: "will error" });
+    assert.ok(state.errors, "errors on throw");
+    assert.strictEqual(state.errors[0].stage, "runExistingCharacterTurn", "error stage");
+    assert.strictEqual(state.errors[0].message, "DB connection failed", "error message");
+    assert.strictEqual(state.result, undefined, "no result on error");
 
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].sessionId, "sess_001");
-    assert.strictEqual(calls[0].userMessage, "test message");
-  });
-
-  it("returns TurnOutput-shaped result on success", async () => {
-    const fakeRunner: TurnRunner = async () => FAKE_RESULT;
-
-    const graph = createTurnGraph(fakeRunner);
-    const state = await graph.invoke({
-      sessionId: "sess_002",
-      userMessage: "hello",
-    });
-
-    assert.ok(state.result);
-    assert.strictEqual(state.result.assistantMessageId, "msg_abc123");
-    assert.strictEqual(state.result.content, "Hello from the fake runner!");
-    assert.strictEqual(state.result.wasRewritten, false);
-    assert.strictEqual(state.result.wasDeflected, false);
-    assert.strictEqual(state.result.turnIndex, 5);
-    assert.strictEqual(state.result.route, "roleplay_turn");
-  });
-
-  it("captures runner errors in the errors array", async () => {
-    const fakeRunner: TurnRunner = async () => {
-      throw new Error("DB connection failed");
-    };
-
-    const graph = createTurnGraph(fakeRunner);
-    const state = await graph.invoke({
-      sessionId: "sess_003",
-      userMessage: "will error",
-    });
-
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors.length, 1);
-    assert.strictEqual(state.errors[0].stage, "runExistingCharacterTurn");
-    assert.strictEqual(state.errors[0].message, "DB connection failed");
-    assert.strictEqual(state.result, undefined);
-  });
-
-  it("captures non-Error throws as strings", async () => {
-    const fakeRunner: TurnRunner = async () => {
-      throw "string error";
-    };
-
-    const graph = createTurnGraph(fakeRunner);
-    const state = await graph.invoke({
-      sessionId: "sess_004",
-      userMessage: "throws string",
-    });
-
-    assert.ok(state.errors);
-    assert.strictEqual(state.errors[0].message, "string error");
+    // Error as string
+    state = await createTurnGraph(async () => { throw "string error"; }).invoke({ sessionId: "sess_004", userMessage: "throws string" });
+    assert.ok(state.errors, "errors on string throw");
+    assert.strictEqual(state.errors[0].message, "string error", "string error message");
   });
 });

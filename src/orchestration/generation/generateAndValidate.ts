@@ -9,6 +9,7 @@ import type { PromptContext } from "../prompt/buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import type { PersonaOverlayDefaults } from "../../character/characterDefaults";
 import { loadCharacterDefaults, type CharacterDefaults } from "../../character/characterDefaults";
+import { voiceHintsFrom } from "../../character/voiceHints";
 import {
   traceLLMStage,
   traceStreamingLLM,
@@ -224,15 +225,6 @@ function buildRewriteToolMessages(
     markerInjected: decorated.markerInjected,
     markerReason: decorated.markerReason,
   };
-}
-
-function voiceHintsFrom(
-  characterDefaults: ReturnType<typeof loadCharacterDefaults>,
-): string {
-  const s = characterDefaults.speech_style;
-  return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
-    "，",
-  );
 }
 
 const ALLOWED_GENERATION_TOOLS: string[] = ["web_search"];

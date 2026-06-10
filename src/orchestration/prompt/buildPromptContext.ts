@@ -20,6 +20,7 @@ import type { RetrievedOpenThread } from "../../retrieval/memory/retrieveOpenThr
 import type { StructMemEntryContextExpansion } from "../../retrieval/memory/retrieveStructMemEntryContextExpansions";
 import type { StructMemMotifProbeSummary } from "../context/motifTypes";
 import type { MemoryRerankOutput } from "../retrieval/memoryRerank";
+import type { InternalLogicEvidenceHit } from "../../retrieval/internalLogic/searchInternalLogicEvidence";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 import { env } from "../../config/env";
 import { USER_MESSAGE_ANNOTATION_RULES } from "../annotations/userMessageAnnotations";
@@ -152,6 +153,8 @@ export function buildPromptContext(input: {
   structMemConsolidations?: RetrievedStructMemConsolidation[];
   motifProbe?: StructMemMotifProbeSummary;
   memoryRerank?: MemoryRerankOutput | null;
+  /** Selected internal-logic evidence hits from the reranker. */
+  internalLogicEvidence?: InternalLogicEvidenceHit[];
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -174,6 +177,7 @@ export function buildPromptContext(input: {
     structMemConsolidations = [],
     motifProbe,
     memoryRerank,
+    internalLogicEvidence = [],
     userMessage,
     queryRewrite,
   } = input;
@@ -283,6 +287,13 @@ ${hardRules}
     ...(characterDefaults.internal_logic &&
     Object.values(characterDefaults.internal_logic).some((v) => v?.trim())
       ? [buildBlock("CHARACTER INTERNAL LOGIC", formatInternalLogic(characterDefaults.internal_logic))]
+      : []),
+
+    // [CHARACTER INTERNAL LOGIC EVIDENCE] — selected canon-grounded evidence
+    // for internal-logic claims, immediately after the internal-logic block.
+    ...(internalLogicEvidence.length > 0
+      ? [buildBlock("CHARACTER INTERNAL LOGIC EVIDENCE",
+          promptFormatters.formatInternalLogicEvidence(internalLogicEvidence))]
       : []),
 
     buildBlock("BASE PERSONA", basePersonaBody),

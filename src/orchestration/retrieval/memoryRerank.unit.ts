@@ -8,869 +8,520 @@ import { env } from "../../config/env";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
 import type { RetrievalPlan } from "./retrievalPlan";
 
-function makeCandidate(
-  overrides: Partial<ContextCandidate> = {},
-): ContextCandidate {
+function makeCandidate(overrides: Partial<ContextCandidate> = {}): ContextCandidate {
   return {
-    id: overrides.id ?? "c1",
-    source: overrides.source ?? "structmem_entry",
+    id: overrides.id ?? "c1", source: overrides.source ?? "structmem_entry",
     text: overrides.text ?? "A shared memory of a cafe meeting.",
-    score: overrides.score ?? 0.5,
-    turnStart: overrides.turnStart ?? null,
-    turnEnd: overrides.turnEnd ?? null,
+    score: overrides.score ?? 0.5, turnStart: overrides.turnStart ?? null, turnEnd: overrides.turnEnd ?? null,
   };
 }
 
+// ---------------------------------------------------------------------------
+// buildMemoryRerankPrompt
+// ---------------------------------------------------------------------------
+
 describe("buildMemoryRerankPrompt", () => {
-  it("includes candidate text and source", () => {
-    const { system, user } = buildMemoryRerankPrompt({
-      currentUserMessage: "你还记得我们上次在咖啡馆说了什么吗？",
-      plannerIntent: "explicit_recall",
-      candidates: [
-        makeCandidate({ id: "mem_1", source: "interactive_memory", text: "咖啡馆对话" }),
-      ],
-      maxSelected: 8,
-    });
-    assert.ok(system.includes("memory relevance judge"));
-    assert.ok(user.includes("咖啡馆对话"));
-    assert.ok(user.includes("explicit_recall"));
-    assert.ok(user.includes("mem_1"));
-  });
-
-  it("renders intent hint for canon_question", () => {
-    const { user } = buildMemoryRerankPrompt({
-      currentUserMessage: "原作第三章是谁提出的？",
-      plannerIntent: "canon_question",
-      candidates: [makeCandidate({ source: "canon_chunk" })],
-      maxSelected: 8,
-    });
-    assert.ok(user.includes("canon/story fact question"));
-  });
-
-  it("renders intent hint for scene_continuation", () => {
-    const { user } = buildMemoryRerankPrompt({
-      currentUserMessage: "我看着他，等着回应。",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    assert.ok(user.includes("continuity"));
-  });
-
-  it("includes max selected count in system prompt", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 5,
-    });
-    assert.ok(system.includes("5"));
+  it("includes candidate text, source, intent hint, and max count per intent", () => {
+    const cases = [
+      {
+        name: "explicit_recall",
+        input: { currentUserMessage: "你还记得我们上次在咖啡馆说了什么吗？", plannerIntent: "explicit_recall" as const, candidates: [makeCandidate({ id: "mem_1", source: "interactive_memory", text: "咖啡馆对话" })], maxSelected: 8 },
+        checks: (p: ReturnType<typeof buildMemoryRerankPrompt>) => {
+          assert.ok(p.system.includes("memory relevance judge"), "system — judge ref");
+          assert.ok(p.user.includes("咖啡馆对话"), "user — candidate text");
+          assert.ok(p.user.includes("explicit_recall"), "user — intent hint");
+          assert.ok(p.user.includes("mem_1"), "user — candidate id");
+          assert.ok(p.system.includes("8"), "system — max count");
+        },
+      },
+      {
+        name: "canon_question",
+        input: { currentUserMessage: "原作第三章是谁提出的？", plannerIntent: "canon_question" as const, candidates: [makeCandidate({ source: "canon_chunk" })], maxSelected: 8 },
+        checks: (p: ReturnType<typeof buildMemoryRerankPrompt>) => { assert.ok(p.user.includes("canon/story fact question"), "user — canon hint"); },
+      },
+      {
+        name: "scene_continuation",
+        input: { currentUserMessage: "我看着他，等着回应。", plannerIntent: "scene_continuation" as const, candidates: [], maxSelected: 8 },
+        checks: (p: ReturnType<typeof buildMemoryRerankPrompt>) => { assert.ok(p.user.includes("continuity"), "user — continuity hint"); },
+      },
+    ];
+    for (const c of cases) {
+      const { system, user } = buildMemoryRerankPrompt(c.input);
+      c.checks({ system, user });
+    }
   });
 });
+
+// ---------------------------------------------------------------------------
+// validateSelected
+// ---------------------------------------------------------------------------
 
 describe("validateSelected", () => {
-  it("drops selected IDs unknown in candidates", () => {
+  it("drops unknown IDs and caps to max count", () => {
     const result = __testing.validateSelected(
-      [
-        {
-          id: "ghost",
-          source: "interactive_memory",
-          relevance: "useful",
-          usageInstruction: "use_subtly",
-          reasonCode: "direct_continuity",
-        },
-        {
-          id: "real_1",
-          source: "interactive_memory",
-          relevance: "useful",
-          usageInstruction: "use_subtly",
-          reasonCode: "direct_continuity",
-        },
-      ],
-      [makeCandidate({ id: "real_1", source: "interactive_memory" })],
-      8,
+      [{ id: "ghost", source: "interactive_memory", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" }, { id: "real_1", source: "interactive_memory", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" }],
+      [makeCandidate({ id: "real_1", source: "interactive_memory" })], 8,
     );
-    assert.equal(result.length, 1);
-    assert.equal(result[0]!.id, "real_1");
-  });
+    assert.equal(result.length, 1, "unknown dropped");
+    assert.equal(result[0]!.id, "real_1", "real kept");
 
-  it("caps selected to max count", () => {
-    const selected = Array.from({ length: 12 }, (_, i) => ({
-      id: `item_${i}`,
-      source: "structmem_entry" as const,
-      relevance: "useful" as const,
-      usageInstruction: "use_subtly" as const,
-      reasonCode: "direct_continuity" as const,
-    }));
-    const candidates = selected.map((s) => makeCandidate({ id: s.id }));
-    const result = __testing.validateSelected(selected, candidates, 8);
-    assert.equal(result.length, 8);
+    const manySelected = Array.from({ length: 12 }, (_, i) => ({ id: `item_${i}`, source: "structmem_entry" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const }));
+    const capped = __testing.validateSelected(manySelected, manySelected.map((s) => makeCandidate({ id: s.id })), 8);
+    assert.equal(capped.length, 8, "capped to 8");
   });
 });
 
+// ---------------------------------------------------------------------------
+// applyEmptySelectionGuard
+// ---------------------------------------------------------------------------
+
 describe("applyEmptySelectionGuard", () => {
-  const candidates: ContextCandidate[] = [
-    makeCandidate({ id: "best_mem", source: "interactive_memory", text: "重要回忆", score: 0.9 }),
-    makeCandidate({ id: "best_canon", source: "canon_chunk", text: "原作事实", score: 0.8 }),
-  ];
-
-  const emptyOutput = {
-    selected: [],
-    rejected: [],
-    finalContextMode: "recent_only" as const,
-    needsEvidenceFallback: false,
-  };
-
-  it("picks best non-canon for explicit_recall when selected is empty", () => {
-    const result = __testing.applyEmptySelectionGuard(
-      emptyOutput,
-      candidates,
-      "explicit_recall",
-    );
-    assert.equal(result.selected.length, 1);
-    assert.equal(result.selected[0]!.id, "best_mem");
-    assert.equal(result.selected[0]!.reasonCode, "direct_continuity");
-  });
-
-  it("picks best canon for canon_question when selected is empty", () => {
-    const result = __testing.applyEmptySelectionGuard(
-      emptyOutput,
-      candidates,
-      "canon_question",
-    );
-    assert.equal(result.selected.length, 1);
-    assert.equal(result.selected[0]!.id, "best_canon");
-  });
-
-  it("does not apply for scene_continuation", () => {
-    assert.deepEqual(
-      __testing.applyEmptySelectionGuard(
-        { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
-        [],
-        "scene_continuation",
-      ),
-      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
-    );
-  });
-
-  it("picks canon_fact for canon_question when selected is empty", () => {
+  it("applies empty guard per intent, avoids canon_fact for recall", () => {
     const candidates = [
+      makeCandidate({ id: "best_mem", source: "interactive_memory", text: "重要回忆", score: 0.9 }),
+      makeCandidate({ id: "best_canon", source: "canon_chunk", text: "原作事实", score: 0.8 }),
+    ];
+    const empty = { selected: [], rejected: [], finalContextMode: "recent_only" as const, needsEvidenceFallback: false };
+
+    // explicit_recall picks best non-canon
+    let r = __testing.applyEmptySelectionGuard(empty, candidates, "explicit_recall");
+    assert.equal(r.selected.length, 1, "recall — selected count");
+    assert.equal(r.selected[0]!.id, "best_mem", "recall — id");
+    assert.equal(r.selected[0]!.reasonCode, "direct_continuity", "recall — reasonCode");
+
+    // canon_question picks best canon
+    r = __testing.applyEmptySelectionGuard(empty, candidates, "canon_question");
+    assert.equal(r.selected.length, 1, "canon_q — count");
+    assert.equal(r.selected[0]!.id, "best_canon", "canon_q — id");
+
+    // scene_continuation unchanged
+    const unchanged = __testing.applyEmptySelectionGuard(empty, [], "scene_continuation");
+    assert.deepEqual(unchanged, empty, "scene_cont — unchanged");
+
+    // canon_fact preferred over memory for canon_question
+    const factCandidates = [
       makeCandidate({ id: "fact_1", source: "canon_fact", text: "A key story fact.", score: 0.9 }),
       makeCandidate({ id: "mem_1", source: "interactive_memory", text: "A memory.", score: 0.8 }),
     ];
-    const result = __testing.applyEmptySelectionGuard(
-      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
-      candidates,
-      "canon_question",
-    );
-    assert.equal(result.selected.length, 1);
-    assert.equal(result.selected[0]!.source, "canon_fact");
-  });
+    r = __testing.applyEmptySelectionGuard(empty, factCandidates, "canon_question");
+    assert.equal(r.selected.length, 1, "canon_q — fact selected");
+    assert.equal(r.selected[0]!.source, "canon_fact", "canon_q — fact source");
 
-  it("does not pick canon_fact for explicit_recall (non-canon guard)", () => {
-    const candidates = [
-      makeCandidate({ id: "fact_1", source: "canon_fact", text: "A key story fact.", score: 0.9 }),
-      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "A memory.", score: 0.7 }),
-    ];
-    const result = __testing.applyEmptySelectionGuard(
-      { selected: [], rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false },
-      candidates,
-      "explicit_recall",
-    );
-    assert.equal(result.selected.length, 1);
-    assert.notEqual(result.selected[0]!.source, "canon_fact", "should not pick canon_fact for non-canon intent");
-    assert.equal(result.selected[0]!.source, "interactive_memory");
+    // explicit_recall does NOT pick canon_fact
+    r = __testing.applyEmptySelectionGuard(empty, factCandidates, "explicit_recall");
+    assert.equal(r.selected.length, 1, "recall — count");
+    assert.notEqual(r.selected[0]!.source, "canon_fact", "recall — not canon_fact");
+    assert.equal(r.selected[0]!.source, "interactive_memory", "recall — memory source");
   });
 });
 
-describe("compact selected reason codes", () => {
-  const EXPECTED_SELECTED = [
-    "direct_continuity",
-    "explicit_recall",
-    "relationship_motif",
-    "open_thread",
-    "canon_required",
-    "conflict_avoidance",
-    "tone_guidance",
-    "user_preference",
-    "pending_commitment",
-    "safety_boundary",
-  ] as const;
+// ---------------------------------------------------------------------------
+// Reason code sets
+// ---------------------------------------------------------------------------
 
-  it("SELECTED_REASON_CODES matches the expected set", () => {
-    assert.deepEqual([...__testing.SELECTED_REASON_CODES], [...EXPECTED_SELECTED]);
-  });
+describe("reason code sets", () => {
+  it("validates selected and rejected reason codes against schema", () => {
+    const EXPECTED_SELECTED = ["direct_continuity", "explicit_recall", "relationship_motif", "open_thread", "canon_required", "conflict_avoidance", "tone_guidance", "user_preference", "pending_commitment", "safety_boundary"] as const;
+    const EXPECTED_REJECTED = ["irrelevant", "too_broad", "duplicate", "conflicts_recent", "too_old", "low_confidence", "canon_not_needed", "memory_not_needed", "unsafe"] as const;
 
-  it("every selected reason code is accepted via compact schema", () => {
+    // Selected set match
+    assert.deepEqual([...__testing.SELECTED_REASON_CODES], [...EXPECTED_SELECTED], "SELECTED reason codes match");
+
+    // Every selected code accepted
     for (const code of EXPECTED_SELECTED) {
       const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-        selected: [
-          { id: "m1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: code },
-        ],
-        rejected: [],
-        finalContextMode: "recent_only",
-        needsEvidenceFallback: false,
+        selected: [{ id: "m1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: code }],
+        rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false,
       });
-      assert.ok(
-        parsed.success,
-        `selected reasonCode "${code}" should be valid: ${JSON.stringify(parsed.error?.format())}`,
-      );
+      assert.ok(parsed.success, `selected reasonCode "${code}" should be valid`);
     }
-  });
 
-  it("unknown selected reasonCode is rejected", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [
-        { id: "m1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "unknown_code" },
-      ],
-      rejected: [],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
+    // Unknown selected code rejected
+    let parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [{ id: "m1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "unknown_code" }],
+      rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false,
     });
-    assert.equal(parsed.success, false, "unknown selected reasonCode must be rejected");
-  });
-});
+    assert.equal(parsed.success, false, "unknown selected code rejected");
 
-describe("compact rejected reason codes", () => {
-  const EXPECTED_REJECTED = [
-    "irrelevant",
-    "too_broad",
-    "duplicate",
-    "conflicts_recent",
-    "too_old",
-    "low_confidence",
-    "canon_not_needed",
-    "memory_not_needed",
-    "unsafe",
-  ] as const;
+    // Rejected set match
+    assert.deepEqual([...__testing.REJECTED_REASON_CODES], [...EXPECTED_REJECTED], "REJECTED reason codes match");
 
-  it("REJECTED_REASON_CODES matches the expected set", () => {
-    assert.deepEqual([...__testing.REJECTED_REASON_CODES], [...EXPECTED_REJECTED]);
-  });
-
-  it("every rejected reason code is accepted via compact schema", () => {
+    // Every rejected code accepted
     for (const code of EXPECTED_REJECTED) {
-      const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-        selected: [],
-        rejected: [{ id: "m1", reasonCode: code }],
-        finalContextMode: "recent_only",
-        needsEvidenceFallback: false,
+      parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+        selected: [], rejected: [{ id: "m1", reasonCode: code }],
+        finalContextMode: "recent_only", needsEvidenceFallback: false,
       });
-      assert.ok(
-        parsed.success,
-        `rejected reasonCode "${code}" should be valid: ${JSON.stringify(parsed.error?.format())}`,
-      );
+      assert.ok(parsed.success, `rejected reasonCode "${code}" should be valid`);
     }
-  });
 
-  it("unknown rejected reasonCode is rejected", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [],
-      rejected: [{ id: "m1", reasonCode: "unknown_code" }],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
+    // Unknown rejected code rejected
+    parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [], rejected: [{ id: "m1", reasonCode: "unknown_code" }],
+      finalContextMode: "recent_only", needsEvidenceFallback: false,
     });
-    assert.equal(parsed.success, false, "unknown rejected reasonCode must be rejected");
+    assert.equal(parsed.success, false, "unknown rejected code rejected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveCandidate
+// ---------------------------------------------------------------------------
 
 describe("resolveCandidate", () => {
-  const candidates: ContextCandidate[] = [
-    makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
-    makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
-    makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
-  ];
+  it("resolves by exact string ID, numeric index, numeric string, and handles edge cases", () => {
+    const candidates: ContextCandidate[] = [
+      makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
+      makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
+    ];
 
-  it("resolves exact string ID match", () => {
-    const result = __testing.resolveCandidate("mem_1", candidates);
-    assert.notEqual(result, null);
-    assert.equal(result!.id, "mem_1");
-    assert.equal(result!.source, "interactive_memory");
-  });
+    let r = __testing.resolveCandidate("mem_1", candidates);
+    assert.notEqual(r, null, "string — not null");
+    assert.equal(r!.id, "mem_1", "string — id");
+    assert.equal(r!.source, "interactive_memory", "string — source");
 
-  it("resolves numeric ID as candidate list index", () => {
-    const result = __testing.resolveCandidate(1, candidates);
-    assert.notEqual(result, null);
-    assert.equal(result!.id, "latest_turn_delta");
-    assert.equal(result!.source, "latest_turn_delta");
-  });
+    r = __testing.resolveCandidate(1, candidates);
+    assert.notEqual(r, null, "numeric — not null");
+    assert.equal(r!.id, "latest_turn_delta", "numeric — id");
 
-  it("resolves numeric string as index when no exact match", () => {
-    // "2" does not match any candidate ID → treated as index
-    const result = __testing.resolveCandidate("2", candidates);
-    assert.notEqual(result, null);
-    assert.equal(result!.id, "mem_1");
-    assert.equal(result!.source, "interactive_memory");
-  });
+    r = __testing.resolveCandidate("2", candidates);
+    assert.notEqual(r, null, "numeric string — not null");
+    assert.equal(r!.id, "mem_1", "numeric string — id");
 
-  it("prefers exact string match over index for numeric string", () => {
-    // "session_summary" is both a valid ID and not a parseable index anyway
-    const result = __testing.resolveCandidate("session_summary", candidates);
-    assert.notEqual(result, null);
-    assert.equal(result!.id, "session_summary");
-  });
+    r = __testing.resolveCandidate("session_summary", candidates);
+    assert.notEqual(r, null, "exact string — not null");
+    assert.equal(r!.id, "session_summary", "exact string — id");
 
-  it("returns null for out-of-range numeric ID", () => {
-    assert.equal(__testing.resolveCandidate(99, candidates), null);
-    assert.equal(__testing.resolveCandidate(-1, candidates), null);
-  });
-
-  it("returns null for non-integer numeric ID", () => {
-    assert.equal(__testing.resolveCandidate(0.5, candidates), null);
-    assert.equal(__testing.resolveCandidate(NaN, candidates), null);
-  });
-
-  it("returns null for unknown string ID that is not a valid index", () => {
-    assert.equal(__testing.resolveCandidate("nonexistent", candidates), null);
-  });
-
-  it("returns null for empty candidates list", () => {
-    assert.equal(__testing.resolveCandidate(0, []), null);
-    assert.equal(__testing.resolveCandidate("anything", []), null);
+    assert.equal(__testing.resolveCandidate(99, candidates), null, "OOB — null");
+    assert.equal(__testing.resolveCandidate(-1, candidates), null, "negative — null");
+    assert.equal(__testing.resolveCandidate(0.5, candidates), null, "float — null");
+    assert.equal(__testing.resolveCandidate(NaN, candidates), null, "NaN — null");
+    assert.equal(__testing.resolveCandidate("nonexistent", candidates), null, "unknown string — null");
+    assert.equal(__testing.resolveCandidate(0, []), null, "empty candidates index — null");
+    assert.equal(__testing.resolveCandidate("anything", []), null, "empty candidates string — null");
   });
 });
+
+// ---------------------------------------------------------------------------
+// normalizeSelected
+// ---------------------------------------------------------------------------
 
 describe("normalizeSelected", () => {
-  const candidates: ContextCandidate[] = [
-    makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
-    makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
-    makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
-  ];
-
-  it("passes through string IDs that match candidates, using candidate source", () => {
-    const raw = [
-      { id: "session_summary" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const },
+  it("normalizes by string ID, numeric index, drops unknown, preserves metadata, empty", () => {
+    const candidates: ContextCandidate[] = [
+      makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
+      makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
     ];
-    const result = __testing.normalizeSelected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].id, "session_summary");
-    assert.equal(result[0].source, "session_summary");  // candidate source, not raw source
-  });
 
-  it("maps numeric selected IDs via candidate index", () => {
-    const raw = [
-      { id: 2 as const, relevance: "required" as const, usageInstruction: "must_use" as const, reasonCode: "explicit_recall" as const },
-    ];
-    const result = __testing.normalizeSelected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].id, "mem_1");
-    assert.equal(result[0].source, "interactive_memory");
-  });
+    // String IDs use candidate source
+    let r = __testing.normalizeSelected([{ id: "session_summary" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const }], candidates);
+    assert.equal(r.length, 1, "string — count");
+    assert.equal(r[0].id, "session_summary", "string — id");
+    assert.equal(r[0].source, "session_summary", "string — source");
 
-  it("maps numeric-string selected IDs via index when no exact match", () => {
-    const raw = [
-      { id: "1" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "open_thread" as const },
-    ];
-    const result = __testing.normalizeSelected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].id, "latest_turn_delta");
-  });
+    // Numeric indexes
+    r = __testing.normalizeSelected([{ id: 2 as const, relevance: "required" as const, usageInstruction: "must_use" as const, reasonCode: "explicit_recall" as const }], candidates);
+    assert.equal(r.length, 1, "numeric — count");
+    assert.equal(r[0].id, "mem_1", "numeric — id");
+    assert.equal(r[0].source, "interactive_memory", "numeric — source");
 
-  it("drops unknown selected IDs", () => {
-    const raw = [
-      { id: "nonexistent" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const },
-      { id: 99 as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const },
-      { id: -1 as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const },
-    ];
-    const result = __testing.normalizeSelected(raw, candidates);
-    assert.equal(result.length, 0);
-  });
+    // Numeric string via index
+    r = __testing.normalizeSelected([{ id: "1" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "open_thread" as const }], candidates);
+    assert.equal(r.length, 1, "num str — count");
+    assert.equal(r[0].id, "latest_turn_delta", "num str — id");
 
-  it("preserves relevance, usageInstruction, and reasonCode from raw item", () => {
-    const raw = [
-      { id: 0 as const, relevance: "subtle_tone_only" as const, usageInstruction: "tone_only" as const, reasonCode: "tone_guidance" as const },
-    ];
-    const result = __testing.normalizeSelected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].relevance, "subtle_tone_only");
-    assert.equal(result[0].usageInstruction, "tone_only");
-    assert.equal(result[0].reasonCode, "tone_guidance");
-  });
+    // Unknown IDs dropped
+    r = __testing.normalizeSelected([{ id: "nonexistent" as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const }, { id: 99 as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const }, { id: -1 as const, relevance: "useful" as const, usageInstruction: "use_subtly" as const, reasonCode: "direct_continuity" as const }], candidates);
+    assert.equal(r.length, 0, "unknown — all dropped");
 
-  it("handles empty input", () => {
-    const result = __testing.normalizeSelected([], candidates);
-    assert.equal(result.length, 0);
+    // Preserves relevance, usageInstruction, reasonCode
+    r = __testing.normalizeSelected([{ id: 0 as const, relevance: "subtle_tone_only" as const, usageInstruction: "tone_only" as const, reasonCode: "tone_guidance" as const }], candidates);
+    assert.equal(r.length, 1, "preserve — count");
+    assert.equal(r[0].relevance, "subtle_tone_only", "preserve — relevance");
+    assert.equal(r[0].usageInstruction, "tone_only", "preserve — usageInstruction");
+    assert.equal(r[0].reasonCode, "tone_guidance", "preserve — reasonCode");
+
+    // Empty input
+    assert.equal(__testing.normalizeSelected([], candidates).length, 0, "empty — count");
   });
 });
+
+// ---------------------------------------------------------------------------
+// normalizeRejected
+// ---------------------------------------------------------------------------
 
 describe("normalizeRejected", () => {
-  const candidates: ContextCandidate[] = [
-    makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
-    makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
-    makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
-  ];
-
-  it("passes through string IDs that match candidates, using candidate source", () => {
-    const raw = [
-      { id: "mem_1" as const, reasonCode: "too_old" as const },
+  it("normalizes by string/numeric ID, drops unknown, handles empty", () => {
+    const candidates: ContextCandidate[] = [
+      makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
+      makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
     ];
-    const result = __testing.normalizeRejected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].id, "mem_1");
-    assert.equal(result[0].source, "interactive_memory");
-    assert.equal(result[0].reasonCode, "too_old");
-  });
 
-  it("maps numeric rejected IDs via candidate index", () => {
-    const raw = [
-      { id: 0 as const, reasonCode: "irrelevant" as const },
-    ];
-    const result = __testing.normalizeRejected(raw, candidates);
-    assert.equal(result.length, 1);
-    assert.equal(result[0].id, "session_summary");
-    assert.equal(result[0].source, "session_summary");
-  });
+    // String IDs
+    let r = __testing.normalizeRejected([{ id: "mem_1" as const, reasonCode: "too_old" as const }], candidates);
+    assert.equal(r.length, 1, "string — count");
+    assert.equal(r[0].id, "mem_1", "string — id");
+    assert.equal(r[0].source, "interactive_memory", "string — source");
+    assert.equal(r[0].reasonCode, "too_old", "string — reasonCode");
 
-  it("drops unknown rejected IDs", () => {
-    const raw = [
-      { id: "nonexistent" as const, reasonCode: "duplicate" as const },
-      { id: 99 as const, reasonCode: "duplicate" as const },
-    ];
-    const result = __testing.normalizeRejected(raw, candidates);
-    assert.equal(result.length, 0);
-  });
+    // Numeric index
+    r = __testing.normalizeRejected([{ id: 0 as const, reasonCode: "irrelevant" as const }], candidates);
+    assert.equal(r.length, 1, "numeric — count");
+    assert.equal(r[0].id, "session_summary", "numeric — id");
+    assert.equal(r[0].source, "session_summary", "numeric — source");
 
-  it("handles empty input", () => {
-    const result = __testing.normalizeRejected([], candidates);
-    assert.equal(result.length, 0);
+    // Unknown IDs dropped
+    r = __testing.normalizeRejected([{ id: "nonexistent" as const, reasonCode: "duplicate" as const }, { id: 99 as const, reasonCode: "duplicate" as const }], candidates);
+    assert.equal(r.length, 0, "unknown — all dropped");
+
+    // Empty input
+    assert.equal(__testing.normalizeRejected([], candidates).length, 0, "empty — count");
   });
 });
 
-describe("CompactRawRerankOutputSchema — numeric ID acceptance", () => {
-  it("accepts numeric selected IDs", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [
-        { id: 0, relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" },
-        { id: 1, relevance: "required", usageInstruction: "must_use", reasonCode: "explicit_recall" },
-      ],
-      rejected: [],
-      finalContextMode: "selected_memory",
-      needsEvidenceFallback: false,
-    });
-    assert.ok(parsed.success, `compact schema should accept numeric selected IDs: ${JSON.stringify(parsed.error?.format())}`);
-    assert.equal(parsed.data!.selected.length, 2);
-  });
+// ---------------------------------------------------------------------------
+// CompactRawRerankOutputSchema — numeric ID acceptance
+// ---------------------------------------------------------------------------
 
-  it("accepts numeric rejected IDs", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [],
-      rejected: [
-        { id: 0, reasonCode: "too_old" },
-        { id: 2, reasonCode: "duplicate" },
-      ],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
+describe("CompactRawRerankOutputSchema", () => {
+  it("accepts numeric, mixed IDs, and rejects unknown values", () => {
+    // Numeric selected IDs
+    let parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [{ id: 0, relevance: "useful", usageInstruction: "use_subtly", reasonCode: "direct_continuity" }, { id: 1, relevance: "required", usageInstruction: "must_use", reasonCode: "explicit_recall" }],
+      rejected: [], finalContextMode: "selected_memory", needsEvidenceFallback: false,
     });
-    assert.ok(parsed.success, `compact schema should accept numeric rejected IDs: ${JSON.stringify(parsed.error?.format())}`);
+    assert.ok(parsed.success, "numeric selected");
+    assert.equal(parsed.data!.selected.length, 2, "numeric selected count");
+
+    // Numeric rejected IDs
+    parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [], rejected: [{ id: 0, reasonCode: "too_old" }, { id: 2, reasonCode: "duplicate" }],
+      finalContextMode: "recent_only", needsEvidenceFallback: false,
+    });
+    assert.ok(parsed.success, "numeric rejected");
     assert.equal(parsed.data!.rejected.length, 2);
-  });
 
-  it("accepts mixed string and numeric IDs", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [
-        { id: "mem_1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "relationship_motif" },
-        { id: 0, relevance: "required", usageInstruction: "must_use", reasonCode: "explicit_recall" },
-      ],
-      rejected: [
-        { id: "some_id", reasonCode: "too_old" },
-        { id: 2, reasonCode: "canon_not_needed" },
-      ],
-      finalContextMode: "memory_and_canon",
-      needsEvidenceFallback: false,
+    // Mixed string and numeric
+    parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [{ id: "mem_1", relevance: "useful", usageInstruction: "use_subtly", reasonCode: "relationship_motif" }, { id: 0, relevance: "required", usageInstruction: "must_use", reasonCode: "explicit_recall" }],
+      rejected: [{ id: "some_id", reasonCode: "too_old" }, { id: 2, reasonCode: "canon_not_needed" }],
+      finalContextMode: "memory_and_canon", needsEvidenceFallback: false,
     });
-    assert.ok(parsed.success, "compact schema should accept mixed string and numeric IDs");
-    assert.equal(parsed.data!.selected.length, 2);
-    assert.equal(parsed.data!.rejected.length, 2);
-  });
+    assert.ok(parsed.success, "mixed IDs");
+    assert.equal(parsed.data!.selected.length, 2, "mixed selected count");
+    assert.equal(parsed.data!.rejected.length, 2, "mixed rejected count");
 
-  it("still rejects unknown relevance value", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [
-        { id: 0, relevance: "bogus_value", usageInstruction: "use_subtly", reasonCode: "direct_continuity" },
-      ],
-      rejected: [],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
+    // Reject unknown relevance
+    parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [{ id: 0, relevance: "bogus_value", usageInstruction: "use_subtly", reasonCode: "direct_continuity" }],
+      rejected: [], finalContextMode: "recent_only", needsEvidenceFallback: false,
     });
-    assert.equal(parsed.success, false, "compact schema should still reject unknown relevance");
-  });
+    assert.equal(parsed.success, false, "unknown relevance rejected");
 
-  it("still rejects unknown selected reasonCode", () => {
-    const parsed = __testing.CompactRawRerankOutputSchema.safeParse({
-      selected: [],
-      rejected: [{ id: 0, reasonCode: "bogus_category" }],
-      finalContextMode: "recent_only",
-      needsEvidenceFallback: false,
+    // Reject unknown reasonCode
+    parsed = __testing.CompactRawRerankOutputSchema.safeParse({
+      selected: [], rejected: [{ id: 0, reasonCode: "bogus_category" }],
+      finalContextMode: "recent_only", needsEvidenceFallback: false,
     });
-    assert.equal(parsed.success, false, "compact schema should still reject unknown reasonCode");
+    assert.equal(parsed.success, false, "unknown reasonCode rejected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Prompt hardening — candidate_index vs candidate_id
+// ---------------------------------------------------------------------------
 
 describe("prompt hardening — candidate_index vs candidate_id", () => {
   const { system, user } = buildMemoryRerankPrompt({
-    currentUserMessage: "test",
-    plannerIntent: "scene_continuation",
-    candidates: [makeCandidate({ id: "mem_1", source: "interactive_memory", text: "test" })],
-    maxSelected: 8,
+    currentUserMessage: "test", plannerIntent: "scene_continuation",
+    candidates: [makeCandidate({ id: "mem_1", source: "interactive_memory", text: "test" })], maxSelected: 8,
   });
 
-  it("includes candidate_index in candidate format", () => {
-    assert.ok(user.includes("candidate_index=0"), "candidate format should show candidate_index");
-  });
-
-  it("includes candidate_id in candidate format", () => {
-    assert.ok(user.includes("candidate_id=mem_1"), "candidate format should show candidate_id");
-  });
-
-  it("explicitly warns not to use candidate_index as id", () => {
-    assert.ok(
-      system.includes("Never use `candidate_index` as the `id` value"),
-      "prompt should warn against using candidate_index as id",
-    );
-  });
-
-  it("tells the model to use candidate_id for the JSON id field", () => {
-    assert.ok(
-      system.includes("JSON `id` field MUST use the"),
-      "prompt should emphasize using candidate_id for JSON id",
-    );
-  });
-
-  it('shows "<copy from candidate_id>" in the JSON template', () => {
-    assert.ok(
-      system.includes('"<copy from candidate_id>"'),
-      "JSON template id placeholder should reference candidate_id",
-    );
+  it("candidate format includes index and id, warns against using index as id", () => {
+    assert.ok(user.includes("candidate_index=0"), "index");
+    assert.ok(user.includes("candidate_id=mem_1"), "id");
+    assert.ok(system.includes("Never use `candidate_index` as the `id` value"), "warning");
+    assert.ok(system.includes("JSON `id` field MUST use the"), "MUST use");
+    assert.ok(system.includes('"<copy from candidate_id>"'), "copy instruction");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Compact prompt format
+// ---------------------------------------------------------------------------
 
 describe("compact prompt format", () => {
-  it("instructs compact/minified JSON output", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    assert.ok(system.includes("compact/minified JSON"), "prompt should request compact JSON");
-    assert.ok(system.includes("minified JSON"), "prompt should request minified JSON");
+  const { system } = buildMemoryRerankPrompt({
+    currentUserMessage: "test", plannerIntent: "scene_continuation",
+    candidates: [], maxSelected: 8,
   });
 
-  it("says enum reasonCode values only, no free-text reasons", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    assert.ok(
-      system.includes("enum reasonCode values only"),
-      "prompt should require enum reasonCode values only",
-    );
-    assert.ok(
-      system.includes("no free-text reasons"),
-      "prompt should forbid free-text reasons",
-    );
-  });
+  it("requires compact JSON, lists reason enum lines, avoids free-text", () => {
+    assert.ok(system.includes("compact/minified JSON"), "compact JSON");
+    assert.ok(system.includes("minified JSON"), "minified JSON");
+    assert.ok(system.includes("enum reasonCode values only"), "enum only");
+    assert.ok(system.includes("no free-text reasons"), "no free-text");
+    assert.ok(system.includes("Do not include a `source` field"), "no source");
+    assert.ok(!system.includes('"source":'), 'source absent');
+    assert.ok(!system.includes('"reason":'), 'reason absent');
+    assert.ok(!system.includes('"risk":'), 'risk absent');
 
-  it("says no source field in output", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    assert.ok(
-      system.includes("Do not include a `source` field"),
-      "prompt should tell the model not to emit source",
-    );
-  });
+    const selectedEnum = '"reasonCode": "direct_continuity | explicit_recall | relationship_motif | open_thread | canon_required | conflict_avoidance | tone_guidance | user_preference | pending_commitment | safety_boundary"';
+    assert.ok(system.includes(selectedEnum), "selected reason enum");
 
-  it("selected reasonCode enum line lists all selected reason codes", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    const enumLine = '"reasonCode": "direct_continuity | explicit_recall | relationship_motif | open_thread | canon_required | conflict_avoidance | tone_guidance | user_preference | pending_commitment | safety_boundary"';
-    assert.ok(
-      system.includes(enumLine),
-      "selected reasonCode enum line should list all selected reason codes",
-    );
-  });
-
-  it("rejected reasonCode enum line lists all rejected reason codes", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    const enumLine = '"reasonCode": "irrelevant | too_broad | duplicate | conflicts_recent | too_old | low_confidence | canon_not_needed | memory_not_needed | unsafe"';
-    assert.ok(
-      system.includes(enumLine),
-      "rejected reasonCode enum line should list all rejected reason codes",
-    );
-  });
-
-  it("prompt JSON template has no source, reason, or risk fields", () => {
-    const { system } = buildMemoryRerankPrompt({
-      currentUserMessage: "test",
-      plannerIntent: "scene_continuation",
-      candidates: [],
-      maxSelected: 8,
-    });
-    // The JSON template should not reference these old fields
-    assert.ok(!system.includes('"source":'), "prompt JSON should not include source field");
-    assert.ok(!system.includes('"reason":'), "prompt JSON should not include free-text reason field");
-    assert.ok(!system.includes('"risk":'), "prompt JSON should not include risk field");
+    const rejectedEnum = '"reasonCode": "irrelevant | too_broad | duplicate | conflicts_recent | too_old | low_confidence | canon_not_needed | memory_not_needed | unsafe"';
+    assert.ok(system.includes(rejectedEnum), "rejected reason enum");
   });
 });
+
+// ---------------------------------------------------------------------------
+// rerankRequestExtensions
+// ---------------------------------------------------------------------------
 
 describe("rerankRequestExtensions", () => {
-  it("returns thinking disabled for DeepSeek", () => {
-    const result = __testing.rerankRequestExtensions({ provider: "deepseek", model: "deepseek-chat" });
-    assert.deepEqual(result, { thinking: { type: "disabled" } });
+  it("returns thinking disabled for DeepSeek, undefined for others", () => {
+    assert.deepEqual(__testing.rerankRequestExtensions({ provider: "deepseek", model: "deepseek-chat" }), { thinking: { type: "disabled" } }, "DeepSeek");
+    assert.equal(__testing.rerankRequestExtensions({ provider: "anthropic", model: "claude-3" }), undefined, "Anthropic");
+    assert.equal(__testing.rerankRequestExtensions({ provider: "openai", model: "gpt-4" }), undefined, "OpenAI");
   });
-
-  it("returns undefined for non-DeepSeek providers", () => {
-    const anthropic = __testing.rerankRequestExtensions({ provider: "anthropic", model: "claude-3" });
-    assert.equal(anthropic, undefined);
-
-    const openai = __testing.rerankRequestExtensions({ provider: "openai", model: "gpt-4" });
-    assert.equal(openai, undefined);
-  });
-
 });
+
+// ---------------------------------------------------------------------------
+// Rerank timeout and abort
+// ---------------------------------------------------------------------------
 
 describe("rerank timeout and abort", () => {
-  it("MEMORY_RERANK_TIMEOUT_MS defaults to 30000", () => {
-    assert.equal(env.MEMORY_RERANK_TIMEOUT_MS, 30000);
-  });
+  it("defaults to 30000ms, resolves with timeout reason, and cancel() prevents firing", async () => {
+    assert.equal(env.MEMORY_RERANK_TIMEOUT_MS, 30000, "default 30000");
 
-  it("createRerankTimeout resolves with timeout-specific reason and aborts controller", async () => {
     const { promise, controller } = __testing.createRerankTimeout(5);
     const result = await promise;
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.fallbackReason, "timeout_after_5ms");
-    }
-    assert.ok(controller.signal.aborted, "AbortController should be aborted on timeout");
-  });
+    assert.equal(result.ok, false, "timeout — !ok");
+    if (!result.ok) assert.equal(result.fallbackReason, "timeout_after_5ms", "timeout — reason");
+    assert.ok(controller.signal.aborted, "timeout — aborted");
 
-  it("createRerankTimeout cancel() prevents the timeout from firing", async () => {
-    const { promise, controller, cancel } = __testing.createRerankTimeout(50);
-    cancel(); // Cancel before timer fires
-    // After cancel, the promise never resolves. Race against a delayed sentinel
-    // (100ms) to prove the timer was cleared — if cancel() did not work, the
-    // 50ms timeout would fire before the sentinel and the test would fail.
-    const result = await Promise.race([
-      promise.then(() => "timeout" as const),
+    // Cancel prevents timeout
+    const { promise: p2, cancel } = __testing.createRerankTimeout(50);
+    cancel();
+    const raced = await Promise.race([
+      p2.then(() => "timeout" as const),
       new Promise<"sentinel">((resolve) => setTimeout(() => resolve("sentinel"), 100)),
     ]);
-    assert.equal(result, "sentinel", "canceled timeout should not resolve");
-    assert.ok(!controller.signal.aborted, "canceled timeout should not abort the controller");
+    assert.equal(raced, "sentinel", "cancel — sentinel wins");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rerank diagnostics shape
+// ---------------------------------------------------------------------------
 
 describe("rerank diagnostics shape", () => {
   it("buildRetrievalDiagnosticsPayload accepts rerank-success diagnostics", () => {
     const diagnostics = {
-      retrievedCounts: {
-        interactive_memory: 4,
-        session_chunk: 3,
-        structmem_entry: 2,
-        structmem_consolidation: 1,
-        open_thread: 2,
-      },
-      injectedCounts: {
-        interactive_memory: 1,
-        session_chunk: 1,
-        structmem_entry: 0,
-        structmem_consolidation: 0,
-        open_thread: 0,
-      },
-      droppedDuplicateCount: 0,
-      droppedLowScoreCount: 0,
-      droppedCorrectionCount: 0,
-      droppedBudgetCount: 0,
-      topSources: [] as PromptMemorySource[],
-      averageInjectedScore: null,
+      retrievedCounts: { interactive_memory: 4, session_chunk: 3, structmem_entry: 2, structmem_consolidation: 1, open_thread: 2 },
+      injectedCounts: { interactive_memory: 1, session_chunk: 1, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 },
+      droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0,
+      topSources: [] as PromptMemorySource[], averageInjectedScore: null,
     } satisfies PromptMemorySelectionDiagnostics;
 
     const payload = buildRetrievalDiagnosticsPayload({
-      retrievalPlan: {
-        intent: "scene_continuation",
-        broadFailOpen: false,
-        canonMode: "skip",
-        forceOpenThreads: false,
-        durableMemoryTopK: 4,
-        sessionRecallTopK: 5,
-        structMemEntryTopK: 6,
-        structMemConsolidationTopK: 4,
-        openThreadTopK: 3,
-        contextNeed: {
-          needsRecentTurns: true,
-          needsOlderSessionRecall: false,
-          needsDurableMemory: false,
-          needsStructMem: false,
-          needsStructMemConsolidation: false,
-          needsCanon: false,
-          needsWeb: false,
-          injectionMode: "skip",
-          reason: "",
-        },
-      },
-      memoryQueryMode: "single",
-      rewriteConfidence: null,
-      annotationFallback: false,
-      boundaryOverlapTurns: 5,
-      olderRecallExclusiveFirstTurn: 0,
-      latestTurnDeltaActive: false,
+      retrievalPlan: { intent: "scene_continuation", broadFailOpen: false, canonMode: "skip", forceOpenThreads: false,
+        durableMemoryTopK: 4, sessionRecallTopK: 5, structMemEntryTopK: 6, structMemConsolidationTopK: 4, openThreadTopK: 3,
+        contextNeed: { needsRecentTurns: true, needsOlderSessionRecall: false, needsDurableMemory: false, needsStructMem: false,
+          needsStructMemConsolidation: false, needsCanon: false, needsWeb: false, injectionMode: "skip", reason: "" } },
+      memoryQueryMode: "single", rewriteConfidence: null, annotationFallback: false,
+      boundaryOverlapTurns: 5, olderRecallExclusiveFirstTurn: 0, latestTurnDeltaActive: false,
       structMemEntryExpansion: { eligibleCount: 0, expandedCount: 0, droppedByBudgetCount: 0 },
-      timingsMs: {
-        queryRewriteMs: 100,
-        embeddingsMs: 200,
-        mainRetrievalMs: 300,
-        olderRecallMs: 400,
-        openThreadsMs: 50,
-        selectorMs: 5000,
-        totalResolveContextMs: 6050,
-      },
+      timingsMs: { queryRewriteMs: 100, embeddingsMs: 200, mainRetrievalMs: 300, olderRecallMs: 400, openThreadsMs: 50, selectorMs: 5000, totalResolveContextMs: 6050 },
       selectionDiagnostics: diagnostics,
-      rerank: {
-        selectedCount: 1,
-        rejectedCount: 2,
-        finalContextMode: "selected_memory",
-        needsEvidenceFallback: false,
-      },
+      rerank: { selectedCount: 1, rejectedCount: 2, finalContextMode: "selected_memory", needsEvidenceFallback: false },
     }) as Record<string, unknown>;
 
     const rerank = payload.rerank as Record<string, unknown> | null;
-    assert.notEqual(rerank, null);
-    assert.equal(rerank!.selectedCount, 1);
-    assert.ok(Array.isArray(payload.topSources));
+    assert.notEqual(rerank, null, "rerank present");
+    assert.equal(rerank!.selectedCount, 1, "selectedCount");
+    assert.ok(Array.isArray(payload.topSources), "topSources array");
   });
 });
+
+// ---------------------------------------------------------------------------
+// countIdResolutionModes
+// ---------------------------------------------------------------------------
 
 describe("countIdResolutionModes", () => {
-  const candidates: ContextCandidate[] = [
-    makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
-    makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
-    makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
-  ];
+  it("counts exact matches, numeric indexes, and unresolved IDs", () => {
+    const candidates: ContextCandidate[] = [
+      makeCandidate({ id: "session_summary", source: "session_summary", text: "summary", score: 0.9 }),
+      makeCandidate({ id: "latest_turn_delta", source: "latest_turn_delta", text: "delta", score: 0.8 }),
+      makeCandidate({ id: "mem_1", source: "interactive_memory", text: "memory", score: 0.7 }),
+    ];
 
-  it("counts exact ID matches", () => {
-    const result = __testing.countIdResolutionModes(
-      [{ id: "session_summary" }, { id: "mem_1" }],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 2);
-    assert.equal(result.numericIndexCount, 0);
-    assert.equal(result.unresolvedCount, 0);
-  });
+    let r = __testing.countIdResolutionModes([{ id: "session_summary" }, { id: "mem_1" }], candidates);
+    assert.equal(r.exactIdCount, 2, "exact — count");
+    assert.equal(r.numericIndexCount, 0, "exact — numeric 0");
+    assert.equal(r.unresolvedCount, 0, "exact — unresolved 0");
 
-  it("counts numeric index resolutions", () => {
-    const result = __testing.countIdResolutionModes(
-      [{ id: 0 }, { id: 2 }],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 0);
-    assert.equal(result.numericIndexCount, 2);
-    assert.equal(result.unresolvedCount, 0);
-  });
+    r = __testing.countIdResolutionModes([{ id: 0 }, { id: 2 }], candidates);
+    assert.equal(r.exactIdCount, 0, "numeric — exact 0");
+    assert.equal(r.numericIndexCount, 2, "numeric — count");
+    assert.equal(r.unresolvedCount, 0, "numeric — unresolved 0");
 
-  it("counts unresolved IDs", () => {
-    const result = __testing.countIdResolutionModes(
-      [{ id: "nonexistent" }, { id: 99 }],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 0);
-    assert.equal(result.numericIndexCount, 0);
-    assert.equal(result.unresolvedCount, 2);
-  });
+    r = __testing.countIdResolutionModes([{ id: "nonexistent" }, { id: 99 }], candidates);
+    assert.equal(r.exactIdCount, 0, "unknown — exact 0");
+    assert.equal(r.numericIndexCount, 0, "unknown — numeric 0");
+    assert.equal(r.unresolvedCount, 2, "unknown — unresolved 2");
 
-  it("counts numeric-string IDs that resolve by index as numeric", () => {
-    // "1" does not match any exact candidate ID, but resolves as index 1 → "latest_turn_delta"
-    const result = __testing.countIdResolutionModes(
-      [{ id: "1" }],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 0);
-    assert.equal(result.numericIndexCount, 1);
-    assert.equal(result.unresolvedCount, 0);
-  });
+    r = __testing.countIdResolutionModes([{ id: "1" }], candidates);
+    assert.equal(r.exactIdCount, 0, "num str — exact 0");
+    assert.equal(r.numericIndexCount, 1, "num str — numeric 1");
+    assert.equal(r.unresolvedCount, 0, "num str — unresolved 0");
 
-  it("prefers exact match over numeric index for numeric-string IDs", () => {
-    // "session_summary" is a string that exactly matches a candidate ID
-    const result = __testing.countIdResolutionModes(
-      [{ id: "session_summary" }],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 1);
-    assert.equal(result.numericIndexCount, 0);
-    assert.equal(result.unresolvedCount, 0);
-  });
+    r = __testing.countIdResolutionModes([{ id: "session_summary" }], candidates);
+    assert.equal(r.exactIdCount, 1, "exact string — count");
+    assert.equal(r.numericIndexCount, 0, "exact string — numeric 0");
+    assert.equal(r.unresolvedCount, 0, "exact string — unresolved 0");
 
-  it("handles mixed resolution modes", () => {
-    const result = __testing.countIdResolutionModes(
-      [
-        { id: "session_summary" },  // exact
-        { id: 1 },                   // numeric index → latest_turn_delta
-        { id: "ghost" },             // unresolved
-        { id: "mem_1" },             // exact
-        { id: 99 },                  // unresolved
-      ],
-      candidates,
-    );
-    assert.equal(result.exactIdCount, 2);
-    assert.equal(result.numericIndexCount, 1);
-    assert.equal(result.unresolvedCount, 2);
-  });
+    r = __testing.countIdResolutionModes([{ id: "session_summary" }, { id: 1 }, { id: "ghost" }, { id: "mem_1" }, { id: 99 }], candidates);
+    assert.equal(r.exactIdCount, 2, "mixed — exact 2");
+    assert.equal(r.numericIndexCount, 1, "mixed — numeric 1");
+    assert.equal(r.unresolvedCount, 2, "mixed — unresolved 2");
 
-  it("handles empty input", () => {
-    const result = __testing.countIdResolutionModes([], candidates);
-    assert.equal(result.exactIdCount, 0);
-    assert.equal(result.numericIndexCount, 0);
-    assert.equal(result.unresolvedCount, 0);
+    assert.deepEqual(__testing.countIdResolutionModes([], candidates), { exactIdCount: 0, numericIndexCount: 0, unresolvedCount: 0 }, "empty");
   });
 });
 
+// ---------------------------------------------------------------------------
+// safeRawPreview
+// ---------------------------------------------------------------------------
+
 describe("reranker non-JSON failure diagnostics", () => {
-  it("safeRawPreview strips control characters", () => {
-    const raw = "hello\x00world\x01test";
-    const result = __testing.safeRawPreview(raw);
-    assert.equal(result.includes("\x00"), false, "null byte should be stripped");
-    assert.equal(result.includes("\x01"), false, "SOH byte should be stripped");
-    assert.ok(result.includes("hello"), "text should be preserved");
-    assert.ok(result.includes("world"), "text should be preserved");
-  });
+  it("safeRawPreview strips controls, truncates long, preserves short/newlines", () => {
+    // Strips control characters
+    let result = __testing.safeRawPreview("hello\x00world\x01test");
+    assert.equal(result.includes("\x00"), false, "strip null");
+    assert.equal(result.includes("\x01"), false, "strip SOH");
+    assert.ok(result.includes("hello"), "has hello");
+    assert.ok(result.includes("world"), "has world");
 
-  it("safeRawPreview truncates to default max length and appends ellipsis", () => {
-    const raw = "a".repeat(500);
-    const result = __testing.safeRawPreview(raw, 50);
-    assert.equal(result.length, 53, "50 chars + '...' = 53");
-    assert.ok(result.endsWith("..."), "should end with ellipsis");
-  });
+    // Truncates long with ellipsis
+    result = __testing.safeRawPreview("a".repeat(500), 50);
+    assert.equal(result.length, 53, "truncated length");
+    assert.ok(result.endsWith("..."), "ellipsis");
 
-  it("safeRawPreview does not truncate short strings", () => {
-    const raw = "hello world";
-    const result = __testing.safeRawPreview(raw);
-    assert.equal(result, "hello world");
-  });
+    // Short strings preserved
+    assert.equal(__testing.safeRawPreview("hello world"), "hello world", "short preserved");
 
-  it("safeRawPreview preserves newlines", () => {
-    const raw = "line1\nline2\r\nline3";
-    const result = __testing.safeRawPreview(raw);
-    assert.ok(result.includes("\n"), "newlines should be preserved");
-  });
+    // Newlines preserved
+    assert.ok(__testing.safeRawPreview("line1\nline2\r\nline3").includes("\n"), "newlines preserved");
 
-  it("diagnostics rawPreview is bounded and never contains full raw output when raw is long", () => {
+    // Bounded preview for very long raw output
     const longRaw = "x".repeat(1000);
     const preview = __testing.safeRawPreview(longRaw);
-    assert.ok(preview.length < longRaw.length, "preview should be shorter than raw");
-    assert.ok(preview.endsWith("..."), "preview should indicate truncation");
-    assert.ok(preview.length <= 203, "preview should not exceed max + ellipsis");
+    assert.ok(preview.length < longRaw.length, "bounded — shorter");
+    assert.ok(preview.endsWith("..."), "bounded — ellipsis");
+    assert.ok(preview.length <= 203, "bounded — max 203");
   });
 });

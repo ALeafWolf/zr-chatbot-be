@@ -5,6 +5,7 @@ import {
   type CharacterDefaults,
   type PersonaOverlayDefaults,
 } from "../../character/characterDefaults";
+import { voiceHintsFrom } from "../../character/voiceHints";
 import type { ChatSession } from "../../db/schema/chat";
 import { resolveContext } from "../context/resolveContext";
 import type { ResolvedContext } from "../context/resolveContext";
@@ -48,22 +49,6 @@ export interface BuildRoleplayPromptContextInput {
   session: ChatSession;
   resolvedContext: ResolvedContext;
   userMessage: string;
-}
-
-// ---------------------------------------------------------------------------
-// voiceHintsFrom (extracted from runCharacterTurn.ts)
-// ---------------------------------------------------------------------------
-
-/**
- * Build voice-hints string from character speech-style defaults.
- */
-export function voiceHintsFrom(
-  characterDefaults: CharacterDefaults,
-): string {
-  const s = characterDefaults.speech_style;
-  return [s.formality, s.emotionality, ...(s.preferred_patterns ?? [])].join(
-    "，",
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +147,7 @@ export async function buildRoleplayPromptContext(
     structMemEntryContextExpansions: context.structMemEntryContextExpansions,
     structMemConsolidations: context.structMemConsolidations,
     motifProbe: context.motifProbe,
+    internalLogicEvidence: context.internalLogicEvidence,
     memoryRerank: context.rerankOutput,
     userMessage,
     queryRewrite: context.queryRewrite,

@@ -30,7 +30,9 @@ export type DeterministicGuardKind =
   | "scope_leakage"
   | "nsfw_bounds"
   | "canon_unsupported_claim"
-  | "temporal_premise_contradiction";
+  | "temporal_premise_contradiction"
+  | "unsupported_autobiographical_claim"
+  | "self_analysis_leakage";
 
 export interface DeterministicGuardFailure {
   kind: DeterministicGuardKind;
@@ -57,9 +59,6 @@ export interface ValidatorInput {
   canonTruthMode?: CanonTruthMode;
   signal?: AbortSignal;
 }
-
-const CANON_ATTRIBUTION_CUES =
-  /(?:提议|安排|第一次|第二次|谁先|谁提出|在.*章|根据原作|剧情中|原作中|原著|小说里)/u;
 
 const ValidationResultSchema = z.object({
   in_character: z.boolean(),
@@ -139,22 +138,6 @@ function firstPatternMatch(text: string, patterns: readonly RegExp[]): string | 
   return null;
 }
 
-export function runCanonEvidenceCheck(input: {
-  draft: string;
-  wasCanonInjected?: boolean;
-}): DeterministicGuardFailure[] {
-  if (input.wasCanonInjected) return [];
-  if (!CANON_ATTRIBUTION_CUES.test(input.draft)) return [];
-  return [
-    {
-      kind: "canon_unsupported_claim",
-      matched: input.draft.slice(0, 100),
-      issue:
-        "Response asserts canon-attribution facts but no canon was injected in this turn. Rely on injected canon narrative or remove the unsupported claim.",
-    },
-  ];
-}
-
 /**
  * Extract content-bearing 2-grams (bigrams) from a Chinese text.
  *
@@ -195,6 +178,30 @@ function extractContentTerms(text: string): Set<string> {
     terms.add(bigram.toLowerCase());
   }
   return terms;
+}
+
+/**
+ * Extract text from prior assistant lines in the recent context.
+ *
+ * The recent context is formatted with role labels:
+ *   assistant: ...
+ *   user: ...
+ *
+ * Only lines prefixed with `assistant:` (case-insensitive) are returned.
+ * This is used to check if the assistant's own prior statements support
+ * a user's autobiographical claim.
+ */
+function extractAssistantLinesFromContext(context: string): string[] {
+  const lines = context.split("\n");
+  const assistantLines: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^assistant:/i.test(trimmed)) {
+      const content = trimmed.replace(/^assistant:\s*/i, "").trim();
+      if (content) assistantLines.push(content);
+    }
+  }
+  return assistantLines;
 }
 
 /**
@@ -272,6 +279,149 @@ export function runTemporalPremiseGuard(input: {
   ];
 }
 
+/**
+ * Unsupported autobiographical agreement guard.
+ *
+ * Trigger when user context contains autobiographical claim cues
+ * (e.g. "你以前说过", "你不是说过", "你小时候") and the draft
+ * directly confirms or invents backstory to support the claim,
+ * without clear support from recent context or injected canon.
+ *
+ * Does NOT flag when:
+ * - The draft is cautious or uncertain ("不记得", "不能确定").
+ * - Recent context already contains the assistant's own prior statement.
+ * - Injected canon contains the same claim/terms.
+ */
+export function runUnsupportedAutobiographicalClaimGuard(input: {
+  draft: string;
+  recentContext?: string;
+  wasCanonInjected?: boolean;
+  retrievedCanonNarrative?: string;
+}): DeterministicGuardFailure[] {
+  if (!input.recentContext) return [];
+  const context = input.recentContext.toLowerCase();
+  const draft = input.draft.toLowerCase();
+  const canon = (input.retrievedCanonNarrative ?? "").toLowerCase();
+
+  // User autobiographical claim cues — must include a past/autobiographical
+  // framing (e.g. "你以前说过"), not bare conversational tags like "是吧".
+  const userClaimCues = [
+    "你以前说过", "你不是说过", "你以前经历过",
+    "你小时候", "你一直不喜欢", "你以前喜欢",
+    "你以前做过", "你不是一直",
+  ];
+  const hasUserClaim = userClaimCues.some((c) => context.includes(c));
+  if (!hasUserClaim) return [];
+
+  // Draft cautious/uncertain cues — if present, do not flag
+  const draftCautiousCues = [
+    "不记得", "不能确定", "不确定", "我这样说过吗",
+    "如果我那样说过", "可能说得不够准确",
+  ];
+  const hasCautiousDraft = draftCautiousCues.some((c) => draft.includes(c));
+  if (hasCautiousDraft) return [];
+
+  // Draft agreement or backstory invention cues
+  const draftAgreementCues = [
+    "确实说过", "是这样", "没错",
+    "小时候", "那时候", "所以我才",
+    "我一直", "其实我",
+  ];
+  const hasAgreement = draftAgreementCues.some((c) => draft.includes(c));
+  if (!hasAgreement) return [];
+
+  // Check if the user's autobiographical claim is already supported by a
+  // prior assistant statement in the recent context. The context is formatted
+  // with role labels: "assistant: ..." and "user: ...". Extract only the
+  // assistant lines and check for content-term overlap with the user context.
+  const assistantLines = extractAssistantLinesFromContext(context);
+  let contextSupportsClaim = false;
+  if (assistantLines.length > 0) {
+    const userTerms = extractContentTerms(context);
+    for (const line of assistantLines) {
+      const lineTerms = extractContentTerms(line);
+      for (const term of userTerms) {
+        if (lineTerms.has(term)) {
+          contextSupportsClaim = true;
+          break;
+        }
+      }
+      if (contextSupportsClaim) break;
+    }
+  }
+
+  // If canon was injected and shares content terms with the user context,
+  // assume the claim is supported by evidence.
+  if (!contextSupportsClaim && input.wasCanonInjected && canon.length > 0) {
+    const contextTerms = extractContentTerms(context);
+    const canonTerms = extractContentTerms(canon);
+    for (const term of contextTerms) {
+      if (canonTerms.has(term) || canon.includes(term)) {
+        contextSupportsClaim = true;
+        break;
+      }
+    }
+  }
+
+  if (contextSupportsClaim) return [];
+
+  return [
+    {
+      kind: "unsupported_autobiographical_claim",
+      matched: `User claims "${userClaimCues.find((c) => context.includes(c)) ?? "autobiographical claim"}" but no supporting context or canon found.`,
+      issue:
+        "Draft confirms or invents backstory for an autobiographical claim that is not supported by recent context or injected canon. Revise: do not confirm unsupported claims or invent explanatory backstory. Use cautious responses such as '我不记得自己这样说过' or '我不能确定那是不是我的原话.', then continue naturally.",
+    },
+  ];
+}
+
+/**
+ * Self-analysis leakage guard (P04 disclosure-pressure).
+ *
+ * Trigger only when disclosure-pressure cues are present in recent context
+ * and the draft contains high-signal self-analysis phrases explaining the
+ * character's own psychological patterns or expression habits.
+ *
+ * Does NOT flag when:
+ * - No disclosure-pressure cues are present (normal conversation).
+ * - The draft describes embodied action or concrete current concern.
+ */
+export function runSelfAnalysisLeakageGuard(input: {
+  draft: string;
+  recentContext?: string;
+}): DeterministicGuardFailure[] {
+  if (!input.recentContext) return [];
+
+  const context = input.recentContext.toLowerCase();
+  const draft = input.draft.toLowerCase();
+
+  // Disclosure-pressure cues in user context
+  const pressureCues = [
+    "真话", "什么感受", "不要转移话题",
+    "告诉我", "你到底在想什么",
+  ];
+  const hasPressure = pressureCues.some((c) => context.includes(c));
+  if (!hasPressure) return [];
+
+  // Self-analysis phrases that the character should avoid
+  const selfAnalysisPhrases = [
+    "我习惯", "我不擅长", "我怕说出来",
+    "我需要先想清楚", "我不知道该怎么表达",
+    "整理自己的感受", "我害怕说",
+  ];
+  const hasSelfAnalysis = selfAnalysisPhrases.some((p) => draft.includes(p));
+  if (!hasSelfAnalysis) return [];
+
+  return [
+    {
+      kind: "self_analysis_leakage",
+      matched: `Draft contains self-analysis phrasing under disclosure pressure.`,
+      issue:
+        "Draft explains the character's psychological pattern ('我习惯…', '我不擅长…') instead of showing enacted restraint. Revise: use pause, silence, embodied restraint, or limited concrete disclosure instead of self-analysis. If pressed, the character may disclose a specific current concern, not explain why they express themselves the way they do.",
+    },
+  ];
+}
+
 export function runDeterministicValidatorGuards(
   input: Pick<
     ValidatorInput,
@@ -331,6 +481,22 @@ export function runDeterministicValidatorGuards(
   });
   failures.push(...temporalFailures);
 
+  // Unsupported autobiographical agreement guard
+  const autoFailures = runUnsupportedAutobiographicalClaimGuard({
+    draft,
+    recentContext: input.recentContext,
+    wasCanonInjected: input.wasCanonInjected,
+    retrievedCanonNarrative: input.retrievedCanonNarrative,
+  });
+  failures.push(...autoFailures);
+
+  // Self-analysis leakage guard (P04 disclosure-pressure)
+  const analysisFailures = runSelfAnalysisLeakageGuard({
+    draft,
+    recentContext: input.recentContext,
+  });
+  failures.push(...analysisFailures);
+
   return failures;
 }
 
@@ -338,7 +504,15 @@ function validationFromDeterministicFailures(
   failures: DeterministicGuardFailure[],
 ): ValidationResult {
   return {
-    in_character: !failures.some((f) => f.kind === "meta_assistant_language"),
+    in_character: !failures.some(
+      (f) =>
+        f.kind === "meta_assistant_language" ||
+        f.kind === "unsupported_autobiographical_claim" ||
+        f.kind === "self_analysis_leakage",
+    ),
+    // Note: unsupported_autobiographical_claim is intentionally excluded from
+    // canon_consistent because it is an in-character/truthfulness failure, not
+    // a canon-timeline contradiction (see design.md).
     canon_consistent: !failures.some(
       (f) => f.kind === "scope_leakage" || f.kind === "temporal_premise_contradiction",
     ),

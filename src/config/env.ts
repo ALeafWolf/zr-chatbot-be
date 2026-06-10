@@ -339,6 +339,47 @@ const envSchema = z.object({
       return Math.min(1, Math.max(0, n));
     }),
 
+  // Internal-Logic Evidence Retrieval (Step 9)
+  // Runtime retrieval for active internal_logic_evidence rows.
+  INTERNAL_LOGIC_EVIDENCE_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+  INTERNAL_LOGIC_EVIDENCE_TOP_K: z
+    .string()
+    .default("4")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1) return 4;
+      return Math.min(20, n);
+    }),
+  INTERNAL_LOGIC_EVIDENCE_MIN_SCORE: z
+    .string()
+    .default("0.28")
+    .transform((v) => {
+      const n = parseFloat(v.trim());
+      if (Number.isNaN(n)) return 0.28;
+      return Math.min(1, Math.max(0, n));
+    }),
+
+  // Evidence Miner
+  // Comma-separated arc keys for the offline evidence miner.
+  // Overrides the built-in DEFAULT_ARC_KEYS; --arc flag takes precedence over this.
+  EVIDENCE_MINER_ARC_KEYS: z.string().optional(),
+
+  // Character Profile DB — Internal Logic persistence (M-A)
+  // When ON, the runtime merges DB internal_logic over YAML at cache-warm time.
+  CHARACTER_PROFILE_DB_ENABLED: z
+    .string()
+    .default("0")
+    .transform((v) => {
+      const s = v.trim().toLowerCase();
+      return s === "1" || s === "true";
+    }),
+
   // Memory Rerank
   // Model binding for the LLM that judges which retrieved context to inject.
   // EXTRACTOR_MODEL is still accepted as a sentinel for local overrides.

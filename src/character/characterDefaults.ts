@@ -1,6 +1,44 @@
 import path from "path";
 import fs from "fs";
 import yaml from "js-yaml";
+import { env } from "../config/env";
+import { getCharacterProfile } from "./characterProfiles";
+
+// ---------------------------------------------------------------------------
+// Version comparison helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare two dot-separated numeric versions segment-by-segment.
+ * Returns a negative/zero/positive number like a standard comparator,
+ * or `null` when either version is missing or has a non-numeric segment.
+ * Missing trailing segments are treated as 0, so "2.1" === "2.1.0".
+ *
+ * Examples:
+ *   compareDottedVersions("2.10", "2.9")  →  1   (DB 2.10 newer)
+ *   compareDottedVersions("2.9", "2.10")  → -1
+ *   compareDottedVersions("2.1", "2.1.0") →  0   (equal)
+ *   compareDottedVersions(null, "2.1")    → null (missing)
+ *   compareDottedVersions("abc", "2.1")   → null (non-numeric)
+ */
+export function compareDottedVersions(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number | null {
+  if (!a || !b) return null;
+  const pa = a.split(".");
+  const pb = b.split(".");
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const sa = pa[i] ?? "0";
+    const sb = pb[i] ?? "0";
+    const na = Number(sa);
+    const nb = Number(sb);
+    if (!Number.isFinite(na) || !Number.isFinite(nb)) return null;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
 
 export interface CharacterDefaults {
   character_id: string;
@@ -93,6 +131,9 @@ export function loadCharacterDefaults(characterId: string): CharacterDefaults {
   if (characterCache.has(characterId)) {
     return characterCache.get(characterId)!;
   }
+  // Lazy cache-miss path: returns pure YAML with no DB merge.
+  // DB-internal_logic precedence requires the async warmCharacterCache() to
+  // have run at startup. This path is a safe fallback, not a correctness bug.
   const filePath = path.join(DEFAULTS_DIR, `${characterId}.yaml`);
   if (!fs.existsSync(filePath)) {
     throw new Error(`Character defaults not found for: ${characterId}`);
@@ -117,14 +158,85 @@ export function loadPersonaOverlay(overlayId: string): PersonaOverlayDefaults {
   return parsed;
 }
 
-/** Pre-warm all known character defaults and overlays at server startup. */
-export function warmCharacterCache(): void {
+/**
+ * Merge DB internal_logic over the YAML-loaded cache entry for one character
+ * when all precedence conditions are met. Logs the winning source.
+ *
+ * Exported for unit testing — callers should use warmCharacterCache() instead.
+ */
+export async function mergeDbInternalLogic(characterId: string): Promise<void> {
+  const cached = characterCache.get(characterId);
+  if (!cached) return;
+
+  try {
+    const profile = await getCharacterProfile(characterId);
+
+    if (!profile) {
+      console.warn(
+        `[warmCharacterCache] DB row missing for "${characterId}" — using YAML internal_logic`,
+      );
+      return;
+    }
+
+    if (!profile.internalLogic) {
+      console.warn(
+        `[warmCharacterCache] DB internal_logic is null for "${characterId}" — using YAML`,
+      );
+      return;
+    }
+
+    // Version precedence: DB version must parse and be at least the YAML version.
+    // Uses compareDottedVersions instead of parseFloat so that multi-segment
+    // versions like "2.10" are correctly ordered after "2.9".
+    const cmp = compareDottedVersions(profile.version, cached.version);
+    if (cmp === null || cmp < 0) {
+      console.warn(
+        `[warmCharacterCache] DB version "${profile.version}" is missing/older ` +
+          `than YAML version "${cached.version}" for "${characterId}" — using YAML`,
+      );
+      return;
+    }
+
+    // Key-level PARTIAL OVERLAY, not full replacement:
+    //  - DB field values win over YAML at the key level.
+    //  - YAML keys absent from the DB row are preserved.
+    //  - Removing a key from the DB row causes the YAML value to resurface.
+    // This is intended: the DB layer customizes/overrides individual
+    // internal_logic fields without having to restate the whole YAML block.
+    cached.internal_logic = {
+      ...(cached.internal_logic as Record<string, string>),
+      ...(profile.internalLogic as Record<string, string>),
+    };
+
+    console.log(
+      `[warmCharacterCache] { source: "db", characterId: "${characterId}", version: "${profile.version}" }`,
+    );
+  } catch (err) {
+    console.error(
+      `[warmCharacterCache] DB read failed for "${characterId}": ${(err as Error).message} — using YAML`,
+    );
+  }
+}
+
+/** Pre-warm all known character defaults and overlays at server startup.
+ *  When CHARACTER_PROFILE_DB_ENABLED is ON, merges DB internal_logic over
+ *  the YAML-loaded defaults per the precedence rules defined in design.md. */
+export async function warmCharacterCache(): Promise<void> {
   const defaultFiles = fs.readdirSync(DEFAULTS_DIR).filter((f) =>
     f.endsWith(".yaml"),
   );
   for (const file of defaultFiles) {
     const characterId = file.replace(".yaml", "");
     loadCharacterDefaults(characterId);
+
+    // DB merge: only when the env flag is ON
+    if (env.CHARACTER_PROFILE_DB_ENABLED) {
+      await mergeDbInternalLogic(characterId);
+    } else {
+      console.log(
+        `[warmCharacterCache] { source: "yaml", characterId: "${characterId}", version: "${characterCache.get(characterId)?.version ?? "?"}" }`,
+      );
+    }
   }
   const overlayFiles = fs.readdirSync(OVERLAYS_DIR).filter((f) =>
     f.endsWith(".yaml"),

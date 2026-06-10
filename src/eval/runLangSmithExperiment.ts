@@ -39,6 +39,7 @@ import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { runAgentEval } from "./langsmith/runAgentEval";
 import type { AgentEvalOutput } from "./evalSnapshots";
+import { internalLogicJudgeRunEvaluator } from "./evaluators/internalLogicJudge";
 
 export type EvalTargetOutput = AgentEvalOutput | {
   reply: string;
@@ -411,6 +412,16 @@ async function main(): Promise<void> {
             example: args.example,
             outputs: args.outputs,
           }),
+        // Internal-logic probe judge (non-gating, gated by EVAL_ENABLE_LLM_JUDGE).
+        // Only fires for probe rows with agent_turn replies. Emits 7 judge_* feedback
+        // keys that are NEVER read by the failedRows loop below (which checks only
+        // all_assertions_pass), so judge scores never affect the exit code.
+        //
+        // Registered as a RunEvaluator object (not a plain function) so LangSmith's
+        // _resolveEvaluators() does NOT wrap it in DynamicRunEvaluator/traceable.
+        // This prevents creating separate traced judge runs in the `evaluators`
+        // project while preserving judge feedback on experiment rows.
+        ...(env.EVAL_ENABLE_LLM_JUDGE ? [internalLogicJudgeRunEvaluator] : []),
       ],
       experimentPrefix: variantSuffix
         ? `${env.LANGSMITH_EXPERIMENT_PREFIX} (${variantSuffix})`
@@ -426,6 +437,9 @@ async function main(): Promise<void> {
       },
     });
 
+    // Non-gating invariant: failedRows reads ONLY all_assertions_pass.
+    // judge_* keys are excluded by design — they are tracked metrics only
+    // and must never flip the experiment's exit code.
     for await (const row of experiment) {
       const all = row.evaluationResults?.results?.find(
         (r) => r.key === "all_assertions_pass",

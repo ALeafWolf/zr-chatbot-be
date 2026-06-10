@@ -432,6 +432,9 @@ Rerank-labeled examples also carry `expected_selected_ids`, `expected_rejected_i
 
 ## Running LangSmith Experiments
 
+> **For local regression gating without LangSmith, use `npm run eval:probe-gate` instead.**
+> See the [Headless probe-gate runner](#headless-probe-gate-runner-evalprobe-gate) section below.
+
 ```bash
 npm run eval:langsmith
 ```
@@ -520,33 +523,64 @@ The `RERANK_VARIANT` env var accepts shorthand aliases in addition to full varia
 
 These are resolved in `experimentVariants.ts`. Other variant env vars (`RETRIEVAL_VARIANT`, `VALIDATOR_VARIANT`, `CONTEXT_PLANNER_VARIANT`) do not currently have aliases.
 
-### Running Probe Experiments (before/after gate)
+### LLM Judge for Probe Experiments
 
-The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) contains 12 manual-scored scenarios for character-quality evaluation. They have no automated assertions — `all_assertions_pass` will always be `false` for probes. This is expected.
+The internal-logic probe set (`src/eval/datasets/probeScenarios.ts`) includes an **LLM-as-judge** evaluator that auto-scores each probe reply on a 6-dimension rubric (Traceability, State fit, Transition friction, Style stability, Canon caution, Anti-self-analysis).
 
-**Before/after workflow:**
+### How it works
+
+The judge is registered as a LangSmith evaluator in `runLangSmithExperiment.ts`. It:
+
+1. **Gates on `EVAL_ENABLE_LLM_JUDGE=1`** — default-off; with the flag off, no judge LLM call is made and no `judge_*` feedback keys appear.
+2. **Fires only for probe rows** (`group === "probes"` with `mode === "agent_turn"` and non-empty reply) — non-probe rows short-circuit before any LLM call.
+3. **Calls `chatJsonWithFallback`** on the **validator model** (`models.validator` + `models.fallbacks.responseValidator`), the same binding used by `runResponseValidator`.
+4. **Emits 7 feedback keys** per probe row:
+   - `judge_traceability` (1–5)
+   - `judge_state_fit` (1–5)
+   - `judge_transition_friction` (1–5)
+   - `judge_style_stability` (1–5)
+   - `judge_canon_caution` (1–5)
+   - `judge_anti_self_analysis` (1–5)
+   - `judge_composite` (mean of the six)
+5. **Per-probe `expected_behavior`** from example metadata is injected into the judge prompt to anchor scoring to the specific probe's target.
+6. **Non-gating** — judge scores are NEVER read by the `failedRows` loop (which only checks `all_assertions_pass`). They are tracked metrics for before/after comparison only, visible in LangSmith **Experiments → Compare**.
+7. **Untraced evaluator** — the judge is registered as a `RunEvaluator` object (not a plain function evaluator). This bypasses LangSmith's `DynamicRunEvaluator` wrapper and prevents creating separate traced judge runs in the `evaluators` project. Judge feedback remains visible on experiment rows, but the judge itself does not consume LangSmith trace quota. This is the intended design for `npm run eval:langsmith`.
+
+### Running probe experiments with the judge
 
 ```bash
 # Step 1 — push probes to a dedicated dataset (one time, or whenever probe set changes)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval EVAL_SCENARIO_SET=probes npm run eval:dataset:push
 
-# Step 2 — run experiment on baseline (stash or checkout commit before internal-logic changes)
-LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
-# → creates experiment "zuoran-phase1 [run-1]" in LangSmith
+# Step 2 — run with judge enabled
+EVAL_ENABLE_LLM_JUDGE=1 LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
+# → 7 judge_* feedback keys visible in LangSmith Compare
 
-# Step 3 — restore changes and run again on current HEAD
+# Without judge (default)
 LANGSMITH_EVAL_DATASET=zuoran-probes-eval npm run eval:langsmith
-# → creates experiment "zuoran-phase1 [run-2]" in LangSmith
+# → No judge feedback keys; no judge LLM cost
 ```
 
-> In LangSmith, open both experiments under **Experiments → Compare**. The `reply` field in each row's output is the character's response to that probe. Score each probe manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`.
+### Viewing judge scores in LangSmith
 
-```bash
-# Or run a single probe locally (output to stdout only — not submitted to LangSmith as an experiment)
-EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
-```
+1. Open **Experiments → Compare** and select two experiment runs.
+2. Each probe row shows `judge_*` feedback keys in the **Feedback** column.
+3. `judge_composite` gives a quick directional signal; individual dimension scores show which area (e.g. `judge_canon_caution`) changed.
+4. Click a run to see the judge's **rationale** for each dimension score in the feedback comment.
 
-**Probe IDs and categories:**
+### Calibration
+
+The judge's scores are directional, not authoritative. Before trusting scores for decision-making, run a calibration experiment with `EVAL_ENABLE_LLM_JUDGE=1` and compare the judge's per-probe dimension scores against the human-scored sheet in `docs/character/zuoran_internal_logic_probe_results.md`:
+
+| Check | Expected |
+|-------|----------|
+| Known-weak probes (P06, P07) | Low `judge_canon_caution` (≤2) |
+| Relationship-boundary probe (P08) | Low `judge_state_fit` / `judge_traceability` |
+| Strong probes (P09, P11) | High composite (≥4) |
+
+If the judge consistently disagrees with the human sheet on a dimension, adjust the `expected_behavior` lines in `probeScenarios.ts` or — as a last resort — the prompt wording in `internalLogicJudge.ts`.
+
+### Probe IDs and categories
 
 | ID | Category |
 |----|----------|
@@ -563,7 +597,70 @@ EVAL_SCENARIO_SET=probes npm run eval:agent -- --scenario probe_relaxed_morning
 | `probe_social_pressure` | Social pressure |
 | `probe_regret_apology` | Regret/apology |
 
-**Note:** When viewing probe experiment results in LangSmith, the `all_assertions_pass=false` comment reads "No assertions found on example metadata." This is correct — probes are scored manually on the 6-dimension sheet in `docs/character/zuoran_internal_logic_probe_results.md`, not by automated assertions.
+**Note:** `all_assertions_pass=false` for probes is expected — they have `assertions: []`. The judge scores (`judge_*`) are the meaningful metrics for probe rows.
+
+### Headless probe-gate runner (`eval:probe-gate`)
+
+The headless probe-gate runner (`src/eval/runInternalLogicProbeGate.ts`) provides a **LangSmith-independent regression gate** for the internal-logic probe set. It is the intended CI-ready mechanism for detecting regressions in character behavior.
+
+#### How it differs from `eval:langsmith`
+
+| Aspect | `npm run eval:langsmith` | `npm run eval:probe-gate` |
+|--------|--------------------------|---------------------------|
+| Purpose | Tracked experiment comparison | Local regression gating |
+| LangSmith | Required (experiment + traces) | Actively suppressed (traces not emitted) |
+| Judge feedback | Logged to experiment rows (non-gating) | Used for pass/fail decision |
+| Thresholds | None (judge scores are tracked metrics only) | TG2 threshold expectations enforced |
+| Exit code | Based on `all_assertions_pass` only | Based on probe-gate threshold failures |
+| CI readiness | Requires LangSmith credentials and quota | Works headlessly — traces suppressed via `withLangSmithTracingSuppressed` |
+
+#### Running the probe gate
+
+```bash
+npm run eval:probe-gate
+```
+
+The runner:
+1. Loads all 12 probe scenarios from `src/eval/datasets/probeScenarios.ts` (those with `group === "probes"` and `eval_mode === "agent_turn"`).
+2. Runs each probe through the existing isolated agent eval pipeline (`runAgentEval`).
+3. Scores each reply with the internal-logic LLM judge.
+4. Applies the configured TG2 threshold expectations.
+5. Prints a compact per-probe PASS/FAIL report with failure details (dimension, observed score, threshold, rationale).
+6. Exits with code **0** when all probes pass, **1** when any probe fails.
+
+#### Report example
+
+```
+=== Internal-Logic Probe Gate Report ===
+
+  PASS  probe_relaxed_morning: P01: Relaxed morning scene — ...
+        reply_len=342
+
+  FAIL  probe_false_premise_with_fact: P06: False premise about canon — ...
+        reply_len=198
+        [canon_caution] dimension_below_threshold: observed=1, threshold=2
+          Dimension "canon_caution" score 1 below threshold 2
+
+Probes: 12 total, 11 passed, 1 failed, 0 skipped
+```
+
+The report shows the scenario ID and description, reply length, and for each failure: the dimension name, failure type, observed score, configured threshold, and judge rationale comment when available.
+
+#### Threshold expectations
+
+Active thresholds are defined in `src/eval/evaluators/probeGateThresholds.ts` as `PROBE_GATE_EXPECTATIONS`. Each expectation specifies:
+- `minComposite` — minimum mean composite score (1–5).
+- `dimensions` — per-dimension minimum thresholds only for dimensions meaningful to that probe.
+- `criticalDimensions` — dimensions where a null score (judge failure) fails the gate.
+
+Thresholds are intentionally conservative to avoid flakiness from LLM-as-judge variance. See the probe-specific notes in the file for each expectation's rationale.
+
+#### Requirements
+
+- Live PostgreSQL database with migrated schema and canon data.
+- LLM provider keys for the model pipeline (generation, validation, etc.).
+- **No LangSmith credentials required** — the runner actively suppresses LangSmith tracing for the full run via `withLangSmithTracingSuppressed`, so no traces are emitted even when `LANGSMITH_TRACING=true`. It does not use `langsmith.evaluate()`.
+- The runner does require model API keys, including the model used for the internal-logic judge (`models.validator`).
 
 ### Rerank LangSmith evaluators
 

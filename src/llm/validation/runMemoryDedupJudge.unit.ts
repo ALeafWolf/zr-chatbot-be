@@ -8,17 +8,14 @@ const MemoryDedupJudgeSchema = z.object({
 });
 
 describe("memory dedup judge schema", () => {
-  it("accepts valid distinct decisions", () => {
-    const result = MemoryDedupJudgeSchema.safeParse({
-      decision: "distinct",
-    });
-    assert.equal(result.success, true);
-  });
-
-  it("rejects unknown decisions", () => {
-    const result = MemoryDedupJudgeSchema.safeParse({
-      decision: "maybe",
-    });
-    assert.equal(result.success, false);
+  it("accepts valid decisions and rejects unknown ones", () => {
+    const cases = [
+      { name: "accepts distinct", payload: { decision: "distinct" }, expected: true },
+      { name: "rejects unknown", payload: { decision: "maybe" }, expected: false },
+    ];
+    for (const c of cases) {
+      const result = MemoryDedupJudgeSchema.safeParse(c.payload);
+      assert.equal(result.success, c.expected, c.name);
+    }
   });
 });

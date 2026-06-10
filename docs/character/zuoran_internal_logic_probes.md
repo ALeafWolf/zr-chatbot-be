@@ -229,7 +229,7 @@ For each probe, capture:
   "eval_mode": "agent_turn",
   "session": {
     "mode": "canonical_live",
-    "continuity_scope": "main_relationship",
+    "continuity_scope": "main_pre_relationship",
     "continuity_family": "main_world",
     "writeback_policy": "no_writeback"
   },
