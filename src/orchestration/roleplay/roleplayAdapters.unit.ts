@@ -5,6 +5,7 @@ import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/
 import type { ChatSession } from "../../db/schema/chat";
 import type { ResolvedContext } from "../context/resolveContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
+import { env } from "../../config/env";
 
 function fakeCharacterDefaults(overrides?: Partial<CharacterDefaults>): CharacterDefaults { return { character_id: "zuo_ran", name: "Zuo Ran", archetype: "sage", identity: "A wandering scholar.", speech_style: { language: "Chinese", formality: "formal", emotionality: "restrained", preferred_patterns: ["古典引用"], avoid: ["现代俚语"] }, core_traits: ["wise", "patient"], narrative_prose_guidelines: "Write with classical elegance.", in_character_expression: "Speak in measured tones.", emotional_core: "Deep but controlled.", values: ["knowledge", "harmony"], hard_rules: ["Stay in character."], private_habits_and_texture: ["enjoys tea", "reads scrolls"], relationship_expression: { general: "Polite and distant." }, interaction_defaults: { default_continuity_scope: "main", default_emotional_baseline: "calm", default_relationship_baseline: "neutral", response_length: "medium", allows_personal_topics: "sometimes" }, safe_deflection: "I am not sure how to respond.", version: "1.0", ...overrides }; }
 function fakePersonaOverlay(): PersonaOverlayDefaults { return { overlay_id: "main", character_id: "zuo_ran", continuity_scope: "main", relationship_status: "confirmed_relationship", openness: "high", domesticity: "medium", baseline_warmth: "medium", baseline_nsfw_openness: "none", max_nsfw_level: "none", escalation_rule: "none", out_of_scope_chapter_behavior: "deflect", overlay_identity: "The bond deepens.", tone_notes: {}, writeback_policies: {} }; }
@@ -66,5 +67,53 @@ describe("buildRoleplayPromptContext", () => {
     assert.equal(capturedInput!.memoryRerank, resolved.rerankOutput, "rerankOutput");
     assert.equal(capturedInput!.queryRewrite, resolved.queryRewrite, "queryRewrite");
     assert.deepEqual(result, fakePromptContext(), "result");
+  });
+
+  it("F16: fresh session adapter path — resolveEmotionalRenderInputs computes scope bands", async () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+      const cd: CharacterDefaults = {
+        ...fakeCharacterDefaults(),
+        emotional_axes: {
+          connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+        },
+        emotional_axes_baseline_by_scope: {
+          main_relationship: { connection: 0.15, valence: 0.05, arousal: 0.0, restraint: 0.7 },
+        },
+      };
+
+      const session = fakeSession({ continuityScope: "main_relationship" });
+      const resolved = fakeResolvedContext({ sessionStateRow: null });
+
+      let capturedInput: Record<string, unknown> | undefined;
+      await buildRoleplayPromptContext(
+        { characterDefaults: cd, personaOverlay: fakePersonaOverlay(), session, resolvedContext: resolved, userMessage: "hello" },
+        { buildPromptContext: (async (input: Record<string, unknown>) => { capturedInput = input; return fakePromptContext(); }) as any },
+      );
+
+      assert.ok(capturedInput, "adapter called buildPromptContext");
+      // Assert computed emotionalAxisBands from fresh-session scope baselines
+      const bands = capturedInput!.emotionalAxisBands as Record<string, string>;
+      assert.ok(bands, "emotionalAxisBands present");
+      assert.equal(bands.restraint, "high", "main_relationship restraint 0.7 > 0.65 → high");
+      assert.equal(bands.connection, "mid", "main_relationship connection 0.15 centered → mid");
+      assert.equal(bands.valence, "mid", "main_relationship valence 0.05 centered → mid");
+      assert.equal(bands.arousal, "mid", "main_relationship arousal 0 centered → mid");
+
+      // Assert synthetic trace and empty history
+      const trace = capturedInput!.emotionalAxisLastTrace as Record<string, unknown>;
+      assert.ok(trace, "emotionalAxisLastTrace present");
+      assert.deepEqual((trace as any).couplingsFired, []);
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+    }
   });
 });

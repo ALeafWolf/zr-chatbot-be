@@ -11,6 +11,7 @@ import type {
   StructMemFallbackItem,
   StructMemPersistRow,
 } from "../../memory/structmem/structmemMapping";
+import type { TurnEvent } from "../../state/emotionalEngine/types";
 
 export interface PostTurnSignals {
   memoryFacts: MemoryCandidate[];
@@ -19,10 +20,11 @@ export interface PostTurnSignals {
    * Empty when the flag is off (Phase 1) to avoid extra embed calls.
    */
   structMemEntries: StructMemPersistRow[];
-  emotionalDelta: null; // Phase 1: always null (Phase 3 adds delta)
+  /** Classified TurnEvent (Step 3). Null when EMOTIONAL_ENGINE_ENABLED is off or extraction failed. */
+  turnEvent: TurnEvent | null;
   modelReportedConfidence: {
     memoryFacts: number;
-    emotionalDelta: number;
+    turnEvent: number;
   };
 }
 
@@ -80,6 +82,28 @@ const StructMemEntryItemSchema = z.object({
   metadata: StructMemMetadataSchema,
 });
 
+const TurnEventTypeSchema = z.enum([
+  'routine_exchange',
+  'user_pursues_connection',
+  'user_withdraws',
+  'user_discloses_vulnerability',
+  'user_shows_warmth',
+  'user_challenges',
+  'tension_escalation',
+  'intimate_moment',
+]);
+
+/**
+ * Strict schema for post-validating a TurnEvent.
+ * Not used inside ExtractorOutputSchema — the top-level schema accepts any
+ * unknown value so a malformed turn_event does not reject memory/StructMem.
+ */
+const TurnEventStrictSchema = z.object({
+  type: TurnEventTypeSchema,
+  intensity: z.coerce.number().min(0).max(1),
+  reason: z.string().min(1, "reason must be non-empty"),
+});
+
 export const ExtractorOutputSchema = z.object({
   memory_candidates: z.array(
     z.object({
@@ -96,9 +120,20 @@ export const ExtractorOutputSchema = z.object({
   ),
   structmem_entries: z.array(StructMemEntryItemSchema).max(6).default([]),
   confidence: z.coerce.number().default(0),
+  /**
+   * Accept any unknown value so that a malformed turn_event does not
+   * reject the entire extraction payload. Strict validation happens
+   * after the top-level parse (see extractPostTurnSignals).
+   */
+  turn_event: z.unknown().optional().nullable(),
 });
 
-const EXTRACTOR_SYSTEM = `You are a memory extraction classifier for a character roleplay system.
+/**
+ * Base extractor system prompt shared by all paths.
+ * Does NOT include the turn_event JSON shape — that is appended conditionally
+ * by `buildExtractorSystem()` when `EMOTIONAL_ENGINE_ENABLED` is on (F6).
+ */
+const EXTRACTOR_SYSTEM_BASE = `You are a memory extraction classifier for a character roleplay system.
 Given the last user message and the character's reply, extract any notable events worth persisting.
 
 Grounding rules (must follow for every memory candidate summary and every structmem_entries line):
@@ -152,6 +187,36 @@ Return ONLY valid JSON in this shape:
 Prefer cross_session in memory_candidates only when justified by durability. Use current_session in structmem_entries for rich this-session retrieval.
 
 If nothing worth storing occurred, return empty memory_candidates and structmem_entries arrays.`;
+
+/**
+ * Optional JSON-shape block for turn_event (appended only when
+ * `EMOTIONAL_ENGINE_ENABLED` is on).
+ */
+const TURN_EVENT_PROMPT_BLOCK = `,
+  "turn_event": {
+    "type": "routine_exchange | user_pursues_connection | user_withdraws | user_discloses_vulnerability | user_shows_warmth | user_challenges | tension_escalation | intimate_moment",
+    "intensity": 0.0-1.0,
+    "reason": "one short sentence describing why this event type fits the turn"
+  }
+`;
+
+/**
+ * Build the extractor system prompt, conditionally appending the turn_event
+ * JSON shape only when the engine flag is ON (F6: shadow-mode invariant).
+ * The Zod `turn_event` field remains unconditionally optional in the schema —
+ * it is parse-side only, never sent to the model when the flag is off.
+ */
+export function buildExtractorSystem(): string {
+  if (env.EMOTIONAL_ENGINE_ENABLED) {
+    // Insert the turn_event block after the "confidence": line.
+    // The base prompt ends with `"confidence": 0.0-1.0\n}` on the last JSON line.
+    return EXTRACTOR_SYSTEM_BASE.replace(
+      `"confidence": 0.0-1.0\n}`,
+      `"confidence": 0.0-1.0${TURN_EVENT_PROMPT_BLOCK}\n}`,
+    );
+  }
+  return EXTRACTOR_SYSTEM_BASE;
+}
 
 /** Default importance components when the model omits per-item scores (Phase 2 native path). */
 const NATIVE_STRUCTMEM_DEFAULT_COMPONENTS: RawImportanceComponents = {
@@ -323,11 +388,13 @@ Character reply (this turn — primary source for 角色):
 
 Extract memory candidates; summaries must follow the grounding rules.`.trim();
 
+  const systemContent = buildExtractorSystem();
+
   const result = await chatJsonWithFallback(
     models.extractor,
     models.fallbacks.postTurnExtractor,
     [
-      { role: "system", content: EXTRACTOR_SYSTEM },
+      { role: "system", content: systemContent },
       { role: "user", content: userMessage },
     ],
     ExtractorOutputSchema,
@@ -343,10 +410,10 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
       {
         memoryFacts: [],
         structMemEntries: [],
-        emotionalDelta: null,
+        turnEvent: null,
         modelReportedConfidence: {
           memoryFacts: 0,
-          emotionalDelta: 0,
+          turnEvent: 0,
         },
       },
       {
@@ -359,6 +426,20 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
   }
 
   const parsed = result.data;
+
+  // ---- TurnEvent (Step 3 — strict post-validate, graceful degradation) ----
+  let turnEvent: TurnEvent | null = null;
+  if (env.EMOTIONAL_ENGINE_ENABLED && parsed.turn_event != null) {
+    const strictResult = TurnEventStrictSchema.safeParse(parsed.turn_event);
+    if (strictResult.success) {
+      turnEvent = strictResult.data;
+    } else {
+      console.warn(
+        "[extractPostTurnSignals] turn_event validation failed — falling back to drift-only tick",
+        strictResult.error,
+      );
+    }
+  }
 
   const memoryFacts: MemoryCandidate[] = await Promise.all(
     parsed.memory_candidates.map(async (raw) => {
@@ -403,10 +484,10 @@ Extract memory candidates; summaries must follow the grounding rules.`.trim();
     {
       memoryFacts,
       structMemEntries,
-      emotionalDelta: null,
+      turnEvent,
       modelReportedConfidence: {
         memoryFacts: parsed.confidence ?? 0,
-        emotionalDelta: 0,
+        turnEvent: turnEvent ? 1 : 0,
       },
     },
     {

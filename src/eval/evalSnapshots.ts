@@ -98,6 +98,13 @@ export interface MemoryWriteEvalSnapshot {
     eventId?: string;
     entryIds: string[];
   };
+  /** TG3: Emotional engine state after a post-turn advance tick. */
+  engineState?: {
+    axesBefore: unknown;
+    axesAfter: unknown;
+    couplingsFired: string[];
+    tick: number;
+  };
   summaryCompaction?: {
     status: string;
     reason?: string;

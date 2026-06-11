@@ -129,7 +129,7 @@ function createFakeDeps(): { deps: PostTurnMemoryGraphDeps; calls: DepsCalls } {
     },
     extractFn: async (_input) => {
       calls.extractFn++;
-      return { memoryFacts: [], structMemEntries: [], emotionalDelta: null, modelReportedConfidence: { memoryFacts: 0.9, emotionalDelta: 0.0 } };
+      return { memoryFacts: [], structMemEntries: [], turnEvent: null, modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 0 } } as any;
     },
     buildWritePlanFn: (_session, _env, _signals) => {
       calls.buildWritePlanFn++;
@@ -168,6 +168,31 @@ function createFakeDeps(): { deps: PostTurnMemoryGraphDeps; calls: DepsCalls } {
     collectPhase1StructMemRowsFn: (_memoryFacts) => [],
     structmemNativeExtractor: false,
     structmemEnabled: true,
+    advanceCharacterStateFn: (_state, _config, _couplings, _deltas, _tick) => ({
+      next: { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+      trace: { tick: 0, axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0 }, axesAfter: { connection: 0, valence: 0, arousal: 0, restraint: 0 }, couplingsFired: [], effectiveBaselines: {} },
+    }),
+    readAxisStateFn: (_row) => null,
+    writeAxisStateFn: async (_sessionId, _next) => {},
+    loadCharacterDefaultsFn: (_characterId) => ({
+      character_id: "zuo_ran",
+      name: "Zuo Ran",
+      archetype: "elite_lawyer_controlled_romantic",
+      identity: "",
+      speech_style: { language: "zh-CN", formality: "formal", emotionality: "restrained", preferred_patterns: [], avoid: [] },
+      hard_rules: [],
+      interaction_defaults: { default_continuity_scope: "main", default_emotional_baseline: "controlled_tenderness", default_relationship_baseline: "established_partners", response_length: "full", allows_personal_topics: "true_within_scope" },
+      safe_deflection: "",
+      version: "2.1",
+      emotional_axes: {
+        connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+        valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+        arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+        restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+      },
+    }),
+    getSessionStateFn: async (_sessionId) => null,
+    emotionalEngineEnabled: true,
   };
 
   return { deps, calls };
@@ -190,12 +215,12 @@ function createInitialState(stepStatusOverrides?: Partial<Record<PostTurnStepNam
 // ---------------------------------------------------------------------------
 
 describe("postTurnMemoryGraph", () => {
-  it("runs all 9 nodes in order on a fresh job and reaches markJobComplete", async () => {
+  it("runs all 10 nodes in order on a fresh job and reaches markJobComplete", async () => {
     const { deps, calls } = createFakeDeps();
     const graph = createPostTurnMemoryGraph(deps);
     await graph.invoke(createInitialState());
 
-    assert.strictEqual(calls.persistStepComplete.length, 6);
+    assert.strictEqual(calls.persistStepComplete.length, 7, "7 steps completed: raw_chunk, extract_signals, engine_state, structmem, session_chunks, durable_memory, summary_compact");
     assert.strictEqual(calls.completeJobFn.length, 1);
     assert.strictEqual(calls.writeRawFn, 1);
     assert.strictEqual(calls.extractFn, 1);
@@ -229,7 +254,7 @@ describe("postTurnMemoryGraph", () => {
 
     // extract_signals already complete with payload.signals
     ({ deps, calls } = createFakeDeps());
-    const payload: PostTurnJobPayloadV1 = { ...FAKE_PAYLOAD, signals: { memoryFacts: [], structMemEntries: [], emotionalDelta: null, modelReportedConfidence: { memoryFacts: 0.9, emotionalDelta: 0.0 } } };
+    const payload: PostTurnJobPayloadV1 = { ...FAKE_PAYLOAD, signals: { memoryFacts: [], structMemEntries: [], turnEvent: null, modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 0.0 } } };
     const state = createInitialPostTurnRuntimeState({ jobId: FAKE_JOB_ID, attempts: 1, payload, stepStatus: markStepCompleted({ ...INITIAL_POST_TURN_STEP_STATUS }, "extract_signals") }, FAKE_SESSION, "");
     await createPostTurnMemoryGraph(deps).invoke(state);
     assert.strictEqual(calls.extractFn, 0, "extract_signals skipped when already complete");
@@ -274,11 +299,11 @@ describe("postTurnMemoryGraph", () => {
     await graph.invoke(createInitialState());
 
     const steps = calls.persistStepComplete.map((c) => c.step);
-    const expected = ["raw_chunk", "extract_signals", "structmem", "session_chunks", "durable_memory", "summary_compact"];
+    const expected = ["raw_chunk", "extract_signals", "engine_state", "structmem", "session_chunks", "durable_memory", "summary_compact"];
     for (const step of expected) {
       assert.ok(steps.includes(step), `missing persistStepComplete for ${step}`);
     }
-    assert.strictEqual(steps.length, 6);
+    assert.strictEqual(steps.length, 7);
   });
 
   it("recordSnapshotFn is called with extraction and writePlan payload shapes", async () => {
@@ -344,7 +369,7 @@ describe("postTurnMemoryGraph", () => {
 
     const d3 = createFakeDeps();
     d3.deps.buildWritePlanFn = () => createFakeWritePlan();
-    d3.deps.extractFn = async (_input: any) => ({ memoryFacts: [], structMemEntries: [{ entryType: "factual" as const, text: "test", embedding: [1], importanceScore: 0.5, confidenceScore: null }], emotionalDelta: null, modelReportedConfidence: { memoryFacts: 0.9, emotionalDelta: 0.0 } });
+    d3.deps.extractFn = async (_input: any) => ({ memoryFacts: [], structMemEntries: [{ entryType: "factual" as const, text: "test", embedding: [1], importanceScore: 0.5, confidenceScore: null }], turnEvent: null, modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 0.0 } } as any);
     d3.deps.structmemNativeExtractor = true;
     d3.deps.writeStructMemFn = structMemConflict;
     r = await createPostTurnMemoryGraph(d3.deps).invoke(createInitialState());
@@ -358,7 +383,7 @@ describe("postTurnMemoryGraph", () => {
 
     const d5 = createFakeDeps();
     d5.deps.buildWritePlanFn = () => createFakeWritePlan();
-    d5.deps.extractFn = async (_input: any) => ({ memoryFacts: [{ memoryType: "banter" as const, summary: "test", importanceScore: 0.5, emotionScore: 0, embedding: [1], memoryScope: "current_session" as const, sessionChunkType: "scene_moment" as const }], structMemEntries: [], emotionalDelta: null, modelReportedConfidence: { memoryFacts: 0.9, emotionalDelta: 0.0 } });
+    d5.deps.extractFn = async (_input: any) => ({ memoryFacts: [{ memoryType: "banter" as const, summary: "test", importanceScore: 0.5, emotionScore: 0, embedding: [1], memoryScope: "current_session" as const, sessionChunkType: "scene_moment" as const }], structMemEntries: [], turnEvent: null, modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 0.0 } } as any);
     d5.deps.persistSessionChunkFn = sessionDeadlock;
     r = await createPostTurnMemoryGraph(d5.deps).invoke(createInitialState());
     assert.strictEqual(r.lastRetryReason, "db_write_conflict", "deadlock → db_write_conflict");
@@ -375,5 +400,282 @@ describe("postTurnMemoryGraph", () => {
     const thrownMessage = `Post-turn memory graph failed [${errorStages}]: ${errorMessages}${retrySuffix}`;
     assert.ok(thrownMessage.includes("Post-turn memory graph failed ["), "should start with graph-failed prefix");
     assert.ok(thrownMessage.includes("extractor_timeout"), "should include retry reason in message");
+  });
+
+  // ===================================================================
+  // TG3 applyEngineState node tests (review-004 F7)
+  // ===================================================================
+
+  describe("applyEngineState — TG3/TG8 node tests", () => {
+    const DEFAULT_AXES = { connection: 0, valence: 0, arousal: 0, restraint: 0.7 };
+    const DEFAULT_TRACE = {
+      tick: 0,
+      axesBefore: DEFAULT_AXES,
+      axesAfter: DEFAULT_AXES,
+      couplingsFired: [] as string[],
+      effectiveBaselines: {} as Record<string, number>,
+    };
+
+    /** Drive the graph with targeted fakes; capture engine-spy calls. */
+    async function runEngineTest(overrides: Partial<{
+      turnEvent: { type: string; intensity: number; reason: string } | null;
+      emotionalEngineEnabled: boolean;
+      hasEmotionalAxes: boolean;
+      advanceResult: { next: typeof DEFAULT_AXES; trace: typeof DEFAULT_TRACE };
+      sessionStateRow: Record<string, unknown> | null;
+      readAxisStateOverride?: (row: any) => any;
+    }>) {
+      const captured: {
+        advanceArgs: any[];
+        writeCalls: Array<{ sessionId: string; state: any }>;
+        getSessionCalls: string[];
+        snapshotCalls: any[];
+      } = {
+        advanceArgs: [],
+        writeCalls: [],
+        getSessionCalls: [],
+        snapshotCalls: [],
+      };
+
+      const ev = overrides.turnEvent ?? null;
+      const engineFlag = overrides.emotionalEngineEnabled ?? true;
+      const hasAxes = overrides.hasEmotionalAxes ?? true;
+      const advResult = overrides.advanceResult ?? { next: { ...DEFAULT_AXES }, trace: { ...DEFAULT_TRACE } };
+
+      const { deps, calls } = createFakeDeps();
+
+      deps.emotionalEngineEnabled = engineFlag;
+
+      deps.extractFn = async (_input: any) => {
+        calls.extractFn++;
+        return {
+          memoryFacts: [] as any[],
+          structMemEntries: [] as any[],
+          turnEvent: ev as any,
+          modelReportedConfidence: { memoryFacts: 0.9, turnEvent: ev ? 1 : 0 },
+        } as any;
+      };
+
+      deps.advanceCharacterStateFn = (state: any, config: any, couplings: any, eventDeltas: any, tick: number, event?: any) => {
+        captured.advanceArgs.push({ state, config, couplings, eventDeltas, tick, event });
+        return advResult;
+      };
+
+      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
+        captured.writeCalls.push({ sessionId, state });
+      };
+
+      deps.getSessionStateFn = async (sessionId: string) => {
+        captured.getSessionCalls.push(sessionId);
+        if (overrides.sessionStateRow !== undefined) return overrides.sessionStateRow as any;
+        return null;
+      };
+
+      if (overrides.readAxisStateOverride) {
+        deps.readAxisStateFn = (row: any) => overrides.readAxisStateOverride!(row);
+      }
+
+      deps.recordSnapshotFn = (patch: any) => {
+        captured.snapshotCalls.push(patch);
+      };
+
+      if (!hasAxes) {
+        deps.loadCharacterDefaultsFn = (_id: string) => ({
+          character_id: "zuo_ran",
+          name: "Zuo Ran",
+          archetype: "elite_lawyer_controlled_romantic",
+          identity: "",
+          speech_style: { language: "zh-CN", formality: "formal", emotionality: "restrained", preferred_patterns: [], avoid: [] },
+          hard_rules: [],
+          interaction_defaults: { default_continuity_scope: "main", default_emotional_baseline: "controlled_tenderness", default_relationship_baseline: "established_partners", response_length: "full", allows_personal_topics: "true_within_scope" },
+          safe_deflection: "",
+          version: "2.1",
+          // NO emotional_axes — F2 case
+        } as any);
+      }
+
+      const result = await createPostTurnMemoryGraph(deps).invoke(createInitialState());
+
+      return { result, captured, deps, calls };
+    }
+
+    // Test 1: TurnEvent applied — advanceCharacterState receives event and eventDeltas
+    it("applies TurnEvent and passes it to advanceCharacterState", async () => {
+      const { captured, calls } = await runEngineTest({
+        turnEvent: { type: 'user_pursues_connection', intensity: 1.0, reason: 'User asked' },
+      });
+
+      assert.equal(calls.completeJobFn.length, 1, "job completes");
+      assert.equal(captured.writeCalls.length, 1, "write called once");
+      assert.equal(captured.advanceArgs.length, 1, "advance called once");
+      // The eventDeltas are the result of mapEventToDeltas
+      assert.ok(captured.advanceArgs[0].eventDeltas, "eventDeltas passed to advance");
+      // event object passed as last arg
+      assert.ok(captured.advanceArgs[0].event !== undefined, "event passed to advance");
+      assert.equal(captured.advanceArgs[0].event.type, 'user_pursues_connection', "event type preserved");
+      // Verify step completed
+      const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
+      assert.equal(engineSteps.length, 1, "engine_state step persisted");
+    });
+
+    // Test 2: Drift-only — null turnEvent ⇒ advance called with {} deltas, no event
+    it("drift-only tick when turnEvent is null", async () => {
+      const { captured, calls } = await runEngineTest({
+        turnEvent: null,
+      });
+
+      assert.equal(calls.completeJobFn.length, 1, "job completes");
+      assert.equal(captured.writeCalls.length, 1, "write called once even with null event");
+      assert.equal(captured.advanceArgs.length, 1, "advance called once");
+      assert.deepEqual(captured.advanceArgs[0].eventDeltas, {}, "empty eventDeltas for drift-only tick");
+      assert.equal(captured.advanceArgs[0].event, undefined, "no event for drift-only tick");
+    });
+
+    // Test 3: Flag-off no-op — emotionalEngineEnabled: false ⇒ no engine deps called
+    it("flag-off: no engine deps called when flag is false", async () => {
+      const { captured, calls } = await runEngineTest({
+        turnEvent: { type: 'user_pursues_connection', intensity: 0.5, reason: 'test' },
+        emotionalEngineEnabled: false,
+      });
+
+      assert.equal(calls.completeJobFn.length, 1, "job completes");
+      assert.equal(captured.advanceArgs.length, 0, "advance NOT called when flag off");
+      assert.equal(captured.writeCalls.length, 0, "write NOT called when flag off");
+      assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when flag off");
+      // Should still have snapshot (only from extraction, not engine)
+      const engineSnapshots = captured.snapshotCalls.filter((s: any) => s.engineState);
+      assert.equal(engineSnapshots.length, 0, "no engineState snapshot when flag off");
+    });
+
+    // Test 4: Hysteresis — value in 0.55–0.65 stays high when previously high (F11)
+    it("F11: hysteresis preserved — value in 0.55-0.65 stays high when previously high", async () => {
+      const persistedRow = {
+        localRelationshipDelta: {
+          axis_state: {
+            version: 1,
+            tick: 1,
+            axes: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.7 },
+            lastTrace: {
+              tick: 1,
+              axesBefore: { connection: 0.7, valence: 0, arousal: 0, restraint: 0.7 },
+              axesAfter: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.7 },
+              couplingsFired: [],
+              effectiveBaselines: {},
+            },
+            bands: { connection: "high", valence: "mid", arousal: "mid", restraint: "high" },
+            history: [],
+          },
+        },
+      } as any;
+
+      // Create a readAxisStateFn that parses the axis_state from the row
+      const { readAxisState } = await import('../../state/emotionalEngine/axisStatePersistence');
+
+      // We'll override readAxisStateFn to use the real parser on our fake row
+      const { captured } = await runEngineTest({
+        turnEvent: null,
+        sessionStateRow: persistedRow,
+        readAxisStateOverride: readAxisState,
+        // Return connection=0.6 which is below the enter-high threshold (0.65) but
+        // above the exit-high threshold (0.55), so hysteresis should keep it "high"
+        advanceResult: {
+          next: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.6 },
+          trace: {
+            tick: 2,
+            axesBefore: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.7 },
+            axesAfter: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.6 },
+            couplingsFired: [],
+            effectiveBaselines: {},
+          },
+        },
+      });
+
+      // Write should have been called with bands reflecting hysteresis
+      assert.equal(captured.writeCalls.length, 1, "write called once");
+      const writtenState = captured.writeCalls[0].state;
+      // connection was "high" before, now at 0.6 — still "high" (above 0.55 exit)
+      assert.equal(writtenState.bands.connection, "high", "connection stays high via hysteresis");
+      // restraint was "high" before, now at 0.6 — still "high" (above 0.55 exit)
+      assert.equal(writtenState.bands.restraint, "high", "restraint stays high via hysteresis");
+    });
+
+    // Test 5: Scope-resolved baseline (F15) — non-default scope drifts toward scope baseline
+    it("F15: scope-resolved baseline — main_married axesConfig passed to advanceCharacterStateFn", async () => {
+      const captured: { advanceArgs: any[] } = { advanceArgs: [] };
+
+      const { deps, calls } = createFakeDeps();
+      deps.emotionalEngineEnabled = true;
+      // Override loadCharacterDefaultsFn to include scope baselines
+      deps.loadCharacterDefaultsFn = (_id: string) => ({
+        character_id: "zuo_ran",
+        name: "Zuo Ran",
+        archetype: "elite_lawyer_controlled_romantic",
+        identity: "",
+        speech_style: { language: "zh-CN", formality: "formal", emotionality: "restrained", preferred_patterns: [], avoid: [] },
+        hard_rules: [],
+        interaction_defaults: { default_continuity_scope: "main_married", default_emotional_baseline: "controlled_tenderness", default_relationship_baseline: "established_partners", response_length: "full", allows_personal_topics: "true_within_scope" },
+        safe_deflection: "",
+        version: "2.1",
+        emotional_axes: {
+          connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+        },
+        emotional_axes_baseline_by_scope: {
+          main_married: { connection: 0.35, valence: 0.15, arousal: 0.0, restraint: 0.55 },
+        },
+      } as any);
+
+      deps.advanceCharacterStateFn = (state: any, config: any, couplings: any, eventDeltas: any, tick: number) => {
+        captured.advanceArgs.push({ state, config, couplings, eventDeltas, tick });
+        return {
+          next: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
+          trace: {
+            tick, axesBefore: { ...state }, axesAfter: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
+            couplingsFired: [], effectiveBaselines: {},
+          },
+        };
+      };
+
+      // Set the payload's session continuityScope to main_married
+      const marriedPayload = {
+        ...FAKE_PAYLOAD,
+        session: { ...FAKE_PAYLOAD.session, continuityScope: "main_married" },
+      };
+
+      const state = createInitialPostTurnRuntimeState(
+        { jobId: FAKE_JOB_ID, attempts: 1, payload: marriedPayload, stepStatus: { ...INITIAL_POST_TURN_STEP_STATUS } },
+        { ...FAKE_SESSION, continuityScope: "main_married" },
+        "",
+      );
+
+      await createPostTurnMemoryGraph(deps).invoke(state);
+
+      assert.equal(captured.advanceArgs.length, 1, "advanceCharacterState called");
+      const config = captured.advanceArgs[0].config;
+      // main_married: restraint baseline should be 0.55 (overridden from default 0.7)
+      assert.equal(config.restraint.baseline, 0.55, "restraint baseline scope-resolved to 0.55");
+      // connection baseline should be 0.35 (overridden from default 0)
+      assert.equal(config.connection.baseline, 0.35, "connection baseline scope-resolved to 0.35");
+      // arousal baseline unchanged (explicitly 0.0 in overrides)
+      assert.equal(config.arousal.baseline, 0, "arousal baseline scope-resolved to 0");
+    });
+
+    // Test 6: F2 — no emotional_axes ⇒ step complete, no write, no throw
+    it("F2: character without emotional_axes ⇒ no-op, no write, no crash", async () => {
+      const { captured, calls } = await runEngineTest({
+        turnEvent: null,
+        hasEmotionalAxes: false,
+      });
+
+      assert.equal(calls.completeJobFn.length, 1, "job completes without error");
+      assert.equal(captured.writeCalls.length, 0, "write NOT called when no emotional_axes");
+      assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when no emotional_axes");
+      assert.equal(captured.advanceArgs.length, 0, "advance NOT called when no emotional_axes");
+      // Verify engine_state step was marked complete
+      const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
+      assert.equal(engineSteps.length, 1, "engine_state step persisted (no-op completed)");
+    });
   });
 });

@@ -474,6 +474,24 @@ const envSchema = z.object({
       return Math.min(10, n);
     }),
 
+  // Emotional Engine
+  // Session-local emotional state engine with axis baselines, drift, and couplings.
+  // When enabled, the engine advances character state after each turn and persists
+  // axis state, traces, and band history in the existing session_state JSONB.
+  EMOTIONAL_ENGINE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
+
+  // Emotional Render
+  // Requires EMOTIONAL_ENGINE_ENABLED (enforced at read site; log once if misconfigured).
+  // When enabled, injects a behavior-grammar block into the prompt based on axis bands
+  // and engine trace. Defaults OFF until Tier A is ready and exit-checked.
+  EMOTIONAL_RENDER_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
+
   // LangSmith
   // Optional tracing, project metadata, and eval dataset name.
   TRACE_ENVIRONMENT: z.string().default(process.env.NODE_ENV ?? "development"),

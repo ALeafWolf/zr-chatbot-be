@@ -17,6 +17,14 @@ import { isStepComplete, markStepCompleted, type PostTurnJobPayloadV1, type Post
 import { recordMemoryWriteSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
 import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
+import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
+import { readAxisState, writeAxisState } from '../../state/emotionalEngine/axisStatePersistence';
+import { loadCharacterDefaults } from '../../character/characterDefaults';
+import { getSessionState } from '../../state/sessionStateRepo';
+import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
+import { computeBands } from '../../state/emotionalEngine/bands';
+import { resolveAxesConfigForScope } from '../../state/emotionalEngine/resolveAxesConfigForScope';
+import type { CharacterStateAxes, AxesConfig, AxisName, Band, PersistedAxisState, TurnEvent } from '../../state/emotionalEngine/types';
 
 export interface PostTurnMemoryGraphDeps {
   persistStepComplete: (jobId: string, step: PostTurnStepName, payload: PostTurnJobPayloadV1, stepStatus: PostTurnStepStatus) => Promise<PostTurnStepStatus>;
@@ -35,6 +43,18 @@ export interface PostTurnMemoryGraphDeps {
   collectPhase1StructMemRowsFn: typeof collectPhase1StructMemPersistRows;
   structmemNativeExtractor: boolean;
   structmemEnabled: boolean;
+  /** TG3: Emotional engine advance function (injectable for tests). */
+  advanceCharacterStateFn: typeof advanceCharacterState;
+  /** TG3: Read persisted axis state from session row. */
+  readAxisStateFn: typeof readAxisState;
+  /** TG3: Write axis state to DB (merge-preserving). */
+  writeAxisStateFn: typeof writeAxisState;
+  /** TG3: Load character defaults (for emotional_axes config). */
+  loadCharacterDefaultsFn: typeof loadCharacterDefaults;
+  /** TG3: Read session state row from DB (for readAxisState). */
+  getSessionStateFn: typeof getSessionState;
+  /** TG3: Whether the emotional engine is enabled. */
+  emotionalEngineEnabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +121,12 @@ export function defaultPostTurnMemoryGraphDeps(overrides?: Partial<PostTurnMemor
     collectPhase1StructMemRowsFn: overrides?.collectPhase1StructMemRowsFn ?? collectPhase1StructMemPersistRows,
     structmemNativeExtractor: overrides?.structmemNativeExtractor ?? env.STRUCTMEM_NATIVE_EXTRACTOR,
     structmemEnabled: overrides?.structmemEnabled ?? env.STRUCTMEM_ENABLED,
+    advanceCharacterStateFn: overrides?.advanceCharacterStateFn ?? advanceCharacterState,
+    readAxisStateFn: overrides?.readAxisStateFn ?? readAxisState,
+    writeAxisStateFn: overrides?.writeAxisStateFn ?? writeAxisState,
+    loadCharacterDefaultsFn: overrides?.loadCharacterDefaultsFn ?? loadCharacterDefaults,
+    getSessionStateFn: overrides?.getSessionStateFn ?? getSessionState,
+    emotionalEngineEnabled: overrides?.emotionalEngineEnabled ?? env.EMOTIONAL_ENGINE_ENABLED,
   };
 }
 
@@ -141,6 +167,133 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       return { signals, stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'extract_signals'] };
     } catch (err) {
       return { errors: [{ stage: 'extractPostTurnSignals', message: err instanceof Error ? err.message : String(err) }], lastRetryReason: detectRetryReason(err, 'extractPostTurnSignals') };
+    }
+  }
+
+  async function applyEngineStateNode(state: PostTurnGraphState): Promise<Partial<PostTurnGraphState>> {
+    // Skip if already completed on a prior retry
+    if (isStepComplete(state.stepStatus, 'engine_state')) return {};
+
+    // Gate: flag off → skip (mark complete, no-op)
+    if (!deps.emotionalEngineEnabled) {
+      const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
+      return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
+    }
+
+    const signals = state.signals ?? state.payload.signals;
+    if (!signals) return {};
+
+    const session = state.session as ChatSession;
+
+    try {
+      // Load axis config from character defaults
+      const defaults = deps.loadCharacterDefaultsFn(session.characterId);
+      // Resolve scope-aware config (D8): overrides baseline per continuityScope
+      const scope = (session as ChatSession).continuityScope;
+      const axesConfig = resolveAxesConfigForScope(
+        defaults.emotional_axes!,
+        defaults.emotional_axes_baseline_by_scope,
+        scope,
+      );
+
+      // F2: character without emotional_axes → no-op (mark complete)
+      if (!defaults.emotional_axes) {
+        const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
+        return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
+      }
+
+      // Read persisted axis state (null = first tick → init from baselines)
+      const row = await deps.getSessionStateFn(session.sessionId);
+      const persisted = deps.readAxisStateFn(row);
+
+      const tick = state.payload.assistantTurnIndex;
+
+      let currentState: CharacterStateAxes;
+      let currentBands: Record<AxisName, Band>;
+      let currentHistory: PersistedAxisState['history'];
+      let persistedTrace: PersistedAxisState['lastTrace'];
+
+      if (persisted) {
+        currentState = persisted.axes;
+        currentBands = persisted.bands;
+        currentHistory = persisted.history;
+        persistedTrace = persisted.lastTrace;
+      } else {
+        // First tick: init from baselines
+        currentState = {
+          connection: axesConfig.connection.baseline,
+          valence: axesConfig.valence.baseline,
+          arousal: axesConfig.arousal.baseline,
+          restraint: axesConfig.restraint.baseline,
+        };
+        currentBands = { connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid' };
+        currentHistory = [];
+        persistedTrace = {
+          tick: 0,
+          axesBefore: { ...currentState },
+          axesAfter: { ...currentState },
+          couplingsFired: [],
+          effectiveBaselines: {},
+        };
+      }
+
+      // Event deltas: map TurnEvent through event-to-delta table, or empty (drift-only on extraction failure)
+      const event = signals.turnEvent;
+      const eventDeltas: Partial<CharacterStateAxes> = event
+        ? mapEventToDeltas(event)
+        : {};
+
+      // Advance state with parsed character couplings (TG6)
+      const { next, trace } = deps.advanceCharacterStateFn(
+        currentState,
+        axesConfig,
+        defaults.emotional_coupling ?? [],
+        eventDeltas,
+        tick,
+        event ?? undefined,
+      );
+
+      // Compute bands with hysteresis, seeded from persisted previous bands
+      const previousBands: Record<AxisName, Band> = persisted?.bands ?? {
+        connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid',
+      };
+      const bands = computeBands(next, previousBands);
+
+      // Append to history
+      const historyEntry = { tick, axes: { ...next } };
+      const updatedHistory = [...currentHistory, historyEntry];
+
+      // Build persisted state
+      const nextPersisted: PersistedAxisState = {
+        version: 1 as const,
+        tick,
+        axes: { ...next },
+        lastTrace: trace,
+        bands,
+        history: updatedHistory,
+      };
+
+      // Write to DB
+      await deps.writeAxisStateFn(session.sessionId, nextPersisted);
+
+      // Observability snapshot
+      deps.recordSnapshotFn({
+        engineState: {
+          axesBefore: trace.axesBefore,
+          axesAfter: trace.axesAfter,
+          couplingsFired: trace.couplingsFired,
+          tick,
+        },
+      });
+
+      const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
+      return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
+    } catch (err) {
+      // Catch + log; never fail the job for axis-state problems
+      console.error(`[applyEngineState] Error advancing character state: ${(err as Error).message}`);
+      // Mark complete to avoid retry loops — degradation is safe (drift-only next tick)
+      const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
+      return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     }
   }
 
@@ -318,6 +471,7 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
   return new StateGraph(PostTurnGraphStateSchema)
     .addNode('writeRawTurnPairSessionChunk', writeRawTurnPairSessionChunkNode)
     .addNode('extractPostTurnSignals', extractPostTurnSignalsNode)
+    .addNode('applyEngineState', applyEngineStateNode)
     .addNode('buildWritePlan', buildWritePlanNode)
     .addNode('writeStructMemTurn', writeStructMemTurnNode)
     .addNode('maybeEnqueueStructMemConsolidation', maybeEnqueueStructMemConsolidationNode)
@@ -335,6 +489,10 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       __next__: 'extractPostTurnSignals',
     })
     .addConditionalEdges('extractPostTurnSignals', hasErrors, {
+      __error__: 'errorSink',
+      __next__: 'applyEngineState',
+    })
+    .addConditionalEdges('applyEngineState', hasErrors, {
       __error__: 'errorSink',
       __next__: 'buildWritePlan',
     })
@@ -374,4 +532,34 @@ export function getPostTurnMemoryGraph(): ReturnType<typeof createPostTurnMemory
     _postTurnMemoryGraph = createPostTurnMemoryGraph();
   }
   return _postTurnMemoryGraph;
+}
+
+// ---------------------------------------------------------------------------
+// Event-to-delta mapping helper (Step 3 — replaces interim flat-delta path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a classified TurnEvent to axis deltas using the deterministic
+ * event-to-delta mapping table, scaled by intensity and clamped to
+ * ±MAX_AXIS_DELTA_PER_UPDATE.
+ *
+ * @param event - The classified turn event.
+ * @returns Clamped axis deltas to pass into advanceCharacterState Phase 1.
+ */
+export function mapEventToDeltas(event: TurnEvent): Partial<CharacterStateAxes> {
+  const base = EVENT_TO_DELTA_MAP[event.type] ?? {};
+  const out: Partial<CharacterStateAxes> = {};
+
+  const axes: (keyof CharacterStateAxes)[] = ['connection', 'valence', 'arousal', 'restraint'];
+  for (const axis of axes) {
+    const baseDelta = base[axis];
+    if (baseDelta === undefined) continue;
+    const scaled = baseDelta * event.intensity;
+    out[axis] = Math.min(
+      MAX_AXIS_DELTA_PER_UPDATE,
+      Math.max(-MAX_AXIS_DELTA_PER_UPDATE, Number.isFinite(scaled) ? scaled : 0),
+    );
+  }
+
+  return out;
 }

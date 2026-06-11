@@ -11,6 +11,7 @@ import { resolveContext } from "../context/resolveContext";
 import type { ResolvedContext } from "../context/resolveContext";
 import { buildPromptContextTraced } from "../prompt/buildPromptContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
+import { resolveEmotionalRenderInputs } from "../../state/emotionalEngine/resolveEmotionalRenderInputs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -129,6 +130,14 @@ export async function buildRoleplayPromptContext(
     userMessage,
   } = input;
 
+  // TG4b: resolve emotional render inputs from session state + scope config
+  const emotionalInputs = resolveEmotionalRenderInputs(
+    context.sessionStateRow ?? null,
+    characterDefaults.emotional_axes,
+    characterDefaults.emotional_axes_baseline_by_scope,
+    session.continuityScope,
+  );
+
   return build({
     characterDefaults,
     personaOverlay,
@@ -149,6 +158,7 @@ export async function buildRoleplayPromptContext(
     motifProbe: context.motifProbe,
     internalLogicEvidence: context.internalLogicEvidence,
     memoryRerank: context.rerankOutput,
+    ...(emotionalInputs ?? {}),
     userMessage,
     queryRewrite: context.queryRewrite,
   });
