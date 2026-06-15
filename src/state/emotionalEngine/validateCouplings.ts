@@ -140,7 +140,10 @@ export function validateCoupling(
     }
   }
 
-  // ---- build result ----
+  // ---- build result (pass through label/description for tooltip support, design T2) ----
+  const label = c.label !== undefined ? String(c.label) : undefined;
+  const description = c.description !== undefined ? String(c.description) : undefined;
+
   return {
     id,
     source: source as keyof CharacterStateAxes,
@@ -149,6 +152,8 @@ export function validateCoupling(
     coefficient,
     condition,
     derived_from: derivedFrom,
+    label: label || undefined,
+    description: description || undefined,
   };
 }
 

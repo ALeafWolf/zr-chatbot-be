@@ -50,6 +50,10 @@ export interface EmotionalCoupling {
   coefficient: number;
   condition?: CouplingCondition;
   derived_from: string;
+  /** Short Chinese name for tooltip display (design T2/T3). */
+  label?: string;
+  /** One-line Chinese explanation for tooltip display. */
+  description?: string;
 }
 
 // ---------------------------------------------------------------------------

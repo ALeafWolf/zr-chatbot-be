@@ -119,7 +119,7 @@ export function buildPostTurnWritePlan(
         ? "writeback_disabled"
         : "no_cross_session_memory_facts",
     ),
-    summaryCompact: decision(true, null),
+    summaryCompact: decision(!sandbox, sandbox ? "sandbox_session" : null),
     skippedReasons: {},
     signalCounts: {
       memoryFacts: signals.memoryFacts.length,

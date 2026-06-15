@@ -3,11 +3,16 @@ import { v4 as uuidv4 } from "uuid";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { chatMessages, chatSessions, sessionState } from "../../db/schema/chat";
-import { loadPersonaOverlay } from "../../character/characterDefaults";
+import { loadCharacterDefaults, loadPersonaOverlay } from "../../character/characterDefaults";
 import { listCharacters } from "../../character/characterProfiles";
 import { WRITEBACK_POLICY_BY_MODE } from "../../character/canonRules";
 import { buildMemoryNamespace } from "../../memory/shared/memoryNamespace";
 import { AVAILABLE_SCOPES } from "../../retrieval/scope/resolveContinuityScope";
+import { getSessionState } from "../../state/sessionStateRepo";
+import { readAxisState } from "../../state/emotionalEngine/axisStatePersistence";
+import { resolveAxesConfigForScope } from "../../state/emotionalEngine/resolveAxesConfigForScope";
+import { computeBands } from "../../state/emotionalEngine/bands";
+import type { AxisName, AxesConfig, Band, CharacterStateAxes } from "../../state/emotionalEngine/types";
 import type {
   CreateSessionInput,
   GetMessagesQueryInput,
@@ -17,6 +22,56 @@ import {
   serializeSessionDetail,
   serializeSessionListItem,
 } from "./sessionSerializers";
+
+// ---------------------------------------------------------------------------
+// Axis-State DTO (design A2)
+// ---------------------------------------------------------------------------
+
+export interface AxisStateDTO {
+  session_id: string;
+  enabled: boolean;
+  source: "persisted" | "baseline";
+  scope: string;
+  tick: number;
+  axes: CharacterStateAxes;
+  bands: Record<AxisName, Band>;
+  baselines: CharacterStateAxes;
+  history: { tick: number; axes: CharacterStateAxes }[];
+  last_trace: {
+    event: { type: string; intensity: number } | null;
+    couplings_fired: string[];
+    effective_baselines: Partial<CharacterStateAxes>;
+  } | null;
+  updated_at: string;
+  /** Per-coupling Chinese label/description (config, not state). Always present. */
+  coupling_glossary: Record<string, { label: string; description: string }>;
+}
+
+/**
+ * Build a coupling_glossary from emotional_coupling array (design T2).
+ * Returns one entry per coupling that has a label; description defaults to "".
+ * Empty {} when no couplings.
+ */
+function buildCouplingGlossary(
+  couplings: Array<{ id: string; label?: string; description?: string }> | undefined,
+): Record<string, { label: string; description: string }> {
+  if (!couplings) return {};
+  const glossary: Record<string, { label: string; description: string }> = {};
+  for (const c of couplings) {
+    if (c.label) {
+      glossary[c.id] = { label: c.label, description: c.description ?? "" };
+    }
+  }
+  return glossary;
+}
+
+/** Fallback axes config when the character has no emotional_axes block. */
+const FALLBACK_AXES: AxesConfig = {
+  connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+  valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+  arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+  restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+};
 
 export async function listCharacterOptions() {
   const chars = await listCharacters();
@@ -177,4 +232,143 @@ export async function deleteSession(id: string): Promise<void> {
     .update(chatSessions)
     .set({ deletedAt: new Date() })
     .where(eq(chatSessions.sessionId, id));
+}
+
+// ---------------------------------------------------------------------------
+// Axis-state read (TG1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the current emotional axis state for a session.
+ *
+ * Returns the persisted axis_state when available, otherwise resolves
+ * scope baselines (same fallback the engine uses). Returns null when the
+ * session does not exist. Never throws on absent/corrupt axis state
+ * (degrades to baselines per design A4).
+ */
+export async function getAxisState(sessionId: string): Promise<AxisStateDTO | null> {
+  // 1. Verify session exists and grab scope + character
+  const [sessionRow] = await db
+    .select({
+      characterId: chatSessions.characterId,
+      continuityScope: chatSessions.continuityScope,
+      updatedAt: chatSessions.updatedAt,
+    })
+    .from(chatSessions)
+    .where(and(eq(chatSessions.sessionId, sessionId), isNull(chatSessions.deletedAt)))
+    .limit(1);
+
+  if (!sessionRow) return null;
+
+  const { characterId, continuityScope: scope } = sessionRow;
+
+  // 2. Load character defaults for emotional_axes config + coupling glossary
+  let axesConfig: AxesConfig;
+  let baselineOverrides;
+  let couplingGlossary: Record<string, { label: string; description: string }> = {};
+  try {
+    const defaults = loadCharacterDefaults(characterId);
+    axesConfig = defaults.emotional_axes ?? FALLBACK_AXES;
+    baselineOverrides = defaults.emotional_axes_baseline_by_scope;
+    couplingGlossary = buildCouplingGlossary(defaults.emotional_coupling);
+  } catch {
+    axesConfig = FALLBACK_AXES;
+    baselineOverrides = undefined;
+    // couplingGlossary stays {}
+  }
+
+  // 3. Resolve scope baselines (always included in DTO)
+  const scopeConfig = resolveAxesConfigForScope(axesConfig, baselineOverrides, scope);
+  const baselines: CharacterStateAxes = {
+    connection: scopeConfig.connection.baseline,
+    valence: scopeConfig.valence.baseline,
+    arousal: scopeConfig.arousal.baseline,
+    restraint: scopeConfig.restraint.baseline,
+  };
+
+  const enabled = env.EMOTIONAL_ENGINE_ENABLED;
+
+  // Shared glossary — config, not state; included in all returns
+  const sharedGlossary = couplingGlossary;
+
+  // 4. When engine is off, return baselines immediately (spec requirement)
+  if (!enabled) {
+    const allMid: Record<AxisName, Band> = { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" };
+    const bands = computeBands(baselines, allMid);
+    return {
+      session_id: sessionId,
+      enabled: false,
+      source: "baseline",
+      scope,
+      tick: 0,
+      axes: baselines,
+      bands,
+      baselines,
+      history: [],
+      last_trace: null,
+      updated_at: (sessionRow.updatedAt ?? new Date()).toISOString(),
+      coupling_glossary: sharedGlossary,
+    };
+  }
+
+  // 5. Try persisted axis state
+  let stateRow = null;
+  try {
+    stateRow = await getSessionState(sessionId);
+  } catch {
+    // DB error — degrade to baselines gracefully
+    stateRow = null;
+  }
+
+  let persisted;
+  try {
+    persisted = readAxisState(stateRow);
+  } catch {
+    persisted = null;
+  }
+
+  if (persisted) {
+    // Compact the last_trace: drop reason, snake_case couplings
+    const traceEvent = persisted.lastTrace.event
+      ? { type: persisted.lastTrace.event.type, intensity: persisted.lastTrace.event.intensity }
+      : null;
+
+    return {
+      session_id: sessionId,
+      enabled: true,
+      source: "persisted",
+      scope,
+      tick: persisted.tick,
+      axes: persisted.axes,
+      bands: persisted.bands,
+      baselines,
+      history: persisted.history.map((h) => ({ tick: h.tick, axes: h.axes })),
+      last_trace: {
+        event: traceEvent,
+        couplings_fired: persisted.lastTrace.couplingsFired,
+        effective_baselines: persisted.lastTrace.effectiveBaselines,
+      },
+      updated_at: (stateRow?.updatedAt ?? new Date()).toISOString(),
+      coupling_glossary: sharedGlossary,
+    };
+  }
+
+  // 6. Baseline fallback (fresh session / corrupt / absent)
+  const allMid: Record<AxisName, Band> = { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" };
+  const bands = computeBands(baselines, allMid);
+
+  return {
+    session_id: sessionId,
+    enabled: true,
+    source: "baseline",
+    scope,
+    tick: 0,
+    axes: baselines,
+    bands,
+    baselines,
+    history: [],
+    last_trace: null,
+    updated_at: (stateRow?.updatedAt ?? sessionRow.updatedAt ?? new Date()).toISOString(),
+    coupling_glossary: sharedGlossary,
+  };
 }

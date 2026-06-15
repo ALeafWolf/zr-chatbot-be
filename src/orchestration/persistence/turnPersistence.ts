@@ -53,6 +53,36 @@ export interface PersistCompletedTurnResult {
   jobId: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Exported pure helper for the enqueue gate (review-001 F1 — testable without DB)
+// ---------------------------------------------------------------------------
+
+export interface ShouldEnqueuePostTurnJobInput {
+  shouldRunPostTurn: boolean;
+  hasDerivedState: boolean;
+  shouldWriteMemory: boolean;
+  engineEnabled: boolean;
+}
+
+/**
+ * Pure decision: should a post-turn job be enqueued?
+ *
+ * A job runs when the turn is a roleplay turn with derived state AND either
+ * memory writeback is enabled or the emotional engine is on (so sandbox
+ * no-writeback sessions can still tick the axis engine).
+ */
+export function shouldEnqueuePostTurnJob(
+  input: ShouldEnqueuePostTurnJobInput,
+): boolean {
+  return (
+    input.shouldRunPostTurn &&
+    input.hasDerivedState &&
+    (input.shouldWriteMemory || input.engineEnabled)
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 async function persistCompletedTurnImpl(
   input: PersistCompletedTurnInput,
 ): Promise<PersistCompletedTurnResult> {
@@ -193,8 +223,15 @@ async function persistCompletedTurnImpl(
       .where(eq(chatSessions.sessionId, sessionId));
 
     let jobId: string | null = null;
-    if (shouldRunPostTurn && input.derivedState && session.writebackPolicy !== "no_writeback") {
-      const shouldWriteMemory = true;
+    const shouldWriteMemory = session.writebackPolicy !== "no_writeback";
+    // Use the exported pure helper for the enqueue decision (design D2).
+    // input.derivedState is kept in the condition so TypeScript narrows it.
+    if (input.derivedState && shouldEnqueuePostTurnJob({
+      shouldRunPostTurn,
+      hasDerivedState: true,
+      shouldWriteMemory,
+      engineEnabled: env.EMOTIONAL_ENGINE_ENABLED,
+    })) {
       jobId = newPostTurnJobId();
       const payload: PostTurnJobPayloadV1 = {
         version: 1,

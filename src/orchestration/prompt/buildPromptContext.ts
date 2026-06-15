@@ -307,7 +307,7 @@ ${hardRules}
       ? [buildBlock("CHARACTER INTERNAL LOGIC", formatInternalLogic(characterDefaults.internal_logic))]
       : []),
 
-    // TG4: 【当前状态下的行为基调】 — between INTERNAL LOGIC and INTERNAL LOGIC EVIDENCE.
+    // TG4: [当前状态下的行为基调] — between INTERNAL LOGIC and INTERNAL LOGIC EVIDENCE.
     // Pushed directly (self-headed with 【…】 wrapper, not wrapped in buildBlock — F13).
     // Gated on EMOTIONAL_RENDER_ENABLED + presence of axis state.
     // NOT added to the SYSTEM conflict-priority list (it is behavior guidance, not a fact

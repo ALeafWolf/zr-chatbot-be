@@ -24,7 +24,111 @@ import { getSessionState } from '../../state/sessionStateRepo';
 import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
 import { computeBands } from '../../state/emotionalEngine/bands';
 import { resolveAxesConfigForScope } from '../../state/emotionalEngine/resolveAxesConfigForScope';
-import type { CharacterStateAxes, AxesConfig, AxisName, Band, PersistedAxisState, TurnEvent } from '../../state/emotionalEngine/types';
+import { traceStage } from '../../observability/langsmithTracing';
+import type { CharacterStateAxes, AxesConfig, AxisName, Band, PersistedAxisState, TurnEvent, EmotionalCoupling } from '../../state/emotionalEngine/types';
+
+// ---------------------------------------------------------------------------
+// Engine-advance compute core (extracted for tracing — design D1)
+// ---------------------------------------------------------------------------
+
+export interface EngineAdvanceTraceInput {
+  axesBefore: CharacterStateAxes;
+  event: TurnEvent | null;
+  axesConfig: AxesConfig;
+  couplings: EmotionalCoupling[];
+  previousBands: Record<AxisName, Band>;
+  tick: number;
+  scope: string;
+}
+
+export interface EngineAdvanceResult {
+  next: CharacterStateAxes;
+  trace: import('../../state/emotionalEngine/types').StateTrace;
+  bands: Record<AxisName, Band>;
+  eventDeltas: Partial<CharacterStateAxes>;
+}
+
+/**
+ * Pure deterministic compute: map event → deltas, advance state, compute bands.
+ * Extracted from applyEngineStateNode so it can be wrapped with a trace span.
+ */
+export async function computeEngineAdvance(
+  input: EngineAdvanceTraceInput,
+): Promise<EngineAdvanceResult> {
+  const eventDeltas: Partial<CharacterStateAxes> = input.event
+    ? mapEventToDeltas(input.event)
+    : {};
+
+  const { next, trace } = advanceCharacterState(
+    input.axesBefore,
+    input.axesConfig,
+    input.couplings,
+    eventDeltas,
+    input.tick,
+    input.event ?? undefined,
+  );
+
+  const bands = computeBands(next, input.previousBands);
+
+  return { next, trace, bands, eventDeltas };
+}
+
+// ---------------------------------------------------------------------------
+// Named mappers for the trace span (exported for unit tests — review-001 F2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps the single EngineAdvanceTraceInput object to the trace span's input payload.
+ * langsmith passes the single object arg directly (NOT wrapped in an array)
+ * per TraceProcessInputs: (inputs: Readonly<Record<string, unknown>>) => ...
+ * (langsmithTracing.ts:37, traceable.cjs:83-91).
+ */
+export function applyEngineStateInputMapper(
+  inputs: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const i = inputs as unknown as EngineAdvanceTraceInput;
+  return {
+    axesBefore: i.axesBefore,
+    event: i.event
+      ? { type: i.event.type, intensity: i.event.intensity, reason: i.event.reason }
+      : null,
+    scope: i.scope,
+    baselines: {
+      connection: i.axesConfig.connection.baseline,
+      valence: i.axesConfig.valence.baseline,
+      arousal: i.axesConfig.arousal.baseline,
+      restraint: i.axesConfig.restraint.baseline,
+    },
+    couplingIds: i.couplings.map((c) => c.id),
+    tick: i.tick,
+  };
+}
+
+/**
+ * Maps the return value of computeEngineAdvance to the trace span's output payload.
+ */
+export function applyEngineStateOutputMapper(
+  output: EngineAdvanceResult,
+): Record<string, unknown> {
+  return {
+    axesAfter: output.next,
+    eventDeltas: output.eventDeltas,
+    couplingsFired: output.trace.couplingsFired,
+    effectiveBaselines: output.trace.effectiveBaselines,
+    conditionTransitions: output.trace.conditionTransitions ?? [],
+    bands: output.bands,
+  };
+}
+
+/** Traced version — emits a LangSmith chain span when tracing is enabled. */
+const tracedComputeEngineAdvance = traceStage(
+  'orchestration.apply_engine_state',
+  computeEngineAdvance,
+  {
+    processInputs: applyEngineStateInputMapper,
+    processOutputs: applyEngineStateOutputMapper,
+  },
+);
 
 export interface PostTurnMemoryGraphDeps {
   persistStepComplete: (jobId: string, step: PostTurnStepName, payload: PostTurnJobPayloadV1, stepStatus: PostTurnStepStatus) => Promise<PostTurnStepStatus>;
@@ -55,6 +159,8 @@ export interface PostTurnMemoryGraphDeps {
   getSessionStateFn: typeof getSessionState;
   /** TG3: Whether the emotional engine is enabled. */
   emotionalEngineEnabled: boolean;
+  /** TG1 (tracing): Injected compute core (default = traced). Wraps advanceCharacterState + computeBands. */
+  computeEngineAdvanceFn: typeof computeEngineAdvance;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +233,7 @@ export function defaultPostTurnMemoryGraphDeps(overrides?: Partial<PostTurnMemor
     loadCharacterDefaultsFn: overrides?.loadCharacterDefaultsFn ?? loadCharacterDefaults,
     getSessionStateFn: overrides?.getSessionStateFn ?? getSessionState,
     emotionalEngineEnabled: overrides?.emotionalEngineEnabled ?? env.EMOTIONAL_ENGINE_ENABLED,
+    computeEngineAdvanceFn: overrides?.computeEngineAdvanceFn ?? tracedComputeEngineAdvance,
   };
 }
 
@@ -237,27 +344,20 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
         };
       }
 
-      // Event deltas: map TurnEvent through event-to-delta table, or empty (drift-only on extraction failure)
+      // Compute core via injected function (traced by default)
       const event = signals.turnEvent;
-      const eventDeltas: Partial<CharacterStateAxes> = event
-        ? mapEventToDeltas(event)
-        : {};
-
-      // Advance state with parsed character couplings (TG6)
-      const { next, trace } = deps.advanceCharacterStateFn(
-        currentState,
-        axesConfig,
-        defaults.emotional_coupling ?? [],
-        eventDeltas,
-        tick,
-        event ?? undefined,
-      );
-
-      // Compute bands with hysteresis, seeded from persisted previous bands
       const previousBands: Record<AxisName, Band> = persisted?.bands ?? {
         connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid',
       };
-      const bands = computeBands(next, previousBands);
+      const { next, trace, bands } = await deps.computeEngineAdvanceFn({
+        axesBefore: currentState,
+        event: event ?? null,
+        axesConfig,
+        couplings: defaults.emotional_coupling ?? [],
+        previousBands,
+        tick,
+        scope,
+      });
 
       // Append to history
       const historyEntry = { tick, axes: { ...next } };

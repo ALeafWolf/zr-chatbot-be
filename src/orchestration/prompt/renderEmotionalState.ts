@@ -275,14 +275,14 @@ export function buildEmotionalRenderBlock(
 ): string | null {
   if (tier === 'A') {
     // Tier A: band line always; R1 conditionally appended
-    return `【当前状态下的行为基调】\n${buildTierABlock(bands)}`;
+    return `[当前状态下的行为基调]\n${buildTierABlock(bands)}`;
   }
 
   // Tier B+: band line always, plus selectRenderRules with priority/budget/tie-break
   const bandLine = formatBandLine(bands);
   const ruleTexts = selectRenderRules(bands, lastTrace, history, tier);
   if (ruleTexts.length === 0) {
-    return `【当前状态下的行为基调】\n${bandLine}`;
+    return `[当前状态下的行为基调]\n${bandLine}`;
   }
-  return `【当前状态下的行为基调】\n${bandLine}\n\n${ruleTexts.join('\n\n')}`;
+  return `[当前状态下的行为基调]\n${bandLine}\n\n${ruleTexts.join('\n\n')}`;
 }

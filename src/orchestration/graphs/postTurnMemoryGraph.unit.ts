@@ -1,6 +1,6 @@
 ﻿import { describe, it } from "node:test";
 import assert from "node:assert";
-import { createPostTurnMemoryGraph, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
+import { createPostTurnMemoryGraph, applyEngineStateInputMapper, applyEngineStateOutputMapper, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
 import { createInitialPostTurnRuntimeState } from "../graphState/postTurnGraphState";
 import { INITIAL_POST_TURN_STEP_STATUS, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepState, type PostTurnStepStatus } from "../../jobs/postTurnJobPayload";
 import type { PostTurnWritePlan } from "../../jobs/postTurnPolicies";
@@ -193,6 +193,21 @@ function createFakeDeps(): { deps: PostTurnMemoryGraphDeps; calls: DepsCalls } {
     }),
     getSessionStateFn: async (_sessionId) => null,
     emotionalEngineEnabled: true,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    computeEngineAdvanceFn: (async (input: any) => {
+      return {
+        next: input.axesBefore,
+        trace: {
+          tick: input.tick,
+          axesBefore: input.axesBefore,
+          axesAfter: input.axesBefore,
+          couplingsFired: [],
+          effectiveBaselines: {},
+        },
+        bands: input.previousBands,
+        eventDeltas: {},
+      };
+    }) as any,
   };
 
   return { deps, calls };
@@ -421,17 +436,17 @@ describe("postTurnMemoryGraph", () => {
       turnEvent: { type: string; intensity: number; reason: string } | null;
       emotionalEngineEnabled: boolean;
       hasEmotionalAxes: boolean;
-      advanceResult: { next: typeof DEFAULT_AXES; trace: typeof DEFAULT_TRACE };
+      computeResult: { next: typeof DEFAULT_AXES; trace: typeof DEFAULT_TRACE; bands?: Record<string, string>; eventDeltas?: Record<string, number> };
       sessionStateRow: Record<string, unknown> | null;
       readAxisStateOverride?: (row: any) => any;
     }>) {
       const captured: {
-        advanceArgs: any[];
+        computeArgs: any[];
         writeCalls: Array<{ sessionId: string; state: any }>;
         getSessionCalls: string[];
         snapshotCalls: any[];
       } = {
-        advanceArgs: [],
+        computeArgs: [],
         writeCalls: [],
         getSessionCalls: [],
         snapshotCalls: [],
@@ -440,7 +455,13 @@ describe("postTurnMemoryGraph", () => {
       const ev = overrides.turnEvent ?? null;
       const engineFlag = overrides.emotionalEngineEnabled ?? true;
       const hasAxes = overrides.hasEmotionalAxes ?? true;
-      const advResult = overrides.advanceResult ?? { next: { ...DEFAULT_AXES }, trace: { ...DEFAULT_TRACE } };
+      const defaultBands = { connection: 'mid' as const, valence: 'mid' as const, arousal: 'mid' as const, restraint: 'mid' as const };
+      const cResult = overrides.computeResult ?? {
+        next: { ...DEFAULT_AXES },
+        trace: { ...DEFAULT_TRACE },
+        bands: defaultBands,
+        eventDeltas: {} as Record<string, number>,
+      };
 
       const { deps, calls } = createFakeDeps();
 
@@ -456,10 +477,17 @@ describe("postTurnMemoryGraph", () => {
         } as any;
       };
 
-      deps.advanceCharacterStateFn = (state: any, config: any, couplings: any, eventDeltas: any, tick: number, event?: any) => {
-        captured.advanceArgs.push({ state, config, couplings, eventDeltas, tick, event });
-        return advResult;
-      };
+      // Node now calls computeEngineAdvanceFn, not advanceCharacterStateFn directly
+      deps.computeEngineAdvanceFn = (async (_input: any) => {
+        captured.computeArgs.push(_input);
+        return {
+          next: cResult.next,
+          trace: cResult.trace,
+          bands: cResult.bands ?? { connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid' },
+          eventDeltas: cResult.eventDeltas ?? {},
+        };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
 
       deps.writeAxisStateFn = async (sessionId: string, state: any) => {
         captured.writeCalls.push({ sessionId, state });
@@ -499,26 +527,26 @@ describe("postTurnMemoryGraph", () => {
       return { result, captured, deps, calls };
     }
 
-    // Test 1: TurnEvent applied — advanceCharacterState receives event and eventDeltas
-    it("applies TurnEvent and passes it to advanceCharacterState", async () => {
+    // Test 1: TurnEvent applied — computeEngineAdvanceFn receives event + axesBefore
+    it("applies TurnEvent and passes it to computeEngineAdvanceFn", async () => {
       const { captured, calls } = await runEngineTest({
         turnEvent: { type: 'user_pursues_connection', intensity: 1.0, reason: 'User asked' },
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.writeCalls.length, 1, "write called once");
-      assert.equal(captured.advanceArgs.length, 1, "advance called once");
-      // The eventDeltas are the result of mapEventToDeltas
-      assert.ok(captured.advanceArgs[0].eventDeltas, "eventDeltas passed to advance");
-      // event object passed as last arg
-      assert.ok(captured.advanceArgs[0].event !== undefined, "event passed to advance");
-      assert.equal(captured.advanceArgs[0].event.type, 'user_pursues_connection', "event type preserved");
+      assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
+      // Event object passed to compute fn
+      assert.ok(captured.computeArgs[0].event !== null, "event passed to compute");
+      assert.equal(captured.computeArgs[0].event.type, 'user_pursues_connection', "event type preserved");
+      // axesBefore present
+      assert.ok(captured.computeArgs[0].axesBefore, "axesBefore passed");
       // Verify step completed
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted");
     });
 
-    // Test 2: Drift-only — null turnEvent ⇒ advance called with {} deltas, no event
+    // Test 2: Drift-only — null turnEvent ⇒ computeEngineAdvanceFn receives null event
     it("drift-only tick when turnEvent is null", async () => {
       const { captured, calls } = await runEngineTest({
         turnEvent: null,
@@ -526,9 +554,8 @@ describe("postTurnMemoryGraph", () => {
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.writeCalls.length, 1, "write called once even with null event");
-      assert.equal(captured.advanceArgs.length, 1, "advance called once");
-      assert.deepEqual(captured.advanceArgs[0].eventDeltas, {}, "empty eventDeltas for drift-only tick");
-      assert.equal(captured.advanceArgs[0].event, undefined, "no event for drift-only tick");
+      assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
+      assert.equal(captured.computeArgs[0].event, null, "null event for drift-only tick");
     });
 
     // Test 3: Flag-off no-op — emotionalEngineEnabled: false ⇒ no engine deps called
@@ -539,7 +566,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
-      assert.equal(captured.advanceArgs.length, 0, "advance NOT called when flag off");
+      assert.equal(captured.computeArgs.length, 0, "compute NOT called when flag off");
       assert.equal(captured.writeCalls.length, 0, "write NOT called when flag off");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when flag off");
       // Should still have snapshot (only from extraction, not engine)
@@ -578,7 +605,7 @@ describe("postTurnMemoryGraph", () => {
         readAxisStateOverride: readAxisState,
         // Return connection=0.6 which is below the enter-high threshold (0.65) but
         // above the exit-high threshold (0.55), so hysteresis should keep it "high"
-        advanceResult: {
+        computeResult: {
           next: { connection: 0.6, valence: 0, arousal: 0, restraint: 0.6 },
           trace: {
             tick: 2,
@@ -587,6 +614,7 @@ describe("postTurnMemoryGraph", () => {
             couplingsFired: [],
             effectiveBaselines: {},
           },
+          bands: { connection: 'high', valence: 'mid', arousal: 'mid', restraint: 'high' },
         },
       });
 
@@ -600,8 +628,8 @@ describe("postTurnMemoryGraph", () => {
     });
 
     // Test 5: Scope-resolved baseline (F15) — non-default scope drifts toward scope baseline
-    it("F15: scope-resolved baseline — main_married axesConfig passed to advanceCharacterStateFn", async () => {
-      const captured: { advanceArgs: any[] } = { advanceArgs: [] };
+    it("F15: scope-resolved baseline — main_married axesConfig passed to computeEngineAdvanceFn", async () => {
+      const captured: { computeArgs: any[] } = { computeArgs: [] };
 
       const { deps, calls } = createFakeDeps();
       deps.emotionalEngineEnabled = true;
@@ -627,16 +655,21 @@ describe("postTurnMemoryGraph", () => {
         },
       } as any);
 
-      deps.advanceCharacterStateFn = (state: any, config: any, couplings: any, eventDeltas: any, tick: number) => {
-        captured.advanceArgs.push({ state, config, couplings, eventDeltas, tick });
+      deps.computeEngineAdvanceFn = (async (input: any) => {
+        captured.computeArgs.push(input);
         return {
           next: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
           trace: {
-            tick, axesBefore: { ...state }, axesAfter: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
-            couplingsFired: [], effectiveBaselines: {},
+            tick: input.tick,
+            axesBefore: { ...input.axesBefore },
+            axesAfter: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
+            couplingsFired: [],
+            effectiveBaselines: {},
           },
+          bands: input.previousBands,
+          eventDeltas: {},
         };
-      };
+      }) as any;
 
       // Set the payload's session continuityScope to main_married
       const marriedPayload = {
@@ -652,14 +685,14 @@ describe("postTurnMemoryGraph", () => {
 
       await createPostTurnMemoryGraph(deps).invoke(state);
 
-      assert.equal(captured.advanceArgs.length, 1, "advanceCharacterState called");
-      const config = captured.advanceArgs[0].config;
+      assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called");
+      const axesConfig = captured.computeArgs[0].axesConfig;
       // main_married: restraint baseline should be 0.55 (overridden from default 0.7)
-      assert.equal(config.restraint.baseline, 0.55, "restraint baseline scope-resolved to 0.55");
+      assert.equal(axesConfig.restraint.baseline, 0.55, "restraint baseline scope-resolved to 0.55");
       // connection baseline should be 0.35 (overridden from default 0)
-      assert.equal(config.connection.baseline, 0.35, "connection baseline scope-resolved to 0.35");
+      assert.equal(axesConfig.connection.baseline, 0.35, "connection baseline scope-resolved to 0.35");
       // arousal baseline unchanged (explicitly 0.0 in overrides)
-      assert.equal(config.arousal.baseline, 0, "arousal baseline scope-resolved to 0");
+      assert.equal(axesConfig.arousal.baseline, 0, "arousal baseline scope-resolved to 0");
     });
 
     // Test 6: F2 — no emotional_axes ⇒ step complete, no write, no throw
@@ -672,10 +705,94 @@ describe("postTurnMemoryGraph", () => {
       assert.equal(calls.completeJobFn.length, 1, "job completes without error");
       assert.equal(captured.writeCalls.length, 0, "write NOT called when no emotional_axes");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when no emotional_axes");
-      assert.equal(captured.advanceArgs.length, 0, "advance NOT called when no emotional_axes");
+      assert.equal(captured.computeArgs.length, 0, "compute NOT called when no emotional_axes");
       // Verify engine_state step was marked complete
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted (no-op completed)");
+    });
+  });
+
+  // ===================================================================
+  // Mapper tests (review-001 F2 — must use [input] shape like traceStage does)
+  // ===================================================================
+
+  describe("applyEngineStateInputMapper", () => {
+    const SAMPLE_INPUT = {
+      axesBefore: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+      event: { type: 'user_pursues_connection' as const, intensity: 0.6, reason: 'leaned in' },
+      axesConfig: {
+        connection: { baseline: 0.15, driftRate: 0.02, min: -1, max: 1 },
+        valence: { baseline: 0.05, driftRate: 0.02, min: -1, max: 1 },
+        arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+        restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+      },
+      couplings: [{ id: 'zr_c2' }, { id: 'zr_c3' }] as any[],
+      previousBands: { connection: 'mid' as const, valence: 'mid' as const, arousal: 'mid' as const, restraint: 'mid' as const },
+      tick: 7,
+      scope: 'main_relationship',
+    };
+
+    it("maps object directly to fields (not undefined)", () => {
+      const result = applyEngineStateInputMapper(SAMPLE_INPUT as any);
+      assert.ok(result.axesBefore, "axesBefore populated");
+      assert.equal(result.scope, 'main_relationship', "scope populated");
+      assert.deepEqual(result.baselines, { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 }, "baselines populated");
+      assert.deepEqual(result.couplingIds, ['zr_c2', 'zr_c3'], "couplingIds populated");
+      assert.equal(result.tick, 7, "tick populated");
+    });
+
+    it("maps event with type/intensity/reason", () => {
+      const result = applyEngineStateInputMapper(SAMPLE_INPUT as any);
+      assert.ok(result.event, "event present");
+      assert.equal((result.event as any).type, 'user_pursues_connection', "event type");
+      assert.equal((result.event as any).intensity, 0.6, "event intensity");
+      assert.equal((result.event as any).reason, 'leaned in', "event reason");
+    });
+
+    it("maps null event to null without throwing", () => {
+      const noEvent = { ...SAMPLE_INPUT, event: null };
+      const result = applyEngineStateInputMapper(noEvent as any);
+      assert.equal(result.event, null, "null event maps to null");
+    });
+
+    it("does not throw on any field", () => {
+      // Should never throw — the corrected fix for F3
+      applyEngineStateInputMapper(SAMPLE_INPUT as any);
+    });
+  });
+
+  describe("applyEngineStateOutputMapper", () => {
+    const SAMPLE_RESULT = {
+      next: { connection: 0.21, valence: 0.08, arousal: -0.03, restraint: 0.61 },
+      trace: {
+        tick: 7,
+        axesBefore: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+        axesAfter: { connection: 0.21, valence: 0.08, arousal: -0.03, restraint: 0.61 },
+        couplingsFired: ['zr_c2'],
+        effectiveBaselines: { restraint: 0.44 },
+        conditionTransitions: [{ id: 'c1', from: true, to: false }],
+      },
+      bands: { connection: 'mid' as const, valence: 'mid' as const, arousal: 'mid' as const, restraint: 'mid' as const },
+      eventDeltas: { connection: 0.06, valence: 0.03 },
+    };
+
+    it("maps output fields correctly", () => {
+      const result = applyEngineStateOutputMapper(SAMPLE_RESULT);
+      assert.deepEqual(result.axesAfter, SAMPLE_RESULT.next, "axesAfter");
+      assert.deepEqual(result.eventDeltas, SAMPLE_RESULT.eventDeltas, "eventDeltas");
+      assert.deepEqual(result.couplingsFired, ['zr_c2'], "couplingsFired");
+      assert.deepEqual(result.effectiveBaselines, { restraint: 0.44 }, "effectiveBaselines");
+      assert.deepEqual(result.conditionTransitions, [{ id: 'c1', from: true, to: false }], "conditionTransitions");
+      assert.deepEqual(result.bands, SAMPLE_RESULT.bands, "bands");
+    });
+
+    it("handles empty conditionTransitions", () => {
+      const noConds = {
+        ...SAMPLE_RESULT,
+        trace: { ...SAMPLE_RESULT.trace, conditionTransitions: undefined },
+      };
+      const result = applyEngineStateOutputMapper(noConds);
+      assert.deepEqual(result.conditionTransitions, [], "empty conditionTransitions");
     });
   });
 });
