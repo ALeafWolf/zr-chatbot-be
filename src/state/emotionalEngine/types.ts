@@ -144,6 +144,30 @@ export interface AdvanceResult {
 }
 
 // ---------------------------------------------------------------------------
+// TG2: Eval-only phase emission types
+// ---------------------------------------------------------------------------
+
+/**
+ * The four intermediate phase states produced by the engine step.
+ * Emitted only when `emitPhases: true` is passed to `advanceCharacterState`.
+ */
+export interface PhasesData {
+  afterEventDelta: CharacterStateAxes;
+  afterCoupling: CharacterStateAxes;
+  afterDrift: CharacterStateAxes;
+  afterClamp: CharacterStateAxes; // equals axesAfter
+}
+
+/**
+ * Eval-only trace extension returned when `emitPhases` is enabled.
+ * Keeps the production `StateTrace` contract clean — `phases` is absent
+ * in normal operation.
+ */
+export interface ExtendedStateTrace extends StateTrace {
+  phases?: PhasesData;
+}
+
+// ---------------------------------------------------------------------------
 // Persisted axis state (design D2 — versioned sub-object in local_relationship_delta)
 // ---------------------------------------------------------------------------
 

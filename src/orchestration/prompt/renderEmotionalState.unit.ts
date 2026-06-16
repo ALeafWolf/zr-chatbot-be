@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { selectRenderRules, formatBandLine, buildTierABlock, buildEmotionalRenderBlock } from "./renderEmotionalState";
+import { selectRenderRules, selectRenderRuleMatches, formatBandLine, buildTierABlock, buildEmotionalRenderBlock } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
 
 // ---------------------------------------------------------------------------
@@ -254,6 +254,55 @@ describe("selectRenderRules — TG8 Tier C", () => {
     });
     const result = selectRenderRules(bands, trace, [], "C");
     assert.ok(result.length <= 2, "budget ≤ 2 at Tier C");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TG2 — selectRenderRuleMatches
+// ---------------------------------------------------------------------------
+
+describe("selectRenderRuleMatches — TG2", () => {
+
+  it("returns full match metadata with id/tier/priority/isTraceTriggered/text", () => {
+    const bands = makeBands({ connection: "high", restraint: "low" });
+    const matches = selectRenderRuleMatches(bands, makeTrace(), [], "A");
+    assert.ok(matches.length > 0, "R1 matches");
+    const r1 = matches.find((m) => m.id === "R1");
+    assert.ok(r1, "R1 in matches");
+    assert.equal(r1!.id, "R1");
+    assert.equal(r1!.tier, "A");
+    assert.equal(r1!.priority, 0);
+    assert.equal(r1!.isTraceTriggered, false);
+    assert.ok(r1!.text.includes("放松改变的是温度"), "R1 text present");
+  });
+
+  it("returns multiple matches with correct IDs at Tier C", () => {
+    const bands = makeBands({ connection: "high", restraint: "low" });
+    const trace = makeTrace({
+      event: { type: 'intimate_moment', intensity: 1, reason: 'Test' },
+    });
+    const matches = selectRenderRuleMatches(bands, trace, [], "C");
+    // R8 (pri 0, trace) and R1 (pri 0, pure) — R8 wins tie-break
+    assert.ok(matches.length >= 1, "at least 1 match");
+    // Budget is 2 at most
+    assert.ok(matches.length <= 2, "at most 2 matches");
+    const ids = matches.map((m) => m.id);
+    // R8 should be first due to tie-break
+    assert.ok(ids.includes("R8") || ids.includes("R1"), "R8 or R1 in matches");
+    if (ids.includes("R8") && ids.includes("R1")) {
+      assert.equal(ids[0], "R8", "R8 (trace) beats R1 (pure) at same priority");
+    }
+  });
+
+  it("selectRenderRules text output is byte-identical to mapping from selectRenderRuleMatches", () => {
+    const bands = makeBands({ connection: "high", restraint: "low", arousal: "low" });
+    const trace = makeTrace();
+    const texts = selectRenderRules(bands, trace, [], "B");
+    const matches = selectRenderRuleMatches(bands, trace, [], "B");
+    assert.equal(texts.length, matches.length, "same count");
+    for (let i = 0; i < texts.length; i++) {
+      assert.equal(texts[i], matches[i].text, `match ${i} text matches`);
+    }
   });
 });
 

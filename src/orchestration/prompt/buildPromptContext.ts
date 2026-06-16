@@ -30,7 +30,7 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
-import { buildEmotionalRenderBlock } from "./renderEmotionalState";
+import { buildEmotionalRenderBlock, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
 import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
 import {
@@ -295,11 +295,18 @@ export function buildPromptContext(input: {
   // Only record when the resolver actually produced emotional axis inputs — an
   // absent/fallback/gated render path must not fabricate a synthetic snapshot.
   if (emotionalAxisBands && emotionalAxisLastTrace) {
+    // TG2: Query matched render rule IDs for the eval snapshot.
+    const ruleMatches = selectRenderRuleMatches(
+      emotionalAxisBands,
+      emotionalAxisLastTrace,
+      emotionalAxisHistory ?? [],
+      "C",
+    );
     recordEmotionalAxisRenderSnapshot({
       source: source ?? "persisted_axis_state",
       sourceTick: sourceTick ?? 0,
       bands: emotionalAxisBands,
-      renderRuleIds: [],
+      renderRuleIds: ruleMatches.map((m) => m.id),
       renderBlock: renderEmotionalBlock,
       tier: "C",
       resolvedBaselines: resolvedBaselines ?? { connection: 0, valence: 0, arousal: 0, restraint: 0 },
