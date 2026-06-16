@@ -14,7 +14,7 @@ import {
  */
 export function resolveScenarioSet(): ScenarioSet {
   const val = (process.env.EVAL_SCENARIO_SET ?? "default").trim().toLowerCase();
-  if (val === "rerank" || val === "probes" || val === "all") return val;
+  if (val === "rerank" || val === "probes" || val === "emotional_axis" || val === "all") return val;
   return "default";
 }
 

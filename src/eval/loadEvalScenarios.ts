@@ -12,7 +12,7 @@ export const RERANK_SCENARIOS_PATH = path.join(
 export const STUB_REPLY =
   "[STUB — full turn replay requires live DB + API keys]";
 
-export type ScenarioSet = "default" | "rerank" | "probes" | "all";
+export type ScenarioSet = "default" | "rerank" | "probes" | "emotional_axis" | "all";
 
 export function loadScenariosFromFile(filePath: string = EVAL_SCENARIOS_PATH): {
   version: string;
@@ -40,6 +40,25 @@ export function loadRerankScenarios(): Scenario[] {
     return scenarios;
   } catch (err) {
     console.warn("Could not load rerank scenarios:", (err as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Load emotional-axis scenarios from the emotional-axis scenario library.
+ */
+export function loadEmotionalAxisScenarios(): Scenario[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./datasets/emotionalAxisScenarios");
+    const scenarios: Scenario[] | undefined = mod.EMOTIONAL_AXIS_SCENARIOS;
+    if (!Array.isArray(scenarios)) {
+      console.warn("EMOTIONAL_AXIS_SCENARIOS export not found or not an array");
+      return [];
+    }
+    return scenarios;
+  } catch (err) {
+    console.warn("Could not load emotional axis scenarios:", (err as Error).message);
     return [];
   }
 }
@@ -83,15 +102,20 @@ export function loadScenariosBySet(
     return { version, scenarios: loadProbeScenarios() };
   }
 
+  if (set === "emotional_axis") {
+    return { version, scenarios: loadEmotionalAxisScenarios() };
+  }
+
   const rerank = loadRerankScenarios();
   const probes = loadProbeScenarios();
+  const emotionalAxis = loadEmotionalAxisScenarios();
 
   if (set === "rerank") {
     return { version, scenarios: rerank };
   }
 
   // "all"
-  return { version, scenarios: [...scenarios, ...rerank, ...probes] };
+  return { version, scenarios: [...scenarios, ...rerank, ...probes, ...emotionalAxis] };
 }
 
 export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown> {
@@ -138,6 +162,16 @@ export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown
     }),
     ...(scenario.retrieval_expected_needle !== undefined && {
       retrieval_expected_needle: scenario.retrieval_expected_needle,
+    }),
+    // TG3: Emotional-axis fields for LangSmith dataset push
+    ...(scenario.expectedResolvedBaselines !== undefined && {
+      expectedResolvedBaselines: scenario.expectedResolvedBaselines,
+    }),
+    ...(scenario.noScopeOverride !== undefined && {
+      noScopeOverride: scenario.noScopeOverride,
+    }),
+    ...(scenario.continuityScope !== undefined && {
+      continuityScope: scenario.continuityScope,
     }),
   };
 }

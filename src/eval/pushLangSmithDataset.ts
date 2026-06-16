@@ -73,6 +73,20 @@ export function buildExampleMetadata(
     metadata.expected_final_context_mode = scenario.expected_final_context_mode;
   }
 
+  // TG3: Emotional-axis metadata
+  if (scenario.seedAxisState !== undefined) {
+    metadata.seedAxisState = scenario.seedAxisState;
+  }
+  if (scenario.expectedResolvedBaselines !== undefined) {
+    metadata.expectedResolvedBaselines = scenario.expectedResolvedBaselines;
+  }
+  if (scenario.noScopeOverride !== undefined) {
+    metadata.noScopeOverride = scenario.noScopeOverride;
+  }
+  if (scenario.continuityScope !== undefined) {
+    metadata.continuityScope = scenario.continuityScope;
+  }
+
   return metadata;
 }
 
