@@ -101,14 +101,28 @@ export class PostTurnRunner extends BackgroundRunner {
   }
 
   async runJobByIdForEval(jobId: string): Promise<void> {
+    // First try to claim and run normally
     const result = await this.loadAndClaimEvalJob(jobId);
     if ("missing" in result) {
       if (result.missing) {
-        recordMemoryWriteSnapshot({
-          status: "failed",
-          error: `post_turn_job_not_found:${jobId}`,
-        });
-        throw new Error(`post_turn_job_not_found:${jobId}`);
+        // Job not found — might have been claimed by the background loop.
+        // Look it up directly and force-run in the current context.
+        const rows = await db.select().from(postTurnJobs).where(eq(postTurnJobs.id, jobId)).limit(1);
+        if (rows.length === 0) {
+          recordMemoryWriteSnapshot({
+            status: "failed",
+            error: `post_turn_job_not_found:${jobId}`,
+          });
+          throw new Error(`post_turn_job_not_found:${jobId}`);
+        }
+        // Job exists but was claimed by the background loop — force-run in eval context
+        const succeeded = await this.runClaimedJob(rows[0]!);
+        await this.completeJob(rows[0]!.id);
+        if (!succeeded) {
+          const error = getAgentEvalCapture()?.memoryWrite.error ?? "post_turn_job_failed";
+          throw new Error(error);
+        }
+        return;
       }
       recordMemoryWriteSnapshot({ status: "completed" });
       return;
