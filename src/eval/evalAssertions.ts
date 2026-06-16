@@ -244,9 +244,11 @@ export function checkAssertion(
     case "axis_delta_sign": {
       const axis = assertion.field;
       const expectedSign = assertion.value;
-      const deltas = ctx?.emotionalAxis?.eventDeltas;
       if (!axis || !expectedSign) return { pass: false, reason: "Missing axis or expected sign on assertion" };
-      const rawDelta = deltas ? (deltas as unknown as Record<string, number>)[axis] : undefined;
+      // Fail closed when event delta data is absent
+      if (!ctx?.emotionalAxis?.eventDeltas) return { pass: false, reason: "No event delta data available" };
+      const deltas = ctx.emotionalAxis.eventDeltas;
+      const rawDelta = (deltas as unknown as Record<string, number>)[axis];
       const actualSign = rawDelta === undefined ? "0" : rawDelta > 0 ? "+" : rawDelta < 0 ? "-" : "0";
       const pass = actualSign === expectedSign || (expectedSign === "stable" && actualSign === "0");
       return {
@@ -261,9 +263,11 @@ export function checkAssertion(
       const axis = assertion.field;
       const parts = (assertion.value ?? "").split(",").map(Number);
       const [min, max] = parts.length === 2 ? parts : [NaN, NaN];
-      const axesAfter = ctx?.emotionalAxis?.axesAfter;
-      const value = axis && axesAfter ? (axesAfter as unknown as Record<string, number>)[axis] : undefined;
       if (!axis || isNaN(min) || isNaN(max)) return { pass: false, reason: "Invalid axis_after_between: field=axis, value=min,max" };
+      // Fail closed when axesAfter data is absent
+      if (!ctx?.emotionalAxis?.axesAfter) return { pass: false, reason: "No axesAfter data available" };
+      const axesAfter = ctx.emotionalAxis.axesAfter;
+      const value = (axesAfter as unknown as Record<string, number>)[axis];
       if (value === undefined) return { pass: false, reason: `No axesAfter data for axis ${axis}` };
       const pass = value >= min && value <= max;
       return {
@@ -275,9 +279,10 @@ export function checkAssertion(
     case "axis_band_equals": {
       const axis = assertion.field as string;
       const expected = assertion.value;
-      const bands = ctx?.emotionalAxis?.bandsAfter;
-      const actual = axis && bands ? (bands as Record<string, string>)[axis] : undefined;
       if (!axis || !expected) return { pass: false, reason: "Missing axis or expected band on assertion" };
+      // Fail closed when bandsAfter data is absent
+      if (!ctx?.emotionalAxis?.bandsAfter) return { pass: false, reason: "No bandsAfter data available" };
+      const actual = (ctx.emotionalAxis.bandsAfter as Record<string, string>)[axis];
       const pass = actual === expected;
       return {
         pass,
@@ -287,7 +292,10 @@ export function checkAssertion(
 
     case "couplings_fired_contains": {
       const expected = assertion.values ?? [];
-      const actual = ctx?.emotionalAxis?.couplingsFired ?? [];
+      if (expected.length === 0) return { pass: true, reason: "OK (no expected couplings)" };
+      // Fail closed when couplingsFired data is absent
+      if (!ctx?.emotionalAxis?.couplingsFired) return { pass: false, reason: "No couplingsFired data available" };
+      const actual = ctx.emotionalAxis.couplingsFired;
       const missing = expected.filter((id) => !actual.includes(id));
       const pass = missing.length === 0;
       return {
@@ -298,7 +306,10 @@ export function checkAssertion(
 
     case "couplings_fired_not_contains": {
       const forbidden = assertion.values ?? [];
-      const actual = ctx?.emotionalAxis?.couplingsFired ?? [];
+      if (forbidden.length === 0) return { pass: true, reason: "OK (no forbidden couplings specified)" };
+      // Fail closed when couplingsFired data is absent
+      if (!ctx?.emotionalAxis?.couplingsFired) return { pass: false, reason: "No couplingsFired data available" };
+      const actual = ctx.emotionalAxis.couplingsFired;
       const found = forbidden.filter((id) => actual.includes(id));
       const pass = found.length === 0;
       return {
@@ -311,12 +322,14 @@ export function checkAssertion(
       const axis = assertion.field as string;
       const direction = assertion.value; // "+" = shifted up, "-" = shifted down
       const minMag = assertion.min_scenes ?? 0; // reuse min_scenes for min magnitude
-      const baselines = ctx?.emotionalAxis?.effectiveBaselines;
-      const shifted = axis ? (baselines as unknown as Record<string, number> | undefined)?.[axis] : undefined;
-      const resolvedBaselines = ctx?.emotionalAxis?.resolvedBaselines;
-      const baseValue = resolvedBaselines ? (resolvedBaselines as unknown as Record<string, number>)[axis] : 0;
       if (!axis || !direction) return { pass: false, reason: "Missing axis or direction on assertion" };
+      // Fail closed when effectiveBaselines data is absent
+      if (!ctx?.emotionalAxis?.effectiveBaselines) return { pass: false, reason: "No effectiveBaselines data available" };
+      if (!ctx?.emotionalAxis?.resolvedBaselines) return { pass: false, reason: "No resolvedBaselines data available" };
+      const baselines = ctx.emotionalAxis.effectiveBaselines;
+      const shifted = (baselines as unknown as Record<string, number>)[axis];
       if (shifted === undefined) return { pass: false, reason: `${axis} effective baseline not shifted` };
+      const baseValue = (ctx.emotionalAxis.resolvedBaselines as unknown as Record<string, number>)[axis] ?? 0;
       const shift = shifted - baseValue;
       const pass = direction === "+" ? shift >= minMag : direction === "-" ? shift <= -minMag : false;
       return {
@@ -331,7 +344,10 @@ export function checkAssertion(
       const id = assertion.field;
       const fromVal = assertion.expected; // true/false
       const toVal = assertion.value === "true"; // "true"/"false"
-      const transitions = ctx?.emotionalAxis?.conditionTransitions ?? [];
+      if (!id) return { pass: false, reason: "Missing coupling id on assertion" };
+      // Fail closed when conditionTransitions data is absent
+      if (!ctx?.emotionalAxis?.conditionTransitions) return { pass: false, reason: "No conditionTransitions data available" };
+      const transitions = ctx.emotionalAxis.conditionTransitions;
       const match = transitions.find((t) => t.id === id);
       if (!match) return { pass: false, reason: `No condition transition for ${id}` };
       const pass = match.from === fromVal && match.to === toVal;
@@ -345,7 +361,10 @@ export function checkAssertion(
 
     case "render_rule_triggered": {
       const expected = assertion.values ?? [];
-      const actual = ctx?.emotionalAxis?.render?.renderRuleIds ?? [];
+      if (expected.length === 0) return { pass: true, reason: "OK (no expected render rules)" };
+      // Fail closed when render snapshot data is absent
+      if (!ctx?.emotionalAxis?.render) return { pass: false, reason: "No render snapshot data available" };
+      const actual = ctx.emotionalAxis.render.renderRuleIds;
       const missing = expected.filter((id) => !actual.includes(id));
       const pass = missing.length === 0;
       return {
@@ -358,8 +377,10 @@ export function checkAssertion(
 
     case "render_block_contains": {
       const expected = assertion.value ?? "";
-      const block = ctx?.emotionalAxis?.render?.renderBlock ?? "";
       if (!expected) return { pass: false, reason: "Missing expected substring on assertion" };
+      // Fail closed when render snapshot data is absent
+      if (!ctx?.emotionalAxis?.render) return { pass: false, reason: "No render snapshot data available" };
+      const block = ctx.emotionalAxis.render.renderBlock ?? "";
       const pass = block.includes(expected);
       return {
         pass,
@@ -369,8 +390,10 @@ export function checkAssertion(
 
     case "render_block_not_contains": {
       const forbidden = assertion.value ?? "";
-      const block = ctx?.emotionalAxis?.render?.renderBlock ?? "";
       if (!forbidden) return { pass: true, reason: "OK (no forbidden text specified)" };
+      // Fail closed when render snapshot data is absent
+      if (!ctx?.emotionalAxis?.render) return { pass: false, reason: "No render snapshot data available" };
+      const block = ctx.emotionalAxis.render.renderBlock ?? "";
       const pass = !block.includes(forbidden);
       return {
         pass,
@@ -381,7 +404,7 @@ export function checkAssertion(
     case "output_forbidden_patterns_absent": {
       const patterns = assertion.values ?? [];
       if (patterns.length === 0) return { pass: true, reason: "OK (no patterns specified)" };
-      const matched = patterns.filter((p) => reply.includes(p));
+      const matched = patterns.filter((p) => matchesAnyPattern(reply, [p]));
       const pass = matched.length === 0;
       return {
         pass,

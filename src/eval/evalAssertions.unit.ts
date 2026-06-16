@@ -146,6 +146,86 @@ describe("TG3 — emotional-axis assertion types", () => {
     const r = checkAssertion({ type: "turn_event_type", value: "user_challenges", description: "no ctx" }, "", undefined, {});
     assert.equal(r.pass, false, "no emotionalAxis → fail");
   });
+
+  // -------------------------------------------------------------------
+  // F2 — fail closed when snapshot data is absent
+  // -------------------------------------------------------------------
+
+  it("F2: axis_delta_sign fails closed when eventDeltas absent", () => {
+    const r = checkAssertion({ type: "axis_delta_sign", field: "arousal", value: "0", description: "no deltas" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ eventDeltas: undefined }) });
+    assert.equal(r.pass, false, "fails when eventDeltas absent");
+  });
+
+  it("F2: axis_after_between fails closed when axesAfter absent", () => {
+    const r = checkAssertion({ type: "axis_after_between", field: "restraint", value: "0,1", description: "no axesAfter" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ axesAfter: undefined }) });
+    assert.equal(r.pass, false, "fails when axesAfter absent");
+  });
+
+  it("F2: axis_band_equals fails closed when bandsAfter absent", () => {
+    const r = checkAssertion({ type: "axis_band_equals", field: "restraint", value: "high", description: "no bands" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ bandsAfter: undefined }) });
+    assert.equal(r.pass, false, "fails when bandsAfter absent");
+  });
+
+  it("F2: couplings_fired_not_contains fails closed when couplingsFired absent", () => {
+    const r = checkAssertion({ type: "couplings_fired_not_contains", values: ["zr_c1"], description: "no couplings" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ couplingsFired: undefined }) });
+    assert.equal(r.pass, false, "fails when couplingsFired absent");
+  });
+
+  it("F2: condition_transition fails closed when conditionTransitions absent", () => {
+    const r = checkAssertion({ type: "condition_transition", field: "zr_c2", expected: true, value: "false", description: "no transitions" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ conditionTransitions: undefined }) });
+    assert.equal(r.pass, false, "fails when conditionTransitions absent");
+  });
+
+  it("F2: render_block_contains fails closed when render snapshot absent", () => {
+    const r = checkAssertion({ type: "render_block_contains", value: "test", description: "no render" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ render: undefined }) });
+    assert.equal(r.pass, false, "fails when render absent");
+  });
+
+  it("F2: effective_baseline_shifted fails closed when effectiveBaselines absent", () => {
+    const r = checkAssertion({ type: "effective_baseline_shifted", field: "restraint", value: "-", description: "no baselines" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ effectiveBaselines: undefined }) });
+    assert.equal(r.pass, false, "fails when effectiveBaselines absent");
+  });
+
+  it("F2: render_rule_triggered fails closed when render snapshot absent", () => {
+    const r = checkAssertion({ type: "render_rule_triggered", values: ["R1"], description: "no render" }, "", undefined, { emotionalAxis: makeEmotionalAxis({ render: undefined }) });
+    assert.equal(r.pass, false, "fails when render absent");
+  });
+
+  // -------------------------------------------------------------------
+  // F3 — output_forbidden_patterns_absent uses regex with literal fallback
+  // -------------------------------------------------------------------
+
+  it("F3: output_forbidden_patterns_absent matches regex pattern", () => {
+    const r = checkAssertion({ type: "output_forbidden_patterns_absent", values: ["\\d{3}-\\d{4}"], description: "phone pattern" }, "call 555-1234", undefined, { emotionalAxis: baseSnapshot });
+    assert.equal(r.pass, false, "fails when regex pattern matches");
+  });
+
+  it("F3: output_forbidden_patterns_absent literal fallback works", () => {
+    const r = checkAssertion({ type: "output_forbidden_patterns_absent", values: ["literal_bad"], description: "literal" }, "contains literal_bad", undefined, { emotionalAxis: baseSnapshot });
+    assert.equal(r.pass, false, "fails when literal substring matches");
+  });
+
+  // -------------------------------------------------------------------
+  // F1 — LangSmith agent_turn context merges emotionalAxis + rerank
+  // -------------------------------------------------------------------
+
+  it("F1: agent_turn context with emotionalAxis passes render assertion", () => {
+    // Simulates the LangSmith assertionsEvaluator for agent_turn rows:
+    // the context is built from both rerank ctx (if any) and emotionalAxis.
+    const ctx = {
+      emotionalAxis: baseSnapshot,
+    };
+    const r = checkAssertion({ type: "render_rule_triggered", values: ["R3"], description: "render rule" }, "", undefined, ctx);
+    assert.equal(r.pass, true, "render assertion passes with emotionalAxis in context");
+  });
+
+  it("F1: agent_turn context with emotionalAxis passes event assertion", () => {
+    const ctx = {
+      emotionalAxis: baseSnapshot,
+    };
+    const r = checkAssertion({ type: "turn_event_type", value: "user_challenges", description: "event" }, "", undefined, ctx);
+    assert.equal(r.pass, true, "event assertion passes with emotionalAxis in context");
+  });
 });
 
 describe("buildRerankAssertionContext", () => {

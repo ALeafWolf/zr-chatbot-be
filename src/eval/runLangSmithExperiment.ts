@@ -219,9 +219,11 @@ function assertionsEvaluator(args: {
       | { rerank?: { selected?: Array<{ id: string; source: string }>; finalContextMode?: string; fallbackUsed?: boolean } }
       | undefined;
     const rerankCtx = buildRerankAssertionContext(retrieval?.rerank);
-    if (rerankCtx) {
-      ctx = rerankCtx;
-    }
+    // Merge rerank context (if any) with emotional-axis snapshot
+    ctx = {
+      ...(rerankCtx ?? {}),
+      emotionalAxis: outputs.emotionalAxis as AssertionContext["emotionalAxis"],
+    };
   }
 
   const results: EvaluationResult[] = [];
