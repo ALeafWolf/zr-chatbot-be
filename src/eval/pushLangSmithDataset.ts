@@ -102,7 +102,12 @@ async function main(): Promise<void> {
   });
 
   try {
-    const datasetName = env.LANGSMITH_EVAL_DATASET;
+    // TG6: Use dedicated emotional-axis dataset when running emotional_axis set
+    // (push clears the target dataset, so a shared dataset would lose existing examples)
+    const isEmotionalAxis = scenarioSet === "emotional_axis";
+    const datasetName = isEmotionalAxis
+      ? (process.env.LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET ?? `emotional-axis-${env.LANGSMITH_EVAL_DATASET}`)
+      : env.LANGSMITH_EVAL_DATASET;
     const { version, scenarios: allScenarios } = loadScenariosBySet(scenarioSet);
 
     console.log(`Loaded ${allScenarios.length} scenarios (${scenarioSet} set).`);

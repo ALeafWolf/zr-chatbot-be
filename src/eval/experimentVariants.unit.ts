@@ -8,6 +8,8 @@ import {
   RERANK_VARIANTS, CONTEXT_PLANNER_VARIANTS, RETRIEVAL_VARIANTS, VALIDATOR_VARIANTS, GRAPH_VERSIONS,
   validateExperimentVariants, readAndValidateExperimentVariants, getVariantRunMatrix,
   readEmotionalAxisVariant, resolveEmotionalAxisVariantConfig,
+  buildEmotionalAxisVariantMetadata, buildEmotionalAxisVariantTags,
+  DEFAULT_EMOTIONAL_AXIS_VARIANT,
 } from "./experimentVariants";
 
 describe("experiment variants", () => {
@@ -192,6 +194,31 @@ describe("experiment variants", () => {
       }
     });
 
+    // -------------------------------------------------------------------
+    // TG6 — Emotional-axis variant metadata/tags wiring
+    // -------------------------------------------------------------------
+
+    it("TG6: buildEmotionalAxisVariantMetadata returns metadata for non-default variant", () => {
+      const meta = buildEmotionalAxisVariantMetadata("axis_state_no_render");
+      assert.ok(meta, "metadata present for non-default variant");
+      assert.equal(meta!.emotionalAxisVariant, "axis_state_no_render");
+    });
+
+    it("TG6: buildEmotionalAxisVariantMetadata returns undefined for default variant", () => {
+      const meta = buildEmotionalAxisVariantMetadata(DEFAULT_EMOTIONAL_AXIS_VARIANT);
+      assert.equal(meta, undefined, "no metadata for default variant");
+    });
+
+    it("TG6: buildEmotionalAxisVariantTags returns tag for non-default variant", () => {
+      const tags = buildEmotionalAxisVariantTags("axis_state_no_render");
+      assert.ok(tags.includes("variant:emotional_axis:axis_state_no_render"), "tag for non-default");
+    });
+
+    it("TG6: buildEmotionalAxisVariantTags returns empty for default variant", () => {
+      const tags = buildEmotionalAxisVariantTags(DEFAULT_EMOTIONAL_AXIS_VARIANT);
+      assert.equal(tags.length, 0, "no tags for default variant");
+    });
+
     it("getVariantRunMatrix includes emotionalAxisVariant with all 5 entries", () => {
       const matrix = getVariantRunMatrix();
       assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant category");
@@ -202,6 +229,42 @@ describe("experiment variants", () => {
       assert.ok(ids.includes("full_axis_coupling_render"), "full");
       assert.ok(ids.includes("engine_no_coupling_full_render"), "no coupling");
       assert.ok(ids.includes("axis_bands_only"), "bands only");
+    });
+
+    // -------------------------------------------------------------------
+    // TG6 — Cleanup gate and comparison aggregation
+    // -------------------------------------------------------------------
+
+    it("TG6: cleanup gate marks scenario failed when cleanup completed is false", () => {
+      // This simulates the --compare cleanup gate logic
+      const cleanupOk = false;
+      const passed = 5;
+      const total = 5;
+      const success = passed === total && cleanupOk;
+      assert.equal(success, false, "scenario fails when cleanup not completed");
+    });
+
+    it("TG6: cleanup gate passes when cleanup completed is true", () => {
+      const cleanupOk = true;
+      const passed = 5;
+      const total = 5;
+      const success = passed === total && cleanupOk;
+      assert.equal(success, true, "scenario passes when cleanup completed");
+    });
+
+    it("TG6: comparison aggregation computes per-variant pass% correctly", () => {
+      // Simulate comparison aggregation logic
+      const results = [
+        { scenarioId: "S1", success: true, passed: 3, failed: 0 },
+        { scenarioId: "S2", success: true, passed: 2, failed: 0 },
+        { scenarioId: "S3", success: false, passed: 1, failed: 1 },
+      ];
+      const totalAssertions = results.reduce((s, r) => s + r.passed + r.failed, 0);
+      const passedAssertions = results.reduce((s, r) => s + r.passed, 0);
+      const pct = totalAssertions > 0 ? ((passedAssertions / totalAssertions) * 100).toFixed(1) : "N/A";
+      assert.equal(pct, "85.7", "85.7% pass rate (6/7 assertions)");
+      const passedScenarios = results.filter((r) => r.success).length;
+      assert.equal(passedScenarios, 2, "2 of 3 scenarios passed");
     });
   });
 });

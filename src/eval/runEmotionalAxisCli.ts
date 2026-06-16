@@ -185,6 +185,33 @@ async function main(): Promise<void> {
     ensureResultsDir();
     const { EMOTIONAL_AXIS_VARIANTS } = await import("./experimentVariants");
 
+    // Dry-run for comparison: write stub comparison without model calls
+    if (dryRun) {
+      const stubLines: string[] = [
+        `# Emotional Axis Variant Comparison (DRY RUN)`,
+        ``,
+        `Date: ${new Date().toISOString().slice(0, 10)}`,
+        `Scenarios: ${scenarios.length} across ${EMOTIONAL_AXIS_VARIANTS.length} variants`,
+        ``,
+        `## Per-Variant Summary (stub — no model calls)`,
+        ``,
+        `| Variant | Scenarios | Passed | Failed |`,
+        `|---|---|---|---|`,
+      ];
+      for (const v of EMOTIONAL_AXIS_VARIANTS) {
+        stubLines.push(`| ${v} | ${scenarios.length} | — | — |`);
+      }
+      stubLines.push(``, `## A/B: Snapshot Presence (stub)`, ``, `| Variant | Update Snapshot | Render Snapshot |`, `|---|---|---|`);
+      for (const v of EMOTIONAL_AXIS_VARIANTS) {
+        stubLines.push(`| ${v} | — | — |`);
+      }
+      writeText(path.join(RESULTS_DIR, "comparison.md"), stubLines.join("\n"));
+      const stubJson = EMOTIONAL_AXIS_VARIANTS.map((v) => ({ variant: v, results: [] }));
+      writeJson(path.join(RESULTS_DIR, "results.json"), stubJson);
+      console.error(`\nDry-run comparison written to ${RESULTS_DIR}`);
+      return;
+    }
+
     interface VariantRun {
       variant: string;
       results: ScenarioResult[];
