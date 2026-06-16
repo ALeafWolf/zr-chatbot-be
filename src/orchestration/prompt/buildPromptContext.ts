@@ -618,10 +618,10 @@ function subsection(innerTitle: string, body?: string): string {
 }
 
 /**
- * TG5: Export for behavioral per-variant tests (review-010 F3).
+ * Build the emotional render block, enforcing flag gating and degradation rules.
  * Returns null when the block should not be injected.
  */
-export function buildEmotionalRenderBlockFromInput(input: {
+function buildEmotionalRenderBlockFromInput(input: {
   emotionalAxisBands?: Record<AxisName, Band>;
   emotionalAxisLastTrace?: StateTrace;
   emotionalAxisHistory?: HistoryEntry[];

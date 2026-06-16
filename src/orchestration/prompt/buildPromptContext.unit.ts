@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPromptContext, buildEmotionalRenderBlockFromInput, deriveCanonTruthMode } from "./buildPromptContext";
+import { buildPromptContext, deriveCanonTruthMode } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";

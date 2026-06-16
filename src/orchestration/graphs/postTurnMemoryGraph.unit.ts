@@ -1,6 +1,7 @@
 ﻿import { describe, it } from "node:test";
 import assert from "node:assert";
 import { createPostTurnMemoryGraph, applyEngineStateInputMapper, applyEngineStateOutputMapper, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
+import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import { createInitialPostTurnRuntimeState } from "../graphState/postTurnGraphState";
 import { INITIAL_POST_TURN_STEP_STATUS, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepState, type PostTurnStepStatus } from "../../jobs/postTurnJobPayload";
 import type { PostTurnWritePlan } from "../../jobs/postTurnPolicies";
@@ -755,6 +756,44 @@ describe("postTurnMemoryGraph", () => {
       assert.equal(captured.writeCalls.length, 0, "writeAxisStateFn NOT called on retry");
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted (retry no-op)");
+    });
+
+    // -------------------------------------------------------------------
+    // TG5 — Behavioral engine-side variant tests (review-012)
+    // -------------------------------------------------------------------
+
+    it("TG5 F3: noCoupling=true ⇒ computeEngineAdvanceFn receives empty couplings", async () => {
+      const savedConfig = setEmotionalAxisEvalConfig({ noCoupling: true });
+      try {
+        const { captured } = await runEngineTest({
+          turnEvent: { type: 'user_pursues_connection', intensity: 0.5, reason: 'test' },
+          emotionalEngineEnabled: true,
+        });
+        assert.ok(captured.computeArgs.length >= 1, "computeEngineAdvanceFn called");
+        const couplings = captured.computeArgs[0].couplings;
+        assert.ok(Array.isArray(couplings), "couplings is an array");
+        assert.equal(couplings.length, 0, "noCoupling=true ⇒ empty couplings array");
+      } finally {
+        setEmotionalAxisEvalConfig(savedConfig);
+      }
+    });
+
+    it("TG5 F3: engineEnabled=false via eval config ⇒ engine_state short-circuits", async () => {
+      const savedConfig = setEmotionalAxisEvalConfig({ engineEnabled: false });
+      try {
+        const { captured, calls } = await runEngineTest({
+          turnEvent: { type: 'user_pursues_connection', intensity: 0.5, reason: 'test' },
+          emotionalEngineEnabled: true,  // deps flag is true, eval config overrides
+        });
+
+        assert.equal(calls.completeJobFn.length, 1, "job completes");
+        assert.equal(captured.computeArgs.length, 0, "compute NOT called when eval engineEnabled=false");
+        assert.equal(captured.writeCalls.length, 0, "write NOT called when eval engineEnabled=false");
+        const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
+        assert.equal(engineSteps.length, 1, "engine_state step persisted (short-circuited)");
+      } finally {
+        setEmotionalAxisEvalConfig(savedConfig);
+      }
     });
   });
 
