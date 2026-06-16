@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { EMOTIONAL_AXIS_SCENARIOS } from "./emotionalAxisScenarios";
+import { selectRenderRuleMatches } from "../../orchestration/prompt/renderEmotionalState";
+import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
 
 const KNOWN_RENDER_RULE_IDS = ["R1", "R2", "R3", "R4", "R5_state", "R5_event", "R6", "R7", "R8"];
+
+interface SeedLike {
+  bands: Record<AxisName, Band>;
+  lastTrace: StateTrace;
+  history: HistoryEntry[];
+}
 
 describe("emotionalAxisScenarios — TG4", () => {
   it("exports scenarios", () => {
@@ -61,6 +69,51 @@ describe("emotionalAxisScenarios — TG4", () => {
       const lastTrace = seed.lastTrace as Record<string, unknown> | undefined;
       assert.ok(lastTrace, `${s.id}: seed has lastTrace`);
       assert.ok(Array.isArray(lastTrace?.couplingsFired), `${s.id}: lastTrace.couplingsFired array`);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // F2 — Selection-based render probe verification
+  // ---------------------------------------------------------------------------
+
+  it("F2: every RENDER-* scenario seed selects its expected render rule IDs within budget", () => {
+    const renderScenarios = EMOTIONAL_AXIS_SCENARIOS.filter((s) => s.id.startsWith("RENDER-"));
+    assert.ok(renderScenarios.length >= 9, "at least 9 render scenarios");
+
+    for (const s of renderScenarios) {
+      const seed = s.seedAxisState as SeedLike | undefined;
+      assert.ok(seed, `${s.id}: has seedAxisState`);
+      assert.ok(seed!.bands, `${s.id}: seed has bands`);
+      assert.ok(seed!.lastTrace, `${s.id}: seed has lastTrace`);
+      assert.ok(Array.isArray(seed!.history), `${s.id}: seed has history`);
+
+      // Run the real selector with tier C (as buildPromptContext does)
+      const matches = selectRenderRuleMatches(
+        seed!.bands,
+        seed!.lastTrace,
+        seed!.history,
+        "C",
+      );
+      const selectedIds = matches.map((m) => m.id);
+
+      // Collect expected render rule IDs from assertions
+      const expectedIds: string[] = [];
+      for (const a of s.assertions) {
+        if (a.type === "render_rule_triggered" && a.values) {
+          expectedIds.push(...a.values);
+        }
+      }
+
+      assert.ok(expectedIds.length > 0, `${s.id}: has render_rule_triggered assertions`);
+
+      // Assert each expected ID appears in the budget-limited selection
+      for (const expectedId of expectedIds) {
+        assert.ok(
+          selectedIds.includes(expectedId),
+          `${s.id}: expected rule "${expectedId}" NOT in budget-limited selection [${selectedIds.join(", ")}]. ` +
+          `Seed bands: ${JSON.stringify(seed!.bands)}, tick: ${seed!.lastTrace.tick}`,
+        );
+      }
     }
   });
 });

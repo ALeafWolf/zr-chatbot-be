@@ -450,6 +450,26 @@ const R8_SEED = {
 };
 
 /**
+ * R7: C high, R low, A low, but V mid — so R4 (needs V high) does NOT fire.
+ * R1 always fires when R7 fires (C high + R low), so selection with
+ * RENDER_BUDGET=2 is [R1, R7]. Valence 0.2 is between -0.35 and +0.35 = mid.
+ */
+const R7_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: 0.5, valence: 0.2, arousal: -0.4, restraint: 0.25 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: 0.5, valence: 0.2, arousal: -0.4, restraint: 0.25 },
+    axesAfter: { connection: 0.5, valence: 0.2, arousal: -0.4, restraint: 0.25 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+  },
+  bands: { connection: "high", valence: "mid", arousal: "low", restraint: "low" },
+  history: [],
+};
+
+/**
  * R2: lastTrace.couplingsFired includes zr_c3 (arm 1 trigger).
  */
 const R2_SEED = {
@@ -553,13 +573,13 @@ const RENDER_PROBES: Scenario[] = [
   },
   {
     id: "RENDER-R7",
-    description: "C high + R low + A low → R7 fires (state-only, seeded)",
+    description: "C high + R low + A low, V mid → R7 fires (not crowded out by R4)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
-    seedAxisState: LOW_RESTRAINT_SAFE_BOND_SEED,
+    seedAxisState: R7_SEED,
     messages: [{ role: "user", content: "今天天气不错。" }],
     assertions: [
-      { type: "render_rule_triggered", values: ["R7"], description: "R7 fires (C high, R low, A low)" },
+      { type: "render_rule_triggered", values: ["R7"], description: "R7 fires (C high, R low, A low, V mid)" },
     ],
   },
   {
@@ -582,7 +602,7 @@ const RENDER_PROBES: Scenario[] = [
 /**
  * Emotional-axis scenarios for the dedicated `emotional_axis` scenario set.
  *
- * 12 axis-movement probes + 6 coupling probes + 7 render-rule probes = 25 total.
+ * 12 axis-movement probes + 6 coupling probes + 9 render-rule probes = 27 total.
  * All use `seedAxisState` for deterministic state and `agent_turn` eval mode.
  */
 export const EMOTIONAL_AXIS_SCENARIOS: Scenario[] = [
