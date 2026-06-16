@@ -172,6 +172,7 @@ async function main(): Promise<void> {
       variant: { type: "string", short: "v" },
       "dry-run": { type: "boolean", short: "d" },
       compare: { type: "boolean", short: "c" },
+      trajectory: { type: "string", short: "t" },
     },
     strict: true,
   });
@@ -180,6 +181,7 @@ async function main(): Promise<void> {
   const variantArg = args.values.variant;
   const dryRun = args.values["dry-run"] ?? false;
   const compareMode = args.values.compare ?? false;
+  const trajectoryPrefix = args.values.trajectory;
   const smokeMode = process.env.EMOTIONAL_AXIS_SMOKE === "1";
 
   // Resolve variant (CLI arg > env var > default) — validated through readEmotionalAxisVariant
@@ -325,6 +327,78 @@ async function main(): Promise<void> {
     console.error(`\nComparison written to ${RESULTS_DIR}`);
     console.error(`  results.json — ${allRuns.length} variants`);
     console.error(`  comparison.md — A/B tables`);
+    return;
+  }
+
+  // TG7: Trajectory mode — run a sequence of turns (e.g. --trajectory TRAJ-ESC)
+  if (trajectoryPrefix) {
+    console.error(`Trajectory mode: running ${trajectoryPrefix}* turns...`);
+    const turnScenarios = scenarios.filter((s) => s.id.startsWith(trajectoryPrefix));
+    if (turnScenarios.length === 0) {
+      console.error(`No scenarios found with prefix "${trajectoryPrefix}".`);
+      process.exitCode = 1;
+      return;
+    }
+    // Sort by id to preserve turn order (T1, T2, ...)
+    turnScenarios.sort((a, b) => a.id.localeCompare(b.id));
+
+    if (dryRun) {
+      console.error(`\nTrajectory turns: ${turnScenarios.length}`);
+      for (const s of turnScenarios) {
+        const msg = s.messages?.[0]?.content ?? "";
+        console.error(`  ${s.id}: "${msg.substring(0, 40)}" — ${s.assertions.length} assertions`);
+      }
+      console.error(`\nDry-run complete.`);
+      return;
+    }
+
+    const results: ScenarioResult[] = [];
+    for (const scenario of turnScenarios) {
+      setEmotionalAxisEvalConfig(variantConfig);
+      process.env.EMOTIONAL_AXIS_VARIANT = variant;
+      const rawInput = findScenarioForAgentEval(scenario.id, "emotional_axis");
+      if (!rawInput) continue;
+      try {
+        const output = await runAgentEval(rawInput);
+        const assertionCtx: AssertionContext = { emotionalAxis: output.emotionalAxis, ...buildRerankAssertionContext(output.retrieval?.rerank as any) };
+        const assertionResults = runAllAssertions(scenario, output.reply, undefined, assertionCtx);
+        const mapped = assertionResults.map((a) => ({ description: a.assertionDescription, pass: a.pass, reason: a.reason }));
+        const passed = mapped.filter((r) => r.pass).length;
+        results.push({
+          scenarioId: scenario.id, description: scenario.description,
+          success: passed === mapped.length, assertions: mapped, passed, failed: mapped.length - passed,
+          emotionalAxis: output.emotionalAxis, latencyMs: output.latencyMs,
+        });
+      } finally {
+        resetEmotionalAxisEvalConfig();
+      }
+    }
+
+    // Write trajectory report
+    ensureResultsDir();
+    writeJson(path.join(RESULTS_DIR, "results.json"), results);
+    const trajLines: string[] = [
+      `# Trajectory: ${trajectoryPrefix}`,
+      ``,
+      `Date: ${new Date().toISOString().slice(0, 10)}`,
+      `Turns: ${results.length}`,
+      ``,
+      `## Turn-by-Turn Results`,
+      ``,
+      `| Turn | Assertions Passed | Assertions Failed | Emotional Axis | Render |`,
+      `|---|---|---|---|---|`,
+    ];
+    for (const r of results) {
+      const hasEmo = r.emotionalAxis ? "✓" : "✗";
+      const hasRender = r.emotionalAxis?.render ? "✓" : "✗";
+      trajLines.push(`| ${r.scenarioId} | ${r.passed} | ${r.failed} | ${hasEmo} | ${hasRender} |`);
+    }
+    writeText(path.join(RESULTS_DIR, "summary.md"), trajLines.join("\n"));
+    writeText(path.join(RESULTS_DIR, "failures.md"), buildFailuresMd(results));
+
+    const totalPassed = results.reduce((s, r) => s + r.passed, 0);
+    const totalFailed = results.reduce((s, r) => s + r.failed, 0);
+    console.error(`\nTrajectory complete: ${totalPassed} passed / ${totalFailed} failed`);
     return;
   }
 
