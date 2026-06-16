@@ -762,20 +762,63 @@ describe("postTurnMemoryGraph", () => {
     // TG5 — Behavioral engine-side variant tests (review-012)
     // -------------------------------------------------------------------
 
-    it("TG5 F3: noCoupling=true ⇒ computeEngineAdvanceFn receives empty couplings", async () => {
-      const savedConfig = setEmotionalAxisEvalConfig({ noCoupling: true });
-      try {
-        const { captured } = await runEngineTest({
-          turnEvent: { type: 'user_pursues_connection', intensity: 0.5, reason: 'test' },
-          emotionalEngineEnabled: true,
+    it("TG5 F3: noCoupling toggle controls whether couplings reach the engine", async () => {
+      // Minimal non-empty coupling fixture to give the test teeth.
+      const TEST_COUPLINGS = [{ id: "zr_c1", source: "arousal", target: "restraint", effect_type: "direct_delta", coefficient: 0.6, derived_from: "test" }];
+
+      async function runNoCouplingTest(noCoupling: boolean) {
+        const captured: { computeArgs: any[] } = { computeArgs: [] };
+        const { deps, calls } = createFakeDeps();
+        deps.emotionalEngineEnabled = true;
+        // Override loadCharacterDefaultsFn to include non-empty couplings
+        deps.loadCharacterDefaultsFn = (_id: string) => ({
+          character_id: "zuo_ran",
+          name: "Zuo Ran",
+          archetype: "elite_lawyer_controlled_romantic",
+          identity: "",
+          speech_style: { language: "zh-CN", formality: "formal", emotionality: "restrained", preferred_patterns: [], avoid: [] },
+          hard_rules: [],
+          interaction_defaults: { default_continuity_scope: "main", default_emotional_baseline: "controlled_tenderness", default_relationship_baseline: "established_partners", response_length: "full", allows_personal_topics: "true_within_scope" },
+          safe_deflection: "",
+          version: "2.1",
+          emotional_axes: {
+            connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+          },
+          emotional_coupling: TEST_COUPLINGS as any,
         });
-        assert.ok(captured.computeArgs.length >= 1, "computeEngineAdvanceFn called");
-        const couplings = captured.computeArgs[0].couplings;
-        assert.ok(Array.isArray(couplings), "couplings is an array");
-        assert.equal(couplings.length, 0, "noCoupling=true ⇒ empty couplings array");
-      } finally {
-        setEmotionalAxisEvalConfig(savedConfig);
+
+        deps.computeEngineAdvanceFn = (async (input: any) => {
+          captured.computeArgs.push(input);
+          return {
+            next: input.axesBefore,
+            trace: { tick: input.tick, axesBefore: input.axesBefore, axesAfter: input.axesBefore, couplingsFired: [], effectiveBaselines: {} },
+            bands: input.previousBands,
+            eventDeltas: {},
+          };
+        }) as any;
+
+        const savedConfig = setEmotionalAxisEvalConfig({ noCoupling });
+        try {
+          await createPostTurnMemoryGraph(deps).invoke(createInitialState());
+          return captured;
+        } finally {
+          setEmotionalAxisEvalConfig(savedConfig);
+        }
       }
+
+      // With noCoupling=false → couplings should pass through to the engine
+      const withCouplings = await runNoCouplingTest(false);
+      assert.ok(withCouplings.computeArgs.length >= 1, "computeEngineAdvanceFn called");
+      assert.ok(withCouplings.computeArgs[0].couplings.length > 0, "noCoupling=false ⇒ couplings pass through (non-empty)");
+      assert.equal(withCouplings.computeArgs[0].couplings[0].id, "zr_c1", "correct coupling passed through");
+
+      // With noCoupling=true → couplings should be empty
+      const withoutCouplings = await runNoCouplingTest(true);
+      assert.ok(withoutCouplings.computeArgs.length >= 1, "computeEngineAdvanceFn called");
+      assert.equal(withoutCouplings.computeArgs[0].couplings.length, 0, "noCoupling=true ⇒ couplings array is empty");
     });
 
     it("TG5 F3: engineEnabled=false via eval config ⇒ engine_state short-circuits", async () => {
