@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPromptContext, deriveCanonTruthMode } from "./buildPromptContext";
+import { buildPromptContext, buildEmotionalRenderBlockFromInput, deriveCanonTruthMode } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 import { env } from "../../config/env";
 import { createAgentEvalCapture, withAgentEvalCapture, buildAgentEvalOutput } from "../../eval/evalSnapshots";
+import { getEmotionalAxisEvalConfig, setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 
 const characterDefaults = {
   name: "Test Character", identity: "A test character.",
@@ -665,6 +666,70 @@ describe("buildPromptContext — internal-logic evidence block", () => {
       } finally {
         (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
         (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // TG5 — Behavioral per-variant checks (review-010 F3 / review-011 N1)
+    // -------------------------------------------------------------------
+
+    it("TG5 F3: bandsOnly=true produces band-line-only render block and empty renderRuleIds", async () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      const savedBandsOnly = getEmotionalAxisEvalConfig().bandsOnly;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+        setEmotionalAxisEvalConfig({ bandsOnly: true });
+
+        const capture = createAgentEvalCapture({ scenarioId: "tg5_bands_only" });
+        await withAgentEvalCapture(capture, async () => {
+          buildPromptContext({
+            ...baseWithInternalLogic(),
+            emotionalAxisBands: RENDER_BANDS,
+            emotionalAxisLastTrace: RENDER_TRACE,
+            emotionalAxisHistory: RENDER_HISTORY,
+          });
+        });
+        const output = buildAgentEvalOutput({ capture, reply: "test", success: true, cleanup: { attempted: true, completed: true } });
+        // Render block should be band-line-only (no rule texts)
+        assert.ok(output.emotionalAxis?.render, "render snapshot present");
+        assert.ok(output.emotionalAxis!.render!.renderBlock?.includes("当前状态"), "band line present");
+        assert.ok(!output.emotionalAxis!.render!.renderBlock?.includes("放松改变的是温度"), "no R1 rule text in bands-only");
+        // renderRuleIds must be empty — snapshot must match what was injected
+        assert.deepEqual(output.emotionalAxis!.render!.renderRuleIds, [], "empty renderRuleIds in bands-only mode");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+        setEmotionalAxisEvalConfig({ bandsOnly: savedBandsOnly });
+      }
+    });
+
+    it("TG5 F3: renderEnabled=false via eval config skips render block and snapshot", async () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      const savedRenderEnabled = getEmotionalAxisEvalConfig().renderEnabled;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+        setEmotionalAxisEvalConfig({ renderEnabled: false });
+
+        const capture = createAgentEvalCapture({ scenarioId: "tg5_render_off" });
+        await withAgentEvalCapture(capture, async () => {
+          buildPromptContext({
+            ...baseWithInternalLogic(),
+            emotionalAxisBands: RENDER_BANDS,
+            emotionalAxisLastTrace: RENDER_TRACE,
+            emotionalAxisHistory: RENDER_HISTORY,
+          });
+        });
+        const output = buildAgentEvalOutput({ capture, reply: "test", success: true, cleanup: { attempted: true, completed: true } });
+        // No emotionalAxis render snapshot should be recorded
+        assert.equal(output.emotionalAxis?.render, undefined, "no render snapshot when renderEnabled=false");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+        setEmotionalAxisEvalConfig({ renderEnabled: savedRenderEnabled });
       }
     });
   });

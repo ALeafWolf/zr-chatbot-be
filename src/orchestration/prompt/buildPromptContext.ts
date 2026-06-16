@@ -297,18 +297,22 @@ export function buildPromptContext(input: {
   // render block was built — a disabled/inert/gated render path must not fabricate
   // a synthetic snapshot or record rule IDs that did not affect the prompt.
   if (emotionalAxisBands && emotionalAxisLastTrace && renderEmotionalBlock !== null) {
-    // TG2: Query matched render rule IDs for the eval snapshot.
-    const ruleMatches = selectRenderRuleMatches(
+    const evalConfig = getEmotionalAxisEvalConfig();
+    // TG5 N1: When bands-only is active, the render block has no rule texts,
+    // so the snapshot must not report rule IDs that were never rendered.
+    const isBandsOnly = evalConfig.bandsOnly;
+    const renderRuleIds = isBandsOnly ? [] : selectRenderRuleMatches(
       emotionalAxisBands,
       emotionalAxisLastTrace,
       emotionalAxisHistory ?? [],
       "C",
-    );
+    ).map((m) => m.id);
+
     recordEmotionalAxisRenderSnapshot({
       source: source ?? "persisted_axis_state",
       sourceTick: sourceTick ?? 0,
       bands: emotionalAxisBands,
-      renderRuleIds: ruleMatches.map((m) => m.id),
+      renderRuleIds,
       renderBlock: renderEmotionalBlock,
       tier: "C",
       resolvedBaselines: resolvedBaselines ?? { connection: 0, valence: 0, arousal: 0, restraint: 0 },
@@ -614,10 +618,10 @@ function subsection(innerTitle: string, body?: string): string {
 }
 
 /**
- * Build the emotional render block, enforcing flag gating and degradation rules.
+ * TG5: Export for behavioral per-variant tests (review-010 F3).
  * Returns null when the block should not be injected.
  */
-function buildEmotionalRenderBlockFromInput(input: {
+export function buildEmotionalRenderBlockFromInput(input: {
   emotionalAxisBands?: Record<AxisName, Band>;
   emotionalAxisLastTrace?: StateTrace;
   emotionalAxisHistory?: HistoryEntry[];

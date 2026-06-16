@@ -256,12 +256,15 @@ async function main(): Promise<void> {
     // (seedEvalSession already creates a unique session per call).
     // seedAxisState from the scenario is already in rawInput.
 
-    // Run the agent eval
-    const output = await runAgentEval(rawInput);
-
-    // Reset config after each scenario to prevent cross-scenario leakage
-    // (variant is constant per run, so this is defensive).
-    resetEmotionalAxisEvalConfig();
+    let output: Awaited<ReturnType<typeof runAgentEval>>;
+    try {
+      // Run the agent eval
+      output = await runAgentEval(rawInput);
+    } finally {
+      // Reset config after each scenario to prevent cross-scenario leakage,
+      // even if the scenario throws.
+      resetEmotionalAxisEvalConfig();
+    }
     const emotionalAxis = output.emotionalAxis;
 
     // Build assertion context
