@@ -11,6 +11,8 @@ import {
 import {
   buildExperimentVariantMetadata,
   buildExperimentVariantTags,
+  buildEmotionalAxisVariantMetadata,
+  buildEmotionalAxisVariantTags,
   readAndValidateExperimentVariants,
 } from "../experimentVariants";
 import { cleanupEvalSession } from "./cleanupEvalSession";
@@ -178,19 +180,23 @@ export async function runAgentEval(
   });
 
   try {
-    await withTraceContext(
-      {
-        eval: true,
-        characterId: input.sessionSeed.characterId ?? env.DEFAULT_CHARACTER_ID,
-        baseMetadata: {
-          scenarioId: input.scenarioId,
-          evalSessionId: seeded.sessionId,
-          evalMode: "agent_turn",
-          configOverrides: input.configOverrides ?? {},
-          ...buildExperimentVariantMetadata(),
+      await withTraceContext(
+        {
+          eval: true,
+          characterId: input.sessionSeed.characterId ?? env.DEFAULT_CHARACTER_ID,
+          baseMetadata: {
+            scenarioId: input.scenarioId,
+            evalSessionId: seeded.sessionId,
+            evalMode: "agent_turn",
+            configOverrides: input.configOverrides ?? {},
+            ...buildExperimentVariantMetadata(),
+            ...buildEmotionalAxisVariantMetadata(),
+          },
+          tags: [
+            ...buildExperimentVariantTags(),
+            ...buildEmotionalAxisVariantTags(),
+          ],
         },
-        tags: buildExperimentVariantTags(),
-      },
       async () =>
         await withAgentEvalCapture(capture, async () => {
           const turn = await runCharacterTurn({

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// runEmotionalAxisCli.ts — Emotional-axis eval runner (TG4 + TG5 variants)
+// runEmotionalAxisCli.ts — Emotional-axis eval runner (TG4 + TG5 + TG6)
 //
 // Runs emotional-axis scenarios through runAgentEval, evaluates assertions
 // against the emotional-axis eval snapshot, and writes result files.
@@ -8,9 +8,11 @@
 //   npx tsx src/eval/runEmotionalAxisCli.ts                            # run all, default variant
 //   npx tsx src/eval/runEmotionalAxisCli.ts --scenario AX01            # single
 //   npx tsx src/eval/runEmotionalAxisCli.ts --variant engine_no_coupling_full_render  # all, no-coupling
+//   npx tsx src/eval/runEmotionalAxisCli.ts --compare                 # run all variants, write comparison
 //   npx tsx src/eval/runEmotionalAxisCli.ts --dry-run                  # preview only
 //
 // Output: eval-results/emotional-axis/latest/{results.json,summary.md,failures.md}
+// When --compare is used, also writes comparison.md with A/B tables.
 // ---------------------------------------------------------------------------
 
 import * as fs from "fs";
@@ -141,6 +143,7 @@ async function main(): Promise<void> {
       scenario: { type: "string", short: "s" },
       variant: { type: "string", short: "v" },
       "dry-run": { type: "boolean", short: "d" },
+      compare: { type: "boolean", short: "c" },
     },
     strict: true,
   });
@@ -148,6 +151,7 @@ async function main(): Promise<void> {
   const scenarioFilter = args.values.scenario;
   const variantArg = args.values.variant;
   const dryRun = args.values["dry-run"] ?? false;
+  const compareMode = args.values.compare ?? false;
   const smokeMode = process.env.EMOTIONAL_AXIS_SMOKE === "1";
 
   // Resolve variant (CLI arg > env var > default) — validated through readEmotionalAxisVariant
@@ -167,6 +171,104 @@ async function main(): Promise<void> {
         : "No emotional-axis scenarios found.",
     );
     process.exitCode = 1;
+    return;
+  }
+
+  // Dynamic imports (shared between comparison and single-variant paths)
+  const { runAgentEval } = await import("./langsmith/runAgentEval");
+  const { findScenarioForAgentEval } = await import("./agentEvalCliHelpers");
+  const { buildRerankAssertionContext } = await import("./evalAssertions");
+
+  // TG6: Comparison mode — run all 5 variants and write a comparison summary
+  if (compareMode) {
+    console.error(`Comparison mode: running all 5 variants...`);
+    ensureResultsDir();
+    const { EMOTIONAL_AXIS_VARIANTS } = await import("./experimentVariants");
+
+    interface VariantRun {
+      variant: string;
+      results: ScenarioResult[];
+    }
+    const allRuns: VariantRun[] = [];
+
+    for (const v of EMOTIONAL_AXIS_VARIANTS) {
+      const vConfig = resolveEmotionalAxisVariantConfig(v);
+      console.error(`\n▶ Variant: ${v}`);
+      console.error(`   engineEnabled=${vConfig.engineEnabled} renderEnabled=${vConfig.renderEnabled} noCoupling=${vConfig.noCoupling} bandsOnly=${vConfig.bandsOnly}`);
+
+      const runResults: ScenarioResult[] = [];
+      for (const scenario of scenarios) {
+        setEmotionalAxisEvalConfig(vConfig);
+        const rawInput = findScenarioForAgentEval(scenario.id, "emotional_axis");
+        if (!rawInput) {
+          runResults.push({ scenarioId: scenario.id, description: scenario.description, success: false, error: "not found", assertions: [], passed: 0, failed: 0 });
+          continue;
+        }
+        try {
+          const output = await runAgentEval(rawInput);
+          const assertionCtx: AssertionContext = { emotionalAxis: output.emotionalAxis };
+          const assertionResults = runAllAssertions(scenario, output.reply, undefined, assertionCtx);
+          const mapped = assertionResults.map((a) => ({ description: a.assertionDescription, pass: a.pass, reason: a.reason }));
+          const passed = mapped.filter((r) => r.pass).length;
+          // TG6: Assert cleanup completion between variants
+          const cleanupOk = output.cleanup?.completed === true;
+          runResults.push({
+            scenarioId: scenario.id,
+            description: scenario.description,
+            success: passed === mapped.length && cleanupOk,
+            error: !cleanupOk ? "cleanup not completed" : undefined,
+            assertions: mapped,
+            passed,
+            failed: mapped.length - passed,
+            emotionalAxis: output.emotionalAxis,
+            latencyMs: output.latencyMs,
+          });
+        } finally {
+          resetEmotionalAxisEvalConfig();
+        }
+      }
+      allRuns.push({ variant: v, results: runResults });
+    }
+
+    // Write variant results
+    writeJson(path.join(RESULTS_DIR, "results.json"), allRuns);
+    writeText(path.join(RESULTS_DIR, "summary.md"), buildSummaryMd(allRuns.flatMap((r) => r.results)));
+    writeText(path.join(RESULTS_DIR, "failures.md"), buildFailuresMd(allRuns.flatMap((r) => r.results)));
+
+    // Build A/B comparison table
+    const compLines: string[] = [
+      `# Emotional Axis Variant Comparison`,
+      ``,
+      `Date: ${new Date().toISOString().slice(0, 10)}`,
+      `Scenarios: ${scenarios.length} across ${allRuns.length} variants`,
+      ``,
+      `## Per-Variant Summary`,
+      ``,
+      `| Variant | Scenarios | Passed | Failed | Total Assertions | Passed % |`,
+      `|---|---|---|---|---|---|`,
+    ];
+    for (const run of allRuns) {
+      const total = run.results.length;
+      const passed = run.results.filter((r) => r.success).length;
+      const failed = total - passed;
+      const allAssertions = run.results.reduce((s, r) => s + r.assertions.length, 0);
+      const passedAssertions = run.results.reduce((s, r) => s + r.passed, 0);
+      const pct = allAssertions > 0 ? ((passedAssertions / allAssertions) * 100).toFixed(1) : "N/A";
+      compLines.push(`| ${run.variant} | ${total} | ${passed} | ${failed} | ${allAssertions} | ${pct}% |`);
+    }
+
+    compLines.push(``, `## A/B: Snapshot Presence`, ``, `| Variant | Update Snapshot | Render Snapshot | Render Rule IDs |`, `|---|---|---|---|`);
+    for (const run of allRuns) {
+      const present = run.results.filter((r) => r.emotionalAxis).length;
+      const renderPresent = run.results.filter((r) => r.emotionalAxis?.render).length;
+      const ruleIds = run.results.filter((r) => (r.emotionalAxis?.render?.renderRuleIds?.length ?? 0) > 0).length;
+      compLines.push(`| ${run.variant} | ${present}/${run.results.length} | ${renderPresent}/${run.results.length} | ${ruleIds}/${run.results.length} |`);
+    }
+
+    writeText(path.join(RESULTS_DIR, "comparison.md"), compLines.join("\n"));
+    console.error(`\nComparison written to ${RESULTS_DIR}`);
+    console.error(`  results.json — ${allRuns.length} variants`);
+    console.error(`  comparison.md — A/B tables`);
     return;
   }
 
@@ -220,11 +322,6 @@ async function main(): Promise<void> {
 
   // Ensure output directory
   ensureResultsDir();
-
-  // Dynamically import runAgentEval (avoids loading live eval code in unit tests)
-  const { runAgentEval } = await import("./langsmith/runAgentEval");
-  const { findScenarioForAgentEval } = await import("./agentEvalCliHelpers");
-  const { buildRerankAssertionContext } = await import("./evalAssertions");
 
   const results: ScenarioResult[] = [];
 
