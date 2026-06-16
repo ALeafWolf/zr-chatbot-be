@@ -20,7 +20,8 @@ import { loadScenariosBySet } from "./loadEvalScenarios";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import { checkAssertion, runAllAssertions, type AssertionContext } from "./evalAssertions";
 import type { EmotionalAxisEvalSnapshot } from "./evalSnapshots";
-import { resolveEmotionalAxisVariantConfig, type EmotionalAxisVariant } from "./experimentVariants";
+import { resolveEmotionalAxisVariantConfig, readEmotionalAxisVariant, type EmotionalAxisVariant } from "./experimentVariants";
+import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "./emotionalAxisEvalConfig";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -149,11 +150,8 @@ async function main(): Promise<void> {
   const dryRun = args.values["dry-run"] ?? false;
   const smokeMode = process.env.EMOTIONAL_AXIS_SMOKE === "1";
 
-  // Resolve variant (CLI arg > env var > default)
-  const variant: EmotionalAxisVariant =
-    (variantArg as EmotionalAxisVariant) ??
-    (process.env.EMOTIONAL_AXIS_VARIANT as EmotionalAxisVariant) ??
-    "full_axis_coupling_render";
+  // Resolve variant (CLI arg > env var > default) — validated through readEmotionalAxisVariant
+  const variant: EmotionalAxisVariant = readEmotionalAxisVariant(variantArg);
   const variantConfig = resolveEmotionalAxisVariantConfig(variant);
 
   // Load emotional-axis scenarios
@@ -248,16 +246,11 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // TG5: Inject variant config as configOverrides so the eval pipeline
-    // (engine, render, couplings) can observe the variant.
-    const variantOverrides: Record<string, unknown> = {
-      emotionalAxisVariant: variant,
-      emotionalAxisEngineEnabled: variantConfig.engineEnabled,
-      emotionalAxisRenderEnabled: variantConfig.renderEnabled,
-      emotionalAxisNoCoupling: variantConfig.noCoupling,
-      emotionalAxisBandsOnly: variantConfig.bandsOnly,
-    };
-    rawInput.configOverrides = { ...(rawInput.configOverrides as Record<string, unknown> ?? {}), ...variantOverrides };
+    // TG5: Set the shared eval config for this variant run.
+    // This is consumed by postTurnMemoryGraph (engine gate, no-coupling) and
+    // buildPromptContext (render gate, bands-only). Design D7: injectable toggle,
+    // NOT env mutation.
+    setEmotionalAxisEvalConfig(variantConfig);
 
     // TG5: Enforce fresh session with explicit seedAxisState per run
     // (seedEvalSession already creates a unique session per call).
@@ -265,6 +258,10 @@ async function main(): Promise<void> {
 
     // Run the agent eval
     const output = await runAgentEval(rawInput);
+
+    // Reset config after each scenario to prevent cross-scenario leakage
+    // (variant is constant per run, so this is defensive).
+    resetEmotionalAxisEvalConfig();
     const emotionalAxis = output.emotionalAxis;
 
     // Build assertion context

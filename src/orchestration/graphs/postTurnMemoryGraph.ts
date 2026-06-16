@@ -16,6 +16,7 @@ import { buildPostTurnWritePlan, type PostTurnWritePlan, type PostTurnWritePlanS
 import { isStepComplete, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepStatus } from '../../jobs/postTurnJobPayload';
 import { recordMemoryWriteSnapshot, recordEmotionalAxisUpdateSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
 import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
+import { getEmotionalAxisEvalConfig } from '../../eval/emotionalAxisEvalConfig';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
 import { readAxisState, writeAxisState } from '../../state/emotionalEngine/axisStatePersistence';
@@ -282,7 +283,9 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
     if (isStepComplete(state.stepStatus, 'engine_state')) return {};
 
     // Gate: flag off → skip (mark complete, no-op)
-    if (!deps.emotionalEngineEnabled) {
+    const evalConfig = getEmotionalAxisEvalConfig();
+    const engineEnabled = deps.emotionalEngineEnabled && evalConfig.engineEnabled;
+    if (!engineEnabled) {
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     }
@@ -359,11 +362,14 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       const previousBands: Record<AxisName, Band> = persisted?.bands ?? {
         connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid',
       };
+      // TG5: noCoupling variant suppresses all coupling effects
+      const effectiveCouplings = evalConfig.noCoupling ? [] : (defaults.emotional_coupling ?? []);
+
       const { next, trace, bands, eventDeltas } = await deps.computeEngineAdvanceFn({
         axesBefore: currentState,
         event: event ?? null,
         axesConfig,
-        couplings: defaults.emotional_coupling ?? [],
+        couplings: effectiveCouplings,
         previousBands,
         tick,
         scope,

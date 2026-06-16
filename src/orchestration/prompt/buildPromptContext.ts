@@ -30,9 +30,10 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
-import { buildEmotionalRenderBlock, selectRenderRuleMatches } from "./renderEmotionalState";
+import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
 import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
+import { getEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -624,6 +625,10 @@ function buildEmotionalRenderBlockFromInput(input: {
   // Render flag gating: EMOTIONAL_RENDER_ENABLED off ⇒ no block
   if (!env.EMOTIONAL_RENDER_ENABLED) return null;
 
+  // TG5: Eval-only variant render toggle (checked alongside env)
+  const evalConfig = getEmotionalAxisEvalConfig();
+  if (!evalConfig.renderEnabled) return null;
+
   // Render-flag-requires-engine-flag enforcement
   if (!env.EMOTIONAL_ENGINE_ENABLED) {
     console.warn(
@@ -638,6 +643,12 @@ function buildEmotionalRenderBlockFromInput(input: {
       "[buildPromptContext] EMOTIONAL_RENDER_ENABLED is true but axis state is absent — skipping render block",
     );
     return null;
+  }
+
+  // TG5: bands-only variant — emit band line only, no rule texts
+  if (evalConfig.bandsOnly) {
+    const bandLine = formatBandLine(input.emotionalAxisBands);
+    return `[当前状态下的行为基调]\n${bandLine}`;
   }
 
   return buildEmotionalRenderBlock(

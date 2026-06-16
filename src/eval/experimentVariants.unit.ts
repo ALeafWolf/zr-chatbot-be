@@ -7,6 +7,7 @@ import {
   DEFAULT_RERANK_VARIANT, DEFAULT_CONTEXT_PLANNER_VARIANT, DEFAULT_RETRIEVAL_VARIANT, DEFAULT_VALIDATOR_VARIANT, DEFAULT_GRAPH_VERSION,
   RERANK_VARIANTS, CONTEXT_PLANNER_VARIANTS, RETRIEVAL_VARIANTS, VALIDATOR_VARIANTS, GRAPH_VERSIONS,
   validateExperimentVariants, readAndValidateExperimentVariants, getVariantRunMatrix,
+  readEmotionalAxisVariant, resolveEmotionalAxisVariantConfig,
 } from "./experimentVariants";
 
 describe("experiment variants", () => {
@@ -141,6 +142,7 @@ describe("experiment variants", () => {
       const matrix = getVariantRunMatrix();
       assert.ok(matrix.graphVersion, "graph"); assert.ok(matrix.rerankVariant, "rerank");
       assert.ok(matrix.retrievalVariant, "retrieval"); assert.ok(matrix.contextPlannerVariant, "planner"); assert.ok(matrix.validatorVariant, "validator");
+      assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant in matrix");
       for (const [, options] of Object.entries(matrix)) {
         for (const opt of options) {
           assert.ok(typeof opt.envVar === "string", "envVar"); assert.ok(typeof opt.value === "string", "value");
@@ -148,6 +150,58 @@ describe("experiment variants", () => {
           assert.ok(Array.isArray(opt.requiredEnvVars), "required"); assert.ok(typeof opt.implemented === "boolean", "impl");
         }
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG5 — Emotional-axis variant config
+  // ---------------------------------------------------------------------------
+
+  describe("TG5 — emotional-axis variant config", () => {
+    it("readEmotionalAxisVariant returns default when no env/override", () => {
+      const r = withClearedEnv();
+      const variant = readEmotionalAxisVariant();
+      assert.equal(variant, "full_axis_coupling_render", "default variant");
+      r();
+    });
+
+    it("readEmotionalAxisVariant accepts valid variant names", () => {
+      for (const v of ["baseline_no_emotional_axis", "axis_state_no_render", "full_axis_coupling_render", "engine_no_coupling_full_render", "axis_bands_only"] as const) {
+        assert.equal(readEmotionalAxisVariant(v), v, `valid variant: ${v}`);
+      }
+    });
+
+    it("readEmotionalAxisVariant throws on invalid variant", () => {
+      assert.throws(() => readEmotionalAxisVariant("bogus_variant"), /Unsupported.*EMOTIONAL_AXIS_VARIANT/, "throws on bogus");
+    });
+
+    it("resolveEmotionalAxisVariantConfig maps all five variants correctly", () => {
+      const configs = {
+        baseline_no_emotional_axis: { engineEnabled: false, renderEnabled: false, noCoupling: false, bandsOnly: false },
+        axis_state_no_render: { engineEnabled: true, renderEnabled: false, noCoupling: false, bandsOnly: false },
+        full_axis_coupling_render: { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: false },
+        engine_no_coupling_full_render: { engineEnabled: true, renderEnabled: true, noCoupling: true, bandsOnly: false },
+        axis_bands_only: { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: true },
+      };
+      for (const [variant, expected] of Object.entries(configs)) {
+        const actual = resolveEmotionalAxisVariantConfig(variant as any);
+        assert.equal(actual.engineEnabled, expected.engineEnabled, `${variant} engineEnabled`);
+        assert.equal(actual.renderEnabled, expected.renderEnabled, `${variant} renderEnabled`);
+        assert.equal(actual.noCoupling, expected.noCoupling, `${variant} noCoupling`);
+        assert.equal(actual.bandsOnly, expected.bandsOnly, `${variant} bandsOnly`);
+      }
+    });
+
+    it("getVariantRunMatrix includes emotionalAxisVariant with all 5 entries", () => {
+      const matrix = getVariantRunMatrix();
+      assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant category");
+      assert.equal(matrix.emotionalAxisVariant.length, 5, "5 emotional-axis variants");
+      const ids = matrix.emotionalAxisVariant.map((o) => o.value);
+      assert.ok(ids.includes("baseline_no_emotional_axis"), "baseline");
+      assert.ok(ids.includes("axis_state_no_render"), "no render");
+      assert.ok(ids.includes("full_axis_coupling_render"), "full");
+      assert.ok(ids.includes("engine_no_coupling_full_render"), "no coupling");
+      assert.ok(ids.includes("axis_bands_only"), "bands only");
     });
   });
 });
