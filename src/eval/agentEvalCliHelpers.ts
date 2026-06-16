@@ -48,6 +48,7 @@ export function findScenarioForAgentEval(
   if (match.recentMessages) input.recentMessages = match.recentMessages;
   if (match.sessionSummary) input.sessionSummary = match.sessionSummary;
   if (match.sessionState) input.sessionState = match.sessionState;
+  if (match.seedAxisState) input.seedAxisState = match.seedAxisState;
   if (match.durableMemories) input.durableMemories = match.durableMemories;
   if (match.sessionChunks) input.sessionChunks = match.sessionChunks;
   if (match.structMemEntries) input.structMemEntries = match.structMemEntries;

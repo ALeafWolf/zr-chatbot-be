@@ -33,6 +33,8 @@ export interface Scenario {
   recentMessages?: unknown[];
   sessionSummary?: string;
   sessionState?: unknown;
+  /** TG1: Deterministic axis state seed written to session_state.local_relationship_delta.axis_state before runCharacterTurn. */
+  seedAxisState?: unknown;
   durableMemories?: unknown[];
   sessionChunks?: unknown[];
   structMemEntries?: unknown[];

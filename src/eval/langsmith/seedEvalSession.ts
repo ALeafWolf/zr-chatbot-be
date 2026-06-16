@@ -14,6 +14,7 @@ import {
 import { env } from "../../config/env";
 import { buildMemoryNamespace } from "../../memory/shared/memoryNamespace";
 import { embedText } from "../../llm/embeddings/embedText";
+import { mergeAxisStateIntoDelta } from "../../state/emotionalEngine/axisStatePersistence";
 import type {
   AgentEvalInput,
   EvalSeedMessage,
@@ -142,6 +143,9 @@ export async function seedEvalSession(
   await db.insert(sessionState).values({
     sessionId,
     derivedState: input.sessionState ?? defaultDerivedState(),
+    localRelationshipDelta: input.seedAxisState
+      ? mergeAxisStateIntoDelta({}, input.seedAxisState)
+      : null,
     lastTurnIndex: maxSeededTurnIndex,
     updatedAt: now,
   });

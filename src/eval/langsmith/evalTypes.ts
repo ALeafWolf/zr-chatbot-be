@@ -1,6 +1,8 @@
 import type { MemoryCandidate } from "../../memory/interactive/writeInteractiveMemory";
 import type { SessionChunkTypePersisted } from "../../memory/session/writeSessionMemoryChunk";
 
+import type { PersistedAxisState } from "../../state/emotionalEngine/types";
+
 export interface AgentEvalInput {
   scenarioId: string;
   userMessage: string;
@@ -9,6 +11,8 @@ export interface AgentEvalInput {
   recentMessages?: EvalSeedMessage[];
   sessionSummary?: string;
   sessionState?: Record<string, unknown>;
+  /** TG1: Deterministic axis state seed written to session_state.local_relationship_delta.axis_state before runCharacterTurn. */
+  seedAxisState?: PersistedAxisState;
   durableMemories?: EvalDurableMemorySeed[];
   sessionChunks?: EvalSessionChunkSeed[];
   structMemEntries?: EvalStructMemEntrySeed[];

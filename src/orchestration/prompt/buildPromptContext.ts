@@ -31,7 +31,8 @@ import {
 import * as promptFormatters from "./promptFormatters";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock } from "./renderEmotionalState";
-import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
+import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
+import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -163,6 +164,12 @@ export function buildPromptContext(input: {
   emotionalAxisLastTrace?: StateTrace;
   /** TG4: Axis value history from persisted axis state. */
   emotionalAxisHistory?: HistoryEntry[];
+  /** TG1: Source of the render input data. */
+  source?: "persisted_axis_state" | "scope_baseline_synthetic";
+  /** TG1: Tick number from the source trace. */
+  sourceTick?: number;
+  /** TG1: Scope-resolved baselines. */
+  resolvedBaselines?: CharacterStateAxes;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -189,6 +196,9 @@ export function buildPromptContext(input: {
     emotionalAxisBands,
     emotionalAxisLastTrace,
     emotionalAxisHistory,
+    source,
+    sourceTick,
+    resolvedBaselines,
     userMessage,
     queryRewrite,
   } = input;
@@ -280,6 +290,21 @@ export function buildPromptContext(input: {
     emotionalAxisLastTrace,
     emotionalAxisHistory,
   });
+
+  // TG1: Capture render snapshot for eval (no-op when not in an eval context).
+  // Only record when the resolver actually produced emotional axis inputs — an
+  // absent/fallback/gated render path must not fabricate a synthetic snapshot.
+  if (emotionalAxisBands && emotionalAxisLastTrace) {
+    recordEmotionalAxisRenderSnapshot({
+      source: source ?? "persisted_axis_state",
+      sourceTick: sourceTick ?? 0,
+      bands: emotionalAxisBands,
+      renderRuleIds: [],
+      renderBlock: renderEmotionalBlock,
+      tier: "C",
+      resolvedBaselines: resolvedBaselines ?? { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+    });
+  }
 
   const relationshipExprBody = buildRelationshipExpressionContent(
     personaOverlay.relationship_status,

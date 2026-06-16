@@ -14,7 +14,7 @@ import { maybeCompactSessionSummary, type SessionSummaryCompactResult, type Mayb
 import { extractPostTurnSignals, type ExtractSignalsInput, type PostTurnSignals } from '../../llm/extraction/extractPostTurnSignals';
 import { buildPostTurnWritePlan, type PostTurnWritePlan, type PostTurnWritePlanSession, type PostTurnWritePlanEnv, type PostTurnWritePlanSignals } from '../../jobs/postTurnPolicies';
 import { isStepComplete, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepStatus } from '../../jobs/postTurnJobPayload';
-import { recordMemoryWriteSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
+import { recordMemoryWriteSnapshot, recordEmotionalAxisUpdateSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
 import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
@@ -359,7 +359,7 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       const previousBands: Record<AxisName, Band> = persisted?.bands ?? {
         connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid',
       };
-      const { next, trace, bands } = await deps.computeEngineAdvanceFn({
+      const { next, trace, bands, eventDeltas } = await deps.computeEngineAdvanceFn({
         axesBefore: currentState,
         event: event ?? null,
         axesConfig,
@@ -367,6 +367,27 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
         previousBands,
         tick,
         scope,
+      });
+
+      // TG1: Capture emotional-axis update snapshot (post-turn)
+      recordEmotionalAxisUpdateSnapshot({
+        event: event ?? undefined,
+        modelReportedConfidence: signals.modelReportedConfidence.turnEvent,
+        axesBefore: trace.axesBefore,
+        eventDeltas,
+        couplingsFired: trace.couplingsFired,
+        effectiveBaselines: trace.effectiveBaselines,
+        conditionTransitions: trace.conditionTransitions,
+        axesAfter: trace.axesAfter,
+        bandsAfter: bands,
+        tick,
+        scope,
+        resolvedBaselines: {
+          connection: axesConfig.connection.baseline,
+          valence: axesConfig.valence.baseline,
+          arousal: axesConfig.arousal.baseline,
+          restraint: axesConfig.restraint.baseline,
+        },
       });
 
       // Append to history

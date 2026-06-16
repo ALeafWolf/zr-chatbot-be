@@ -113,6 +113,7 @@ export function scenarioToEvalInputs(scenario: Scenario): Record<string, unknown
       sessionSummary: scenario.sessionSummary,
     }),
     ...(scenario.sessionState !== undefined && { sessionState: scenario.sessionState }),
+    ...(scenario.seedAxisState !== undefined && { seedAxisState: scenario.seedAxisState }),
     ...(scenario.durableMemories !== undefined && {
       durableMemories: scenario.durableMemories,
     }),

@@ -6,7 +6,7 @@
 // Returns null only when genuinely unrenderable (no emotional_axes config).
 // ---------------------------------------------------------------------------
 
-import type { PersistedAxisState, AxesConfig, ScopeBaselineOverrides, Band, StateTrace, HistoryEntry, AxisName } from './types';
+import type { PersistedAxisState, AxesConfig, ScopeBaselineOverrides, Band, StateTrace, HistoryEntry, AxisName, CharacterStateAxes } from './types';
 import { readAxisState } from './axisStatePersistence';
 import { resolveAxesConfigForScope } from './resolveAxesConfigForScope';
 import { computeBands } from './bands';
@@ -15,6 +15,14 @@ export interface EmotionalRenderInputs {
   emotionalAxisBands: Record<AxisName, Band>;
   emotionalAxisLastTrace: StateTrace;
   emotionalAxisHistory: HistoryEntry[];
+  /** TG1: Source of the render input data — persisted axis state or synthetic from scope baselines. */
+  source: "persisted_axis_state" | "scope_baseline_synthetic";
+  /** TG1: Tick number from the source trace (0 for synthetic fallback). */
+  sourceTick: number;
+  /** TG1: Continuity scope used when resolving baselines. */
+  scope: string;
+  /** TG1: Scope-resolved baselines (NOT the raw YAML base). */
+  resolvedBaselines: CharacterStateAxes;
 }
 
 /**
@@ -46,10 +54,20 @@ export function resolveEmotionalRenderInputs(
   // Try persisted axis state
   const persisted = readAxisState(sessionStateRow as any);
   if (persisted) {
+    const resolvedBaselines = resolveAxesConfigForScope(axesConfig, byScope, scope);
     return {
       emotionalAxisBands: persisted.bands,
       emotionalAxisLastTrace: persisted.lastTrace,
       emotionalAxisHistory: persisted.history,
+      source: "persisted_axis_state",
+      sourceTick: persisted.lastTrace.tick,
+      scope,
+      resolvedBaselines: {
+        connection: resolvedBaselines.connection.baseline,
+        valence: resolvedBaselines.valence.baseline,
+        arousal: resolvedBaselines.arousal.baseline,
+        restraint: resolvedBaselines.restraint.baseline,
+      } as CharacterStateAxes,
     };
   }
 
@@ -58,20 +76,20 @@ export function resolveEmotionalRenderInputs(
 
   // Render-from-baselines: resolve scope config, compute bands from baselines
   const scopeConfig = resolveAxesConfigForScope(axesConfig, byScope, scope);
-  const baselines = {
+  const resolvedBaselines = {
     connection: scopeConfig.connection.baseline,
     valence: scopeConfig.valence.baseline,
     arousal: scopeConfig.arousal.baseline,
     restraint: scopeConfig.restraint.baseline,
-  } as Record<AxisName, number>;
+  } as CharacterStateAxes;
 
   const allMid: Record<AxisName, Band> = { connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid' };
-  const bands = computeBands(baselines, allMid);
+  const bands = computeBands(resolvedBaselines, allMid);
 
   const syntheticTrace: StateTrace = {
     tick: 0,
-    axesBefore: { ...baselines } as any,
-    axesAfter: { ...baselines } as any,
+    axesBefore: { ...resolvedBaselines },
+    axesAfter: { ...resolvedBaselines },
     couplingsFired: [],
     effectiveBaselines: {},
     conditionTransitions: undefined,
@@ -81,5 +99,9 @@ export function resolveEmotionalRenderInputs(
     emotionalAxisBands: bands,
     emotionalAxisLastTrace: syntheticTrace,
     emotionalAxisHistory: [],
+    source: "scope_baseline_synthetic",
+    sourceTick: 0,
+    scope,
+    resolvedBaselines,
   };
 }

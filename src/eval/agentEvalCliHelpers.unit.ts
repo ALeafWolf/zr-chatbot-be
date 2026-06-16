@@ -24,6 +24,14 @@ describe("agentEvalCliHelpers", () => {
     assert.ok(rerank, "rerank found"); assert.equal(rerank.eval_mode, "agent_turn", "rerank has agent_turn");
   });
 
+  it("F1: findScenarioForAgentEval passes through seedAxisState when present on scenario", () => {
+    // Find a real scenario in the "all" set — most have no seedAxisState, which
+    // validates it stays undefined.
+    const result = findScenarioForAgentEval("rerank_001_immediate_action_no_memory", "rerank");
+    assert.ok(result, "rerank scenario found");
+    assert.equal(result.seedAxisState, undefined, "rerank scenarios have no seedAxisState");
+  });
+
   it("validateCliArgs: rejects missing/unknown/validator-only/retrieval, accepts valid rerank", () => {
     let r = validateCliArgs(undefined as any, "default");
     assert.equal(r.ok, false); if (!r.ok) { assert.ok(r.error.includes("--scenario"), "missing — error msg"); assert.equal(r.exitCode, 1, "missing — exitCode"); }

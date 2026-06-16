@@ -14,6 +14,7 @@ import {
   readAndValidateExperimentVariants,
 } from "../experimentVariants";
 import { cleanupEvalSession } from "./cleanupEvalSession";
+import type { PersistedAxisState } from "../../state/emotionalEngine/types";
 import type {
   AgentEvalInput,
   EvalSeedMessage,
@@ -145,6 +146,9 @@ export function normalizeAgentEvalInput(raw: Record<string, unknown>): AgentEval
       : undefined,
     structMemConsolidations: Array.isArray(raw.structMemConsolidations)
       ? (raw.structMemConsolidations as AgentEvalInput["structMemConsolidations"])
+      : undefined,
+    seedAxisState: raw.seedAxisState
+      ? (typeof raw.seedAxisState === "object" ? (raw.seedAxisState as PersistedAxisState) : undefined)
       : undefined,
     canonReferenceIds: Array.isArray(raw.canonReferenceIds)
       ? (raw.canonReferenceIds as string[])

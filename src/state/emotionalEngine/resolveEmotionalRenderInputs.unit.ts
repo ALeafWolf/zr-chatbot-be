@@ -94,4 +94,74 @@ describe("resolveEmotionalRenderInputs — TG4b", () => {
     assert.equal(result.emotionalAxisBands.connection, "mid", "-0.10 > -0.35 → mid for centered axis");
     assert.equal(result.emotionalAxisBands.restraint, "high", "0.85 > 0.65 → high");
   });
+
+  // ---------------------------------------------------------------------------
+  // TG1 — Source tagging
+  // ---------------------------------------------------------------------------
+
+  it("TG1: source is scope_baseline_synthetic with tick 0 when no persisted state", () => {
+    const result = resolveEmotionalRenderInputs(null, BASE, BY_SCOPE, "main_relationship");
+    assert.ok(result !== null);
+    assert.equal(result.source, "scope_baseline_synthetic");
+    assert.equal(result.sourceTick, 0);
+    assert.equal(result.scope, "main_relationship");
+    assert.ok(result.resolvedBaselines.connection !== undefined);
+    assert.ok(result.resolvedBaselines.restraint !== undefined);
+  });
+
+  it("TG1: source is persisted_axis_state with correct tick when persisted state exists", () => {
+    const persistedRow = {
+      localRelationshipDelta: {
+        axis_state: {
+          version: 1,
+          tick: 7,
+          axes: { connection: 0.3, valence: -0.1, arousal: 0.05, restraint: 0.6 },
+          lastTrace: {
+            tick: 7,
+            axesBefore: { connection: 0.2, valence: 0, arousal: 0, restraint: 0.7 },
+            axesAfter: { connection: 0.3, valence: -0.1, arousal: 0.05, restraint: 0.6 },
+            couplingsFired: ["zr_c1"],
+            effectiveBaselines: {},
+          },
+          bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+          history: [],
+        },
+      },
+    };
+    const result = resolveEmotionalRenderInputs(persistedRow as any, BASE, BY_SCOPE, "main_married");
+    assert.ok(result !== null);
+    assert.equal(result.source, "persisted_axis_state");
+    assert.equal(result.sourceTick, 7);
+    assert.equal(result.scope, "main_married");
+    // resolvedBaselines should be from the scope config (main_married: restraint 0.55)
+    assert.equal(result.resolvedBaselines.restraint, 0.55);
+    assert.equal(result.resolvedBaselines.connection, 0.35);
+  });
+
+  it("TG1: corrupt persisted axis_state returns null (no source tagging)", () => {
+    const corruptRow = {
+      localRelationshipDelta: {
+        axis_state: { version: 999, tick: 0 },
+      },
+    };
+    const result = resolveEmotionalRenderInputs(corruptRow as any, BASE, BY_SCOPE, "main_relationship");
+    assert.equal(result, null);
+  });
+
+  it("TG1: missing axes config returns null (no source tagging)", () => {
+    const result = resolveEmotionalRenderInputs(null, undefined, undefined, "main");
+    assert.equal(result, null);
+  });
+
+  it("TG1: resolvedBaselines for main_pre_relationship include scope overrides", () => {
+    const byScope: ScopeBaselineOverrides = {
+      main_pre_relationship: { connection: -0.10, valence: -0.05, restraint: 0.85 },
+    };
+    const result = resolveEmotionalRenderInputs(null, BASE, byScope, "main_pre_relationship");
+    assert.ok(result !== null);
+    assert.equal(result.resolvedBaselines.connection, -0.10);
+    assert.equal(result.resolvedBaselines.valence, -0.05);
+    assert.equal(result.resolvedBaselines.restraint, 0.85);
+    assert.equal(result.resolvedBaselines.arousal, 0, "arousal not in scope overrides, falls back to base 0");
+  });
 });
