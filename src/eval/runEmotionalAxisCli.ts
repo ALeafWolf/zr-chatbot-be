@@ -62,6 +62,27 @@ export function checkVariantCleanupGate(
   return { success: true };
 }
 
+// TG7 F2: Exported for unit testing — build carry-over seed from emotionalAxis snapshot
+export function buildCarryOverSeed(
+  emotionalAxis: EmotionalAxisEvalSnapshot,
+): Record<string, unknown> {
+  const nextTick = (emotionalAxis.tick ?? 0) + 1;
+  return {
+    version: 1 as const,
+    tick: nextTick,
+    axes: emotionalAxis.axesAfter,
+    lastTrace: {
+      tick: emotionalAxis.tick ?? 0,
+      axesBefore: emotionalAxis.axesBefore,
+      axesAfter: emotionalAxis.axesAfter,
+      couplingsFired: emotionalAxis.couplingsFired ?? [],
+      effectiveBaselines: emotionalAxis.effectiveBaselines ?? {},
+    },
+    bands: emotionalAxis.bandsAfter,
+    history: [],
+  };
+}
+
 // TG6 N2: Exported for unit testing — comparison aggregation
 export function computeVariantAggregation(
   results: Array<{ passed: number; failed: number; success: boolean }>,
@@ -376,22 +397,7 @@ async function main(): Promise<void> {
 
         // Thread state: use turn N's post-update emotionalAxis as the seed for turn N+1
         if (output.emotionalAxis) {
-          const emo = output.emotionalAxis;
-          const nextTick = (emo.tick ?? 0) + 1;
-          carriedSeed = {
-            version: 1 as const,
-            tick: nextTick,
-            axes: emo.axesAfter,
-            lastTrace: {
-              tick: emo.tick ?? 0,
-              axesBefore: emo.axesBefore,
-              axesAfter: emo.axesAfter,
-              couplingsFired: emo.couplingsFired ?? [],
-              effectiveBaselines: emo.effectiveBaselines ?? {},
-            },
-            bands: emo.bandsAfter,
-            history: [],
-          };
+          carriedSeed = buildCarryOverSeed(output.emotionalAxis);
         }
 
         results.push({

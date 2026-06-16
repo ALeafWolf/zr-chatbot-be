@@ -864,7 +864,7 @@ const TRAJECTORY_SAFE_CLOSENESS: Scenario[] = [
   },
   {
     id: "TRAJ-SC-T5",
-    description: "T5: intimate moment, peak connection (carry-over from 4 positive turns)",
+    description: "T5: intimate moment, peak connection — accumulated from 4 positive turns (fails without carry-over)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
     messages: [{ role: "user", content: "我喜欢你，想一直这样在一起。" }],
@@ -873,6 +873,10 @@ const TRAJECTORY_SAFE_CLOSENESS: Scenario[] = [
       { type: "axis_delta_sign", field: "connection", value: "+", description: "T5: connection+" },
       { type: "axis_delta_sign", field: "valence", value: "+", description: "T5: valence+" },
       { type: "axis_delta_sign", field: "arousal", value: "+", description: "T5: arousal+" },
+      // Accumulation assertion: connection after 5 positive turns >> a single turn from neutral
+      // 4 accumulated warmth/pursue/vulnerability events (~0.06-0.08 each × ~0.7 intensity) →
+      // connection ~0.17-0.30. A single turn from neutral can only reach ~0.03-0.07.
+      { type: "axis_after_between", field: "connection", value: "0.15,0.6", description: "T5: connection accumulated > 0.15 (fails without carry-over)" },
     ],
   },
 ];

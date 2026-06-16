@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { EMOTIONAL_AXIS_SCENARIOS } from "./emotionalAxisScenarios";
 import { selectRenderRuleMatches } from "../../orchestration/prompt/renderEmotionalState";
+import { buildCarryOverSeed } from "../../eval/runEmotionalAxisCli";
 import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
 
 const KNOWN_RENDER_RULE_IDS = ["R1", "R2", "R3", "R4", "R5_state", "R5_event", "R6", "R7", "R8"];
@@ -93,8 +94,7 @@ describe("emotionalAxisScenarios — TG4", () => {
     assert.ok(axes.valence < 0.35, `valence ${axes.valence} < 0.35 (mid, not high)`);
   });
 
-  it("TG7: trajectory runner carry-over builds seed from emotionalAxis snapshot", () => {
-    // Simulate the carry-over logic used by the --trajectory runner
+  it("TG7: buildCarryOverSeed produces correct next-turn seed from emotionalAxis snapshot", () => {
     const mockEmotionalAxis = {
       axesBefore: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.55 },
       axesAfter: { connection: 0.25, valence: 0.1, arousal: -0.04, restraint: 0.5 },
@@ -104,27 +104,12 @@ describe("emotionalAxisScenarios — TG4", () => {
       tick: 2,
       scope: "main_married",
       resolvedBaselines: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
-    };
-    const nextTick = (mockEmotionalAxis.tick ?? 0) + 1;
-    const carriedSeed = {
-      version: 1 as const,
-      tick: nextTick,
-      axes: mockEmotionalAxis.axesAfter,
-      lastTrace: {
-        tick: mockEmotionalAxis.tick ?? 0,
-        axesBefore: mockEmotionalAxis.axesBefore,
-        axesAfter: mockEmotionalAxis.axesAfter,
-        couplingsFired: mockEmotionalAxis.couplingsFired ?? [],
-        effectiveBaselines: mockEmotionalAxis.effectiveBaselines ?? {},
-      },
-      bands: mockEmotionalAxis.bandsAfter,
-      history: [],
-    };
-    // Verify the carried seed has the correct next-turn state
-    assert.equal(carriedSeed.tick, 3, "tick incremented to 3");
-    assert.deepEqual(carriedSeed.axes, mockEmotionalAxis.axesAfter, "axes from turn N's axesAfter");
-    assert.deepEqual(carriedSeed.bands, mockEmotionalAxis.bandsAfter, "bands from turn N's bandsAfter");
-    assert.deepEqual(carriedSeed.lastTrace.couplingsFired, ["zr_c1"], "couplings carried over");
+    } as any;
+    const seed = buildCarryOverSeed(mockEmotionalAxis);
+    assert.equal(seed.tick, 3, "tick incremented");
+    assert.deepEqual(seed.axes, mockEmotionalAxis.axesAfter, "axes from turn N's axesAfter");
+    assert.deepEqual(seed.bands, mockEmotionalAxis.bandsAfter, "bands from turn N's bandsAfter");
+    assert.deepEqual((seed.lastTrace as any).couplingsFired, ["zr_c1"], "couplings carried over");
   });
 
   it("F2: every RENDER-* scenario seed selects its expected render rule IDs within budget", () => {
