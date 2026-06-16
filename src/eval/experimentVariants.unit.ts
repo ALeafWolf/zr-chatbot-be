@@ -219,6 +219,26 @@ describe("experiment variants", () => {
       assert.equal(tags.length, 0, "no tags for default variant");
     });
 
+    it("N1: no-arg builders read EMOTIONAL_AXIS_VARIANT (real runAgentEval path)", () => {
+      const saved = process.env.EMOTIONAL_AXIS_VARIANT;
+      try {
+        process.env.EMOTIONAL_AXIS_VARIANT = "axis_state_no_render";
+        assert.deepEqual(
+          buildEmotionalAxisVariantTags(),
+          ["variant:emotional_axis:axis_state_no_render"],
+          "no-arg tags read env",
+        );
+        assert.equal(
+          buildEmotionalAxisVariantMetadata()?.emotionalAxisVariant,
+          "axis_state_no_render",
+          "no-arg metadata reads env",
+        );
+      } finally {
+        if (saved === undefined) delete process.env.EMOTIONAL_AXIS_VARIANT;
+        else process.env.EMOTIONAL_AXIS_VARIANT = saved;
+      }
+    });
+
     it("getVariantRunMatrix includes emotionalAxisVariant with all 5 entries", () => {
       const matrix = getVariantRunMatrix();
       assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant category");
