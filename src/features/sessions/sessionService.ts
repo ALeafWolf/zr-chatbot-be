@@ -265,15 +265,18 @@ export async function getAxisState(sessionId: string): Promise<AxisStateDTO | nu
   // 2. Load character defaults for emotional_axes config + coupling glossary
   let axesConfig: AxesConfig;
   let baselineOverrides;
+  let isConfigured = false;
   let couplingGlossary: Record<string, { label: string; description: string }> = {};
   try {
     const defaults = loadCharacterDefaults(characterId);
+    isConfigured = !!defaults.emotional_axes;
     axesConfig = defaults.emotional_axes ?? FALLBACK_AXES;
     baselineOverrides = defaults.emotional_axes_baseline_by_scope;
     couplingGlossary = buildCouplingGlossary(defaults.emotional_coupling);
   } catch {
     axesConfig = FALLBACK_AXES;
     baselineOverrides = undefined;
+    isConfigured = false;
     // couplingGlossary stays {}
   }
 
@@ -286,7 +289,7 @@ export async function getAxisState(sessionId: string): Promise<AxisStateDTO | nu
     restraint: scopeConfig.restraint.baseline,
   };
 
-  const enabled = env.EMOTIONAL_ENGINE_ENABLED;
+  const enabled = env.EMOTIONAL_ENGINE_ENABLED && isConfigured;
 
   // Shared glossary — config, not state; included in all returns
   const sharedGlossary = couplingGlossary;

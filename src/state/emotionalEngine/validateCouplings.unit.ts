@@ -144,6 +144,23 @@ describe("validateCouplings — TG5", () => {
       assert.ok(parsed[1].id !== "dup_id", "second gets different id");
     });
 
+    it("P3: explicit id collides with auto-generated candidate — loop until unique", () => {
+      resetAutoIdCounter();
+      // Both couplings have source=connection, target=valence.
+      // Same explicit id "connection_valence_0" which is also the first
+      // auto-generated candidate — the loop must skip past it.
+      const arr = [
+        validRaw({ source: "connection", target: "valence", id: "connection_valence_0" }),
+        validRaw({ source: "connection", target: "valence", id: "connection_valence_0" }),
+      ];
+      const parsed = validateCouplings(arr);
+      assert.equal(parsed.length, 2, "both couplings parsed");
+      assert.equal(parsed[0].id, "connection_valence_0", "first preserves explicit id");
+      assert.ok(parsed[1].id !== "connection_valence_0", "second is not the same as first");
+      assert.ok(parsed[1].id.startsWith("connection_valence_"), "second has auto-generated format");
+      assert.ok(parsed[1].id !== "connection_valence_0", "second is not the colliding candidate");
+    });
+
     it("malformed coupling → skip+error log", () => {
       const result = validateCoupling("not an object", 0);
       assert.equal(result, null);

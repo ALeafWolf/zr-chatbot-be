@@ -295,25 +295,35 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
     try {
       // Load axis config from character defaults
       const defaults = deps.loadCharacterDefaultsFn(session.characterId);
-      // Resolve scope-aware config (D8): overrides baseline per continuityScope
       const scope = (session as ChatSession).continuityScope;
-      const axesConfig = resolveAxesConfigForScope(
-        defaults.emotional_axes!,
-        defaults.emotional_axes_baseline_by_scope,
-        scope,
-      );
 
-      // F2: character without emotional_axes → no-op (mark complete)
+      // P2: character without emotional_axes → no-op (mark complete) — guard
+      // above resolveAxesConfigForScope so the assert (!) isn't needed.
       if (!defaults.emotional_axes) {
         const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
         return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
       }
+
+      // Resolve scope-aware config (D8): overrides baseline per continuityScope
+      const axesConfig = resolveAxesConfigForScope(
+        defaults.emotional_axes,
+        defaults.emotional_axes_baseline_by_scope,
+        scope,
+      );
 
       // Read persisted axis state (null = first tick → init from baselines)
       const row = await deps.getSessionStateFn(session.sessionId);
       const persisted = deps.readAxisStateFn(row);
 
       const tick = state.payload.assistantTurnIndex;
+
+      // P1: tick idempotency guard — if persisted tick >= current tick, the
+      // axis state has already been advanced for this turn. Skip recompute/
+      // write to prevent cumulative double-apply on retry.
+      if (persisted && persisted.tick >= tick) {
+        const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
+        return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
+      }
 
       let currentState: CharacterStateAxes;
       let currentBands: Record<AxisName, Band>;

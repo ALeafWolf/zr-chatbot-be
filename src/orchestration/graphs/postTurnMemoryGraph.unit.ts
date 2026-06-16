@@ -710,6 +710,52 @@ describe("postTurnMemoryGraph", () => {
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted (no-op completed)");
     });
+
+    // Test 7: P1 — persisted.tick >= tick ⇒ skip compute/write (retry idempotency)
+    it("P1: persisted.tick >= assistantTurnIndex ⇒ skip compute/write, mark complete", async () => {
+      const captured: {
+        computeArgs: any[];
+        writeCalls: Array<{ sessionId: string; state: any }>;
+      } = { computeArgs: [], writeCalls: [] };
+
+      const { deps, calls } = createFakeDeps();
+      deps.emotionalEngineEnabled = true;
+
+      // Return persisted state whose tick >= payload.assistantTurnIndex (2 == 2 → guard fires)
+      deps.readAxisStateFn = (_row: any) => ({
+        version: 1,
+        tick: 2,
+        axes: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+        lastTrace: {
+          tick: 2,
+          axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+          axesAfter: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+          couplingsFired: [],
+          effectiveBaselines: {},
+        },
+        bands: { connection: 'mid' as const, valence: 'mid' as const, arousal: 'mid' as const, restraint: 'mid' as const },
+        history: [],
+      });
+
+      deps.getSessionStateFn = async (_sessionId: string) => ({} as any);
+
+      deps.computeEngineAdvanceFn = (async (_input: any) => {
+        captured.computeArgs.push(_input);
+        throw new Error("should NOT be called on retry");
+      }) as any;
+
+      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
+        captured.writeCalls.push({ sessionId, state });
+      };
+
+      await createPostTurnMemoryGraph(deps).invoke(createInitialState());
+
+      assert.equal(calls.completeJobFn.length, 1, "job completes");
+      assert.equal(captured.computeArgs.length, 0, "computeEngineAdvanceFn NOT called on retry");
+      assert.equal(captured.writeCalls.length, 0, "writeAxisStateFn NOT called on retry");
+      const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
+      assert.equal(engineSteps.length, 1, "engine_state step persisted (retry no-op)");
+    });
   });
 
   // ===================================================================

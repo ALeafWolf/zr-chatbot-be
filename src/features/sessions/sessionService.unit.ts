@@ -16,6 +16,8 @@ let mockStateRow: Record<string, unknown> | null = null;
 
 let engineEnabled = true;
 
+let hasEmotionalAxes = true;
+
 let loadCharacterDefaultsCallCount = 0;
 
 /** Mutable coupling array for the mock — mutated per test to exercise empty/absent cases (F1). */
@@ -49,19 +51,22 @@ mock.module("../../character/characterDefaults", {
   namedExports: {
     loadCharacterDefaults: (_characterId: string) => {
       loadCharacterDefaultsCallCount++;
-      return {
-        emotional_axes: {
-          connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
-          valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
-          arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
-          restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
-        },
+      const defaults: Record<string, unknown> = {
         emotional_axes_baseline_by_scope: {
           main_relationship: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
           main_married: { connection: 0.35, valence: 0.15, arousal: 0, restraint: 0.55 },
         },
         emotional_coupling: mockCouplings,
       };
+      if (hasEmotionalAxes) {
+        defaults.emotional_axes = {
+          connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+          restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+        };
+      }
+      return defaults;
     },
   },
 });
@@ -83,6 +88,7 @@ mock.module("../../config/env", {
 
 function resetMocks() {
   loadCharacterDefaultsCallCount = 0;
+  hasEmotionalAxes = true;
   mockCouplings = [
     { id: "zr_c1", label: "紧张自守", description: "情绪一旦被搅动…", source: "arousal", target: "restraint", effect_type: "direct_delta", coefficient: 0.6, derived_from: "defense_mechanism" },
     { id: "zr_c2", label: "亲近松动", description: "当亲近升高且情绪为正时…", source: "connection", target: "restraint", effect_type: "baseline_shift", coefficient: -0.4, derived_from: "transition_rule" },
@@ -415,5 +421,48 @@ describe("getAxisState — TG1", () => {
 
     assert.ok(result !== null);
     assert.deepEqual(result.coupling_glossary, {}, "coupling without label is excluded");
+  });
+
+  // ===================================================================
+  // TG2: enabled:false for unconfigured characters
+  // ===================================================================
+
+  it("returns enabled:false with baseline axes when character has no emotional_axes and engine is on", async () => {
+    setDefaultSession();
+    hasEmotionalAxes = false;
+    mockStateRow = makeEmptyStateRow();
+    engineEnabled = true;
+
+    const { getAxisState } = await import("./sessionService");
+    const result = await getAxisState("test-session");
+
+    assert.ok(result !== null, "result should not be null");
+    assert.equal(result.enabled, false, "enabled is false for unconfigured character");
+    assert.equal(result.source, "baseline", "source remains baseline (no union widen)");
+    assert.equal(result.tick, 0, "tick is 0");
+    // Still resolves scope baselines for display
+    assert.equal(result.axes.connection, 0.15, "baseline connection resolved");
+    assert.equal(result.axes.restraint, 0.7, "baseline restraint resolved");
+    assert.deepEqual(result.history, [], "history empty");
+    assert.equal(result.last_trace, null, "no last_trace");
+    // Glossary still populated from emotional_coupling (separate field)
+    assert.ok(result.coupling_glossary.zr_c1, "glossary still present");
+  });
+
+  it("returns enabled:true for configured character with engine on (baseline path)", async () => {
+    setDefaultSession();
+    hasEmotionalAxes = true;
+    mockStateRow = makeEmptyStateRow();
+    engineEnabled = true;
+
+    const { getAxisState } = await import("./sessionService");
+    const result = await getAxisState("test-session");
+
+    assert.ok(result !== null, "result should not be null");
+    assert.equal(result.enabled, true, "enabled is true for configured character");
+    assert.equal(result.source, "baseline", "source is baseline");
+    assert.equal(result.tick, 0, "tick is 0");
+    assert.equal(result.axes.connection, 0.15, "baseline connection resolved");
+    assert.equal(result.axes.restraint, 0.7, "baseline restraint resolved");
   });
 });

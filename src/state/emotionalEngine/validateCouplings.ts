@@ -187,9 +187,12 @@ export function validateCouplings(
 
     // Check for duplicate id after auto-assign
     if (seenIds.has(coupling.id)) {
-      const newId = `${coupling.source}_${coupling.target}_${_autoIdCounter++}`;
-      console.warn(`[validateCouplings] coupling[${i}]: duplicate id "${coupling.id}" — auto-assigned "${newId}"`);
-      coupling.id = newId;
+      let candidate = `${coupling.source}_${coupling.target}_${_autoIdCounter++}`;
+      while (seenIds.has(candidate)) {
+        candidate = `${coupling.source}_${coupling.target}_${_autoIdCounter++}`;
+      }
+      console.warn(`[validateCouplings] coupling[${i}]: duplicate id "${coupling.id}" — auto-assigned "${candidate}"`);
+      coupling.id = candidate;
     }
     seenIds.add(coupling.id);
     result.push(coupling);
