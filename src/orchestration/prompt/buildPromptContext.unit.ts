@@ -6,6 +6,7 @@ import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
 import { env } from "../../config/env";
+import { createAgentEvalCapture, withAgentEvalCapture, buildAgentEvalOutput } from "../../eval/evalSnapshots";
 
 const characterDefaults = {
   name: "Test Character", identity: "A test character.",
@@ -630,6 +631,37 @@ describe("buildPromptContext — internal-logic evidence block", () => {
 
         // Must contain the band line
         assert.ok(prompt.includes("当前状态"), "band line present");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // TG2 review-003 F1 — no render snapshot when render is gated/disabled
+    // -------------------------------------------------------------------
+
+    it("F1: render on + engine off + axis inputs present ⇒ no emotionalAxis.render snapshot", async () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = false;
+
+        const capture = createAgentEvalCapture({ scenarioId: "tg2_f1_render_gate" });
+        await withAgentEvalCapture(capture, async () => {
+          // Build prompt with axis inputs present but engine off (render inert)
+          buildPromptContext({
+            ...baseWithInternalLogic(),
+            emotionalAxisBands: RENDER_BANDS,
+            emotionalAxisLastTrace: RENDER_TRACE,
+            emotionalAxisHistory: RENDER_HISTORY,
+          });
+        });
+        const output = buildAgentEvalOutput({ capture, reply: "test", success: true, cleanup: { attempted: true, completed: true } });
+        // When render is inert but engine off, the snapshot guard must skip
+        // capture entirely — no emotionalAxis at all, not even a source-only stub.
+        assert.equal(output.emotionalAxis, undefined, "no emotionalAxis snapshot when render is inert");
       } finally {
         (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
         (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;

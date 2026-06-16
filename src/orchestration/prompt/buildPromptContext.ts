@@ -292,9 +292,10 @@ export function buildPromptContext(input: {
   });
 
   // TG1: Capture render snapshot for eval (no-op when not in an eval context).
-  // Only record when the resolver actually produced emotional axis inputs — an
-  // absent/fallback/gated render path must not fabricate a synthetic snapshot.
-  if (emotionalAxisBands && emotionalAxisLastTrace) {
+  // Only record when the resolver actually produced emotional axis inputs AND the
+  // render block was built — a disabled/inert/gated render path must not fabricate
+  // a synthetic snapshot or record rule IDs that did not affect the prompt.
+  if (emotionalAxisBands && emotionalAxisLastTrace && renderEmotionalBlock !== null) {
     // TG2: Query matched render rule IDs for the eval snapshot.
     const ruleMatches = selectRenderRuleMatches(
       emotionalAxisBands,
