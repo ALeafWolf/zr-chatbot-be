@@ -14,6 +14,7 @@
     "eval:dataset:push": "tsx src/eval/pushLangSmithDataset.ts",
     "eval:langsmith": "tsx src/eval/runLangSmithExperiment.ts",
     "eval:agent": "tsx src/eval/runAgentEvalCli.ts",
+    "eval:emotional-axis": "tsx src/eval/runEmotionalAxisCli.ts",
     "eval:retrieval": "tsx src/eval/runRetrievalEvalCli.ts",
     "eval:probe-gate": "tsx src/eval/runInternalLogicProbeGate.ts",
     "test:structural-parse": "tsx src/retrieval/structuralParse.fixtures.ts",
