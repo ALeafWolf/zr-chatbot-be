@@ -143,6 +143,7 @@ async function main(): Promise<void> {
 
   const scenarioFilter = args.values.scenario;
   const dryRun = args.values["dry-run"] ?? false;
+  const smokeMode = process.env.EMOTIONAL_AXIS_SMOKE === "1";
 
   // Load emotional-axis scenarios
   const { scenarios: allScenarios } = loadScenariosBySet("emotional_axis");
@@ -160,7 +161,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error(`Emotional-axis eval: ${scenarios.length} scenarios (dry-run: ${dryRun})`);
+  console.error(`Emotional-axis eval: ${scenarios.length} scenarios (dry-run: ${dryRun}, smoke: ${smokeMode})`);
 
   if (dryRun) {
     console.error("\nScenarios to run:");
@@ -173,6 +174,33 @@ async function main(): Promise<void> {
       }
     }
     console.error("\nDry-run complete. Pass --dry-run to preview, omit to run.");
+    return;
+  }
+
+  // Smoke mode: write deterministic stub reports without model calls
+  if (smokeMode) {
+    ensureResultsDir();
+    const stubResults: ScenarioResult[] = scenarios.map((s) => ({
+      scenarioId: s.id,
+      description: s.description,
+      success: true,
+      assertions: s.assertions.map((a) => ({
+        description: a.description,
+        pass: true,
+        reason: "SMOKE — no model call",
+      })),
+      passed: s.assertions.length,
+      failed: 0,
+      latencyMs: 0,
+    }));
+    writeJson(path.join(RESULTS_DIR, "results.json"), stubResults);
+    writeText(path.join(RESULTS_DIR, "summary.md"), buildSummaryMd(stubResults));
+    writeText(path.join(RESULTS_DIR, "failures.md"), buildFailuresMd(stubResults));
+    console.error(`\nSmoke report written to ${RESULTS_DIR}`);
+    console.error(`  results.json — ${stubResults.length} scenarios`);
+    console.error(`  summary.md — all SMOKE (no model calls)`);
+    console.error(`  failures.md — empty (all passed in smoke mode)`);
+    console.error(`\nSet EMOTIONAL_AXIS_SMOKE=1 for no-model report generation.`);
     return;
   }
 

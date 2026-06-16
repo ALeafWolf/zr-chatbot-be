@@ -351,13 +351,132 @@ const COUPLING_PROBES: Scenario[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Render-rule probes (roadmap §4.4)
+// Render-rule probe seeds — the render snapshot is captured pre-generation,
+// reading the seeded lastTrace/history, NOT the current turn's event.
+// Each seed below carries the trigger data that the render layer reads.
+// ---------------------------------------------------------------------------
+
+/** R4: C high, V high, A low → pure-state rule check. */
+const R4_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: 0.5, valence: 0.5, arousal: -0.4, restraint: 0.6 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: 0.5, valence: 0.5, arousal: -0.4, restraint: 0.6 },
+    axesAfter: { connection: 0.5, valence: 0.5, arousal: -0.4, restraint: 0.6 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+  },
+  bands: { connection: "high", valence: "high", arousal: "low", restraint: "mid" },
+  history: [],
+};
+
+/** R5_state: history shows connection falling over 2 ticks. */
+const R5_STATE_SEED = {
+  version: 1 as const,
+  tick: 3,
+  axes: { connection: -0.1, valence: 0, arousal: 0, restraint: 0.7 },
+  lastTrace: {
+    tick: 3,
+    axesBefore: { connection: -0.1, valence: 0, arousal: 0, restraint: 0.7 },
+    axesAfter: { connection: -0.1, valence: 0, arousal: 0, restraint: 0.7 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+  },
+  bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+  history: [
+    { tick: 1, axes: { connection: 0.5, valence: 0, arousal: 0, restraint: 0.7 } },
+    { tick: 2, axes: { connection: 0.2, valence: 0, arousal: 0, restraint: 0.7 } },
+  ],
+};
+
+/**
+ * R5_event: lastTrace carries a user_withdraws event.
+ * The render layer reads lastTrace.event, not the current turn's extracted event.
+ */
+const R5_EVENT_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+    axesAfter: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+    event: { type: "user_withdraws" as const, intensity: 0.7, reason: "Seeded withdrawal" },
+  },
+  bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+  history: [],
+};
+
+/**
+ * R6: lastTrace carries a user_discloses_vulnerability event.
+ */
+const R6_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+    axesAfter: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+    event: { type: "user_discloses_vulnerability" as const, intensity: 0.7, reason: "Seeded disclosure" },
+  },
+  bands: { connection: "high", valence: "high", arousal: "mid", restraint: "mid" },
+  history: [],
+};
+
+/**
+ * R8: lastTrace carries an intimate_moment event.
+ */
+const R8_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+    axesAfter: { connection: 0.55, valence: 0.45, arousal: -0.05, restraint: 0.45 },
+    couplingsFired: [],
+    effectiveBaselines: {},
+    event: { type: "intimate_moment" as const, intensity: 1, reason: "Seeded intimate moment" },
+  },
+  bands: { connection: "high", valence: "high", arousal: "mid", restraint: "mid" },
+  history: [],
+};
+
+/**
+ * R2: lastTrace.couplingsFired includes zr_c3 (arm 1 trigger).
+ */
+const R2_SEED = {
+  version: 1 as const,
+  tick: 2,
+  axes: { connection: -0.35, valence: -0.5, arousal: 0.35, restraint: 0.85 },
+  lastTrace: {
+    tick: 2,
+    axesBefore: { connection: -0.35, valence: -0.5, arousal: 0.35, restraint: 0.85 },
+    axesAfter: { connection: -0.35, valence: -0.5, arousal: 0.35, restraint: 0.85 },
+    couplingsFired: ["zr_c3"],
+    effectiveBaselines: { restraint: 0.44 },
+  },
+  bands: { connection: "low", valence: "low", arousal: "mid", restraint: "high" },
+  history: [],
+};
+
+// ---------------------------------------------------------------------------
+// Render-rule probes (roadmap §4.4) — ALL use neutral user message
+// because the render layer reads from the seeded lastTrace/history, NOT
+// the current turn's event. Event/coupling-based probes use seeded data.
 // ---------------------------------------------------------------------------
 
 const RENDER_PROBES: Scenario[] = [
   {
     id: "RENDER-R1",
-    description: "C high + R low → R1 fires",
+    description: "C high + R low → R1 fires (state-only, seeded)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
     seedAxisState: LOW_RESTRAINT_SAFE_BOND_SEED,
@@ -367,8 +486,19 @@ const RENDER_PROBES: Scenario[] = [
     ],
   },
   {
+    id: "RENDER-R2",
+    description: "zr_c3 in seeded traces → R2 fires (trace-triggered arm 1)",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: R2_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
+    assertions: [
+      { type: "render_rule_triggered", values: ["R2"], description: "R2 fires via seeded zr_c3" },
+    ],
+  },
+  {
     id: "RENDER-R3",
-    description: "A high + R high → R3 fires",
+    description: "A high + R high → R3 fires (state-only, seeded)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
     seedAxisState: HIGH_AROUSAL_HIGH_RESTRAINT_SEED,
@@ -378,8 +508,52 @@ const RENDER_PROBES: Scenario[] = [
     ],
   },
   {
+    id: "RENDER-R4",
+    description: "C high + V high + A low → R4 fires (state-only, seeded)",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: R4_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
+    assertions: [
+      { type: "render_rule_triggered", values: ["R4"], description: "R4 fires (C high, V high, A low)" },
+    ],
+  },
+  {
+    id: "RENDER-R5_state",
+    description: "connection falling ≥2 ticks → R5_state fires (trace-triggered, seeded history)",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: R5_STATE_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
+    assertions: [
+      { type: "render_rule_triggered", values: ["R5_state"], description: "R5_state fires from seeded history" },
+    ],
+  },
+  {
+    id: "RENDER-R5_event",
+    description: "seeded user_withdraws event → R5_event fires",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: R5_EVENT_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
+    assertions: [
+      { type: "render_rule_triggered", values: ["R5_event"], description: "R5_event fires from seeded event" },
+    ],
+  },
+  {
+    id: "RENDER-R6",
+    description: "seeded user_discloses_vulnerability event → R6 fires",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: R6_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
+    assertions: [
+      { type: "render_rule_triggered", values: ["R6"], description: "R6 fires from seeded vulnerability event" },
+    ],
+  },
+  {
     id: "RENDER-R7",
-    description: "C high + R low + A low → R7 fires",
+    description: "C high + R low + A low → R7 fires (state-only, seeded)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
     seedAxisState: LOW_RESTRAINT_SAFE_BOND_SEED,
@@ -390,46 +564,13 @@ const RENDER_PROBES: Scenario[] = [
   },
   {
     id: "RENDER-R8",
-    description: "intimate_moment event → R8 fires",
+    description: "seeded intimate_moment event → R8 fires",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
-    seedAxisState: SAFE_CLOSENESS_SEED,
-    messages: [{ role: "user", content: "我喜欢你。从第一次见面就喜欢。" }],
+    seedAxisState: R8_SEED,
+    messages: [{ role: "user", content: "今天天气不错。" }],
     assertions: [
-      { type: "render_rule_triggered", values: ["R8"], description: "R8 fires (intimate_moment event)" },
-    ],
-  },
-  {
-    id: "RENDER-R5_event",
-    description: "user_withdraws event → R5_event fires",
-    session: BASE_SESSION,
-    eval_mode: "agent_turn",
-    seedAxisState: NEUTRAL_SEED,
-    messages: [{ role: "user", content: "算了，不说了。" }],
-    assertions: [
-      { type: "render_rule_triggered", values: ["R5_event"], description: "R5_event fires on withdrawal" },
-    ],
-  },
-  {
-    id: "RENDER-R6",
-    description: "user_discloses_vulnerability event → R6 fires",
-    session: BASE_SESSION,
-    eval_mode: "agent_turn",
-    seedAxisState: SAFE_CLOSENESS_SEED,
-    messages: [{ role: "user", content: "其实我最近压力很大，觉得挺累的。" }],
-    assertions: [
-      { type: "render_rule_triggered", values: ["R6"], description: "R6 fires on vulnerability" },
-    ],
-  },
-  {
-    id: "RENDER-R2",
-    description: "zr_c3 fired → R2 fires (arm 1)",
-    session: BASE_SESSION,
-    eval_mode: "agent_turn",
-    seedAxisState: LOW_VALENCE_FALLING_CONN_SEED,
-    messages: [{ role: "user", content: "你根本不理解我。" }],
-    assertions: [
-      { type: "render_rule_triggered", values: ["R2"], description: "R2 fires via zr_c3 arm" },
+      { type: "render_rule_triggered", values: ["R8"], description: "R8 fires from seeded intimate_moment event" },
     ],
   },
 ];
