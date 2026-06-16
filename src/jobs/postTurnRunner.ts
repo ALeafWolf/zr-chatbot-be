@@ -105,24 +105,36 @@ export class PostTurnRunner extends BackgroundRunner {
    * bypassing the background queue/claim entirely.
    *
    * This is called from runAgentEval after runCharacterTurn enqueues the job.
-   * It reads the job payload directly from DB, runs the post-turn memory graph,
-   * and marks the job completed — all within the caller's AsyncLocalStorage scope.
+   * It atomically claims the job (status='running'), reads the payload,
+   * runs the post-turn memory graph, and marks the job completed — all within
+   * the caller's AsyncLocalStorage scope.
    *
-   * The background loop may also try to claim this job later, but by then it
-   * will find the job already completed and skip it.
+   * By claiming the job first, the background loop cannot pick it up
+   * (it only claims 'pending'/'retry' jobs or 'running' with expired locks).
    *
    * Protected so unit tests can override without DB access.
    */
   protected async runSyncForEval(jobId: string): Promise<void> {
-    const rows = await db.select().from(postTurnJobs).where(eq(postTurnJobs.id, jobId)).limit(1);
-    if (rows.length === 0) {
+    // Atomically claim the job so the background loop cannot take it
+    const claimRows = await db
+      .update(postTurnJobs)
+      .set({
+        status: "running",
+        lockedAt: new Date(),
+        lockedBy: "eval-sync",
+        updatedAt: new Date(),
+      })
+      .where(eq(postTurnJobs.id, jobId))
+      .returning();
+
+    if (claimRows.length === 0) {
       recordMemoryWriteSnapshot({
         status: "failed",
         error: `post_turn_job_not_found:${jobId}`,
       });
       throw new Error(`post_turn_job_not_found:${jobId}`);
     }
-    const job = rows[0]!;
+    const job = claimRows[0]!;
     recordMemoryWriteSnapshot({
       postTurnJobId: job.id,
       status: "not_run",
