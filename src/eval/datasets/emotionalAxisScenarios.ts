@@ -647,9 +647,9 @@ const S6_SAFE_CLOSENESS_SEED = {
 const S6_LOW_RESTRAINT_SAFE_BOND_SEED = {
   version: 1 as const,
   tick: 1,
-  axes: { connection: 0.7, valence: 0.55, arousal: -0.4, restraint: 0.25 },
-  lastTrace: { tick: 1, axesBefore: { connection: 0.7, valence: 0.55, arousal: -0.4, restraint: 0.25 }, axesAfter: { connection: 0.7, valence: 0.55, arousal: -0.4, restraint: 0.25 }, couplingsFired: [], effectiveBaselines: {} },
-  bands: { connection: "high", valence: "high", arousal: "low", restraint: "low" },
+  axes: { connection: 0.7, valence: 0.2, arousal: -0.4, restraint: 0.25 },
+  lastTrace: { tick: 1, axesBefore: { connection: 0.7, valence: 0.2, arousal: -0.4, restraint: 0.25 }, axesAfter: { connection: 0.7, valence: 0.2, arousal: -0.4, restraint: 0.25 }, couplingsFired: [], effectiveBaselines: {} },
+  bands: { connection: "high", valence: "mid", arousal: "low", restraint: "low" },
   history: [],
 };
 
@@ -694,14 +694,14 @@ const S6_EXPERIMENT_SCENARIOS: Scenario[] = [
   },
   {
     id: "S6-low-restraint-safe-bond",
-    description: "S6 same input, low restraint safe bond — R7 fires (arousal < -0.35)",
+    description: "S6 same input, low restraint safe bond — R7 fires (arousal < -0.35, V mid so R4 does not crowd R7)",
     session: BASE_SESSION,
     eval_mode: "agent_turn",
     seedAxisState: S6_LOW_RESTRAINT_SAFE_BOND_SEED,
     messages: [{ role: "user", content: "我今天很想见你。" }],
     assertions: [
       { type: "axis_band_equals", field: "restraint", value: "low", description: "Restraint stays low" },
-      { type: "render_rule_triggered", values: ["R1"], description: "R1 fires (C high, R low)" },
+      { type: "render_rule_triggered", values: ["R7"], description: "R7 fires (C high, R low, A low)" },
     ],
   },
 ];
@@ -812,12 +812,79 @@ const TRAJECTORY_INTIMACY: Scenario[] = [
 // Export all emotional-axis scenarios
 // ---------------------------------------------------------------------------
 
+const TRAJECTORY_SAFE_CLOSENESS: Scenario[] = [
+  {
+    id: "TRAJ-SC-T1",
+    description: "T1: user shows warmth, initial buildup of connection",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    seedAxisState: NEUTRAL_SEED,
+    messages: [{ role: "user", content: "我一直很感谢你陪在我身边。" }],
+    assertions: [
+      { type: "turn_event_type", value: "user_shows_warmth", description: "T1: warmth" },
+      { type: "axis_delta_sign", field: "connection", value: "+", description: "T1: connection+" },
+      { type: "axis_delta_sign", field: "valence", value: "+", description: "T1: valence+" },
+    ],
+  },
+  {
+    id: "TRAJ-SC-T2",
+    description: "T2: user pursues connection, deepening the bond",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    // No seedAxisState — runner carries over from T1
+    messages: [{ role: "user", content: "我想多了解你一些，能跟我聊聊你的事吗？" }],
+    assertions: [
+      { type: "turn_event_type", value: "user_pursues_connection", description: "T2: pursue" },
+      { type: "axis_delta_sign", field: "connection", value: "+", description: "T2: connection+" },
+    ],
+  },
+  {
+    id: "TRAJ-SC-T3",
+    description: "T3: user discloses vulnerability, deeper connection",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    messages: [{ role: "user", content: "其实我一直有点害怕表达自己的感受。" }],
+    assertions: [
+      { type: "turn_event_type", value: "user_discloses_vulnerability", description: "T3: vulnerability" },
+      { type: "axis_delta_sign", field: "connection", value: "+", description: "T3: connection+" },
+      { type: "axis_delta_sign", field: "arousal", value: "-", description: "T3: arousal-" },
+    ],
+  },
+  {
+    id: "TRAJ-SC-T4",
+    description: "T4: user shows warmth, reinforcing the safe bond",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    messages: [{ role: "user", content: "跟你在一起我觉得很安心。" }],
+    assertions: [
+      { type: "turn_event_type", value: "user_shows_warmth", description: "T4: warmth" },
+      { type: "axis_delta_sign", field: "valence", value: "+", description: "T4: valence+" },
+      { type: "axis_delta_sign", field: "connection", value: "+", description: "T4: connection+" },
+    ],
+  },
+  {
+    id: "TRAJ-SC-T5",
+    description: "T5: intimate moment, peak connection (carry-over from 4 positive turns)",
+    session: BASE_SESSION,
+    eval_mode: "agent_turn",
+    messages: [{ role: "user", content: "我喜欢你，想一直这样在一起。" }],
+    assertions: [
+      { type: "turn_event_type", value: "intimate_moment", description: "T5: intimate" },
+      { type: "axis_delta_sign", field: "connection", value: "+", description: "T5: connection+" },
+      { type: "axis_delta_sign", field: "valence", value: "+", description: "T5: valence+" },
+      { type: "axis_delta_sign", field: "arousal", value: "+", description: "T5: arousal+" },
+    ],
+  },
+];
+
 /**
  * Emotional-axis scenarios for the dedicated `emotional_axis` scenario set.
  *
- * 12 axis-movement probes + 6 coupling probes + 9 render-rule probes + 4 S6 +
- * 3 trajectory-escalation + 4 trajectory-intimacy = 38 total (27 base + 11 TG7).
+ * 12 axis-movement + 6 coupling + 9 render + 4 S6 + 3 escalation + 4 intimacy +
+ * 5 safe-closeness = 43 total (27 base + 16 TG7).
  * All use `seedAxisState` for deterministic state and `agent_turn` eval mode.
+ * Trajectory scenarios (TRAJ-*) rely on the runner's T→T+1 state carry-over for
+ * turns 2+; only the first turn specifies seedAxisState.
  */
 export const EMOTIONAL_AXIS_SCENARIOS: Scenario[] = [
   ...AXIS_MOVEMENT_PROBES,
@@ -826,4 +893,5 @@ export const EMOTIONAL_AXIS_SCENARIOS: Scenario[] = [
   ...S6_EXPERIMENT_SCENARIOS,
   ...TRAJECTORY_ESCALATION,
   ...TRAJECTORY_INTIMACY,
+  ...TRAJECTORY_SAFE_CLOSENESS,
 ];

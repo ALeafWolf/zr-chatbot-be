@@ -330,9 +330,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // TG7: Trajectory mode — run a sequence of turns (e.g. --trajectory TRAJ-ESC)
+  // TG7: Trajectory mode — run a sequence of turns with T→T+1 state carry-over
   if (trajectoryPrefix) {
-    console.error(`Trajectory mode: running ${trajectoryPrefix}* turns...`);
+    console.error(`Trajectory mode: running ${trajectoryPrefix}* turns with state carry-over...`);
     const turnScenarios = scenarios.filter((s) => s.id.startsWith(trajectoryPrefix));
     if (turnScenarios.length === 0) {
       console.error(`No scenarios found with prefix "${trajectoryPrefix}".`);
@@ -352,18 +352,48 @@ async function main(): Promise<void> {
       return;
     }
 
+    // T→T+1 carry-over: track the cumulative emotional state across turns
+    let carriedSeed: Record<string, unknown> | undefined;
+
     const results: ScenarioResult[] = [];
-    for (const scenario of turnScenarios) {
+    for (const [turnIdx, scenario] of turnScenarios.entries()) {
       setEmotionalAxisEvalConfig(variantConfig);
       process.env.EMOTIONAL_AXIS_VARIANT = variant;
       const rawInput = findScenarioForAgentEval(scenario.id, "emotional_axis");
       if (!rawInput) continue;
+
+      // Override seedAxisState with the carried-over state from the previous turn
+      if (carriedSeed && turnIdx > 0) {
+        rawInput.seedAxisState = carriedSeed;
+      }
+
       try {
         const output = await runAgentEval(rawInput);
         const assertionCtx: AssertionContext = { emotionalAxis: output.emotionalAxis, ...buildRerankAssertionContext(output.retrieval?.rerank as any) };
         const assertionResults = runAllAssertions(scenario, output.reply, undefined, assertionCtx);
         const mapped = assertionResults.map((a) => ({ description: a.assertionDescription, pass: a.pass, reason: a.reason }));
         const passed = mapped.filter((r) => r.pass).length;
+
+        // Thread state: use turn N's post-update emotionalAxis as the seed for turn N+1
+        if (output.emotionalAxis) {
+          const emo = output.emotionalAxis;
+          const nextTick = (emo.tick ?? 0) + 1;
+          carriedSeed = {
+            version: 1 as const,
+            tick: nextTick,
+            axes: emo.axesAfter,
+            lastTrace: {
+              tick: emo.tick ?? 0,
+              axesBefore: emo.axesBefore,
+              axesAfter: emo.axesAfter,
+              couplingsFired: emo.couplingsFired ?? [],
+              effectiveBaselines: emo.effectiveBaselines ?? {},
+            },
+            bands: emo.bandsAfter,
+            history: [],
+          };
+        }
+
         results.push({
           scenarioId: scenario.id, description: scenario.description,
           success: passed === mapped.length, assertions: mapped, passed, failed: mapped.length - passed,
