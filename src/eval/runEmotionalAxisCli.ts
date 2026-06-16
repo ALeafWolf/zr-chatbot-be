@@ -47,6 +47,34 @@ interface ScenarioResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// TG6 N2: Exported for unit testing — cleanup gate
+export function checkVariantCleanupGate(
+  passed: number,
+  total: number,
+  cleanupCompleted: boolean,
+): { success: boolean; error?: string } {
+  if (!cleanupCompleted) {
+    return { success: false, error: "cleanup not completed" };
+  }
+  if (passed !== total) {
+    return { success: false, error: "some assertions failed" };
+  }
+  return { success: true };
+}
+
+// TG6 N2: Exported for unit testing — comparison aggregation
+export function computeVariantAggregation(
+  results: Array<{ passed: number; failed: number; success: boolean }>,
+): { scenarioCount: number; passedScenarios: number; failedScenarios: number; totalAssertions: number; passedAssertions: number; passPercent: string } {
+  const scenarioCount = results.length;
+  const passedScenarios = results.filter((r) => r.success).length;
+  const failedScenarios = scenarioCount - passedScenarios;
+  const totalAssertions = results.reduce((s, r) => s + r.passed + r.failed, 0);
+  const passedAssertions = results.reduce((s, r) => s + r.passed, 0);
+  const passPercent = totalAssertions > 0 ? ((passedAssertions / totalAssertions) * 100).toFixed(1) : "N/A";
+  return { scenarioCount, passedScenarios, failedScenarios, totalAssertions, passedAssertions, passPercent };
+}
+
 function ensureResultsDir(): void {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
 }
@@ -226,6 +254,7 @@ async function main(): Promise<void> {
       const runResults: ScenarioResult[] = [];
       for (const scenario of scenarios) {
         setEmotionalAxisEvalConfig(vConfig);
+        process.env.EMOTIONAL_AXIS_VARIANT = v;
         const rawInput = findScenarioForAgentEval(scenario.id, "emotional_axis");
         if (!rawInput) {
           runResults.push({ scenarioId: scenario.id, description: scenario.description, success: false, error: "not found", assertions: [], passed: 0, failed: 0 });
@@ -238,12 +267,12 @@ async function main(): Promise<void> {
           const mapped = assertionResults.map((a) => ({ description: a.assertionDescription, pass: a.pass, reason: a.reason }));
           const passed = mapped.filter((r) => r.pass).length;
           // TG6: Assert cleanup completion between variants
-          const cleanupOk = output.cleanup?.completed === true;
+          const gateResult = checkVariantCleanupGate(passed, mapped.length, output.cleanup?.completed === true);
           runResults.push({
             scenarioId: scenario.id,
             description: scenario.description,
-            success: passed === mapped.length && cleanupOk,
-            error: !cleanupOk ? "cleanup not completed" : undefined,
+            success: gateResult.success,
+            error: gateResult.error,
             assertions: mapped,
             passed,
             failed: mapped.length - passed,
@@ -375,6 +404,9 @@ async function main(): Promise<void> {
     // buildPromptContext (render gate, bands-only). Design D7: injectable toggle,
     // NOT env mutation.
     setEmotionalAxisEvalConfig(variantConfig);
+    // TG6 N1: Propagate variant identity so buildEmotionalAxisVariantMetadata/Tags
+    // (called by runAgentEval with no arg) emit the correct trace tags.
+    process.env.EMOTIONAL_AXIS_VARIANT = variant;
 
     // TG5: Enforce fresh session with explicit seedAxisState per run
     // (seedEvalSession already creates a unique session per call).

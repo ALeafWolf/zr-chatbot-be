@@ -231,41 +231,6 @@ describe("experiment variants", () => {
       assert.ok(ids.includes("axis_bands_only"), "bands only");
     });
 
-    // -------------------------------------------------------------------
-    // TG6 — Cleanup gate and comparison aggregation
-    // -------------------------------------------------------------------
-
-    it("TG6: cleanup gate marks scenario failed when cleanup completed is false", () => {
-      // This simulates the --compare cleanup gate logic
-      const cleanupOk = false;
-      const passed = 5;
-      const total = 5;
-      const success = passed === total && cleanupOk;
-      assert.equal(success, false, "scenario fails when cleanup not completed");
-    });
-
-    it("TG6: cleanup gate passes when cleanup completed is true", () => {
-      const cleanupOk = true;
-      const passed = 5;
-      const total = 5;
-      const success = passed === total && cleanupOk;
-      assert.equal(success, true, "scenario passes when cleanup completed");
-    });
-
-    it("TG6: comparison aggregation computes per-variant pass% correctly", () => {
-      // Simulate comparison aggregation logic
-      const results = [
-        { scenarioId: "S1", success: true, passed: 3, failed: 0 },
-        { scenarioId: "S2", success: true, passed: 2, failed: 0 },
-        { scenarioId: "S3", success: false, passed: 1, failed: 1 },
-      ];
-      const totalAssertions = results.reduce((s, r) => s + r.passed + r.failed, 0);
-      const passedAssertions = results.reduce((s, r) => s + r.passed, 0);
-      const pct = totalAssertions > 0 ? ((passedAssertions / totalAssertions) * 100).toFixed(1) : "N/A";
-      assert.equal(pct, "85.7", "85.7% pass rate (6/7 assertions)");
-      const passedScenarios = results.filter((r) => r.success).length;
-      assert.equal(passedScenarios, 2, "2 of 3 scenarios passed");
-    });
   });
 });
 
