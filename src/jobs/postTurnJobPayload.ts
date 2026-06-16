@@ -6,6 +6,7 @@ import type { PostTurnSignals } from "../llm/extraction/extractPostTurnSignals";
 export const POST_TURN_STEP_NAMES = [
   "raw_chunk",
   "extract_signals",
+  "engine_state",
   "structmem",
   "session_chunks",
   "durable_memory",
@@ -19,6 +20,7 @@ export type PostTurnStepStatus = Record<PostTurnStepName, PostTurnStepState>;
 export const INITIAL_POST_TURN_STEP_STATUS: PostTurnStepStatus = {
   raw_chunk: "pending",
   extract_signals: "pending",
+  engine_state: "pending",
   structmem: "pending",
   session_chunks: "pending",
   durable_memory: "pending",

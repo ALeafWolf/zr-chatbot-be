@@ -8,6 +8,7 @@ import {
 import {
   createSession,
   deleteSession,
+  getAxisState,
   getSession,
   listCharacterOptions,
   listModeOptions,
@@ -89,4 +90,17 @@ export async function deleteSessionHandler(
   const { id } = SessionIdParams.parse(req.params);
   await deleteSession(id);
   reply.status(204).send();
+}
+
+export async function getAxisStateHandler(
+  req: IdParamsRequest,
+  reply: FastifyReply,
+) {
+  const { id } = SessionIdParams.parse(req.params);
+  const result = await getAxisState(id);
+  if (!result) {
+    reply.status(404).send({ error: "Session not found" });
+    return;
+  }
+  reply.send(result);
 }

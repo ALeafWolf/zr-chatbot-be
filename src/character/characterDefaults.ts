@@ -3,6 +3,8 @@ import fs from "fs";
 import yaml from "js-yaml";
 import { env } from "../config/env";
 import { getCharacterProfile } from "./characterProfiles";
+import type { AxesConfig, ScopeBaselineOverrides, EmotionalCoupling } from "../state/emotionalEngine/types";
+import { validateCouplings } from "../state/emotionalEngine/validateCouplings";
 
 // ---------------------------------------------------------------------------
 // Version comparison helper
@@ -83,6 +85,14 @@ export interface CharacterDefaults {
     /** Prohibits direct self-analysis dialogue; enforces show-don't-tell. */
     expression_constraint?: string;
   };
+  /** Emotional-engine axis configuration (baselines, drift rates, ranges per axis).
+   *  Absent block ⇒ engine disabled for this character (default-off behaviour). */
+  emotional_axes?: AxesConfig;
+  /** Per-scope baseline overrides (design D8). Keyed by continuityScope value.
+   *  Missing axis/scope ⇒ fall back to default baseline from `emotional_axes`. */
+  emotional_axes_baseline_by_scope?: ScopeBaselineOverrides;
+  /** Emotional coupling definitions. Optional; engine treats absent as no couplings. */
+  emotional_coupling?: EmotionalCoupling[];
   private_habits_and_texture?: string[];
   /** Layered relational behavior prose; subsets chosen by overlay `relationship_status`. */
   relationship_expression?: {
@@ -140,6 +150,13 @@ export function loadCharacterDefaults(characterId: string): CharacterDefaults {
   }
   const raw = fs.readFileSync(filePath, "utf-8");
   const parsed = yaml.load(raw) as CharacterDefaults;
+  // TG5: validate and normalise coupling definitions at load time
+  if (parsed.emotional_coupling) {
+    parsed.emotional_coupling = validateCouplings(
+      parsed.emotional_coupling,
+      parsed.internal_logic ? new Set(Object.keys(parsed.internal_logic)) : undefined,
+    );
+  }
   characterCache.set(characterId, parsed);
   return parsed;
 }

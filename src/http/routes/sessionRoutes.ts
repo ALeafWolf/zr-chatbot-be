@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   createSessionHandler,
   deleteSessionHandler,
+  getAxisStateHandler,
   getCharactersHandler,
   getModesHandler,
   getScopesHandler,
@@ -28,5 +29,10 @@ export async function sessionRoutes(server: FastifyInstance): Promise<void> {
   server.delete<{ Params: { id: string } }>(
     "/api/sessions/:id",
     deleteSessionHandler,
+  );
+
+  server.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/axis-state",
+    getAxisStateHandler,
   );
 }

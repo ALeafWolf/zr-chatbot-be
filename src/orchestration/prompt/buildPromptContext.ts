@@ -30,6 +30,8 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
+import { buildEmotionalRenderBlock } from "./renderEmotionalState";
+import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -155,6 +157,12 @@ export function buildPromptContext(input: {
   memoryRerank?: MemoryRerankOutput | null;
   /** Selected internal-logic evidence hits from the reranker. */
   internalLogicEvidence?: InternalLogicEvidenceHit[];
+  /** TG4: Emotional axis bands (with hysteresis) from persisted axis state. */
+  emotionalAxisBands?: Record<AxisName, Band>;
+  /** TG4: Last engine trace from persisted axis state. */
+  emotionalAxisLastTrace?: StateTrace;
+  /** TG4: Axis value history from persisted axis state. */
+  emotionalAxisHistory?: HistoryEntry[];
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -178,6 +186,9 @@ export function buildPromptContext(input: {
     motifProbe,
     memoryRerank,
     internalLogicEvidence = [],
+    emotionalAxisBands,
+    emotionalAxisLastTrace,
+    emotionalAxisHistory,
     userMessage,
     queryRewrite,
   } = input;
@@ -263,6 +274,13 @@ export function buildPromptContext(input: {
   ].filter(Boolean);
   const basePersonaBody = joinNonEmpty(basePersonaParts);
 
+  // TG4: Build emotional render block (gated, degrades gracefully)
+  const renderEmotionalBlock = buildEmotionalRenderBlockFromInput({
+    emotionalAxisBands,
+    emotionalAxisLastTrace,
+    emotionalAxisHistory,
+  });
+
   const relationshipExprBody = buildRelationshipExpressionContent(
     personaOverlay.relationship_status,
     characterDefaults.relationship_expression,
@@ -287,6 +305,15 @@ ${hardRules}
     ...(characterDefaults.internal_logic &&
     Object.values(characterDefaults.internal_logic).some((v) => v?.trim())
       ? [buildBlock("CHARACTER INTERNAL LOGIC", formatInternalLogic(characterDefaults.internal_logic))]
+      : []),
+
+    // TG4: [当前状态下的行为基调] — between INTERNAL LOGIC and INTERNAL LOGIC EVIDENCE.
+    // Pushed directly (self-headed with 【…】 wrapper, not wrapped in buildBlock — F13).
+    // Gated on EMOTIONAL_RENDER_ENABLED + presence of axis state.
+    // NOT added to the SYSTEM conflict-priority list (it is behavior guidance, not a fact
+    // source — see design point 2). Degradation: absent axis state ⇒ skip + log.
+    ...(renderEmotionalBlock
+      ? [renderEmotionalBlock]
       : []),
 
     // [CHARACTER INTERNAL LOGIC EVIDENCE] — selected canon-grounded evidence
@@ -550,6 +577,42 @@ function subsection(innerTitle: string, body?: string): string {
   const t = (body ?? "").trim();
   if (!t) return "";
   return `[${innerTitle}]\n${t}`;
+}
+
+/**
+ * Build the emotional render block, enforcing flag gating and degradation rules.
+ * Returns null when the block should not be injected.
+ */
+function buildEmotionalRenderBlockFromInput(input: {
+  emotionalAxisBands?: Record<AxisName, Band>;
+  emotionalAxisLastTrace?: StateTrace;
+  emotionalAxisHistory?: HistoryEntry[];
+}): string | null {
+  // Render flag gating: EMOTIONAL_RENDER_ENABLED off ⇒ no block
+  if (!env.EMOTIONAL_RENDER_ENABLED) return null;
+
+  // Render-flag-requires-engine-flag enforcement
+  if (!env.EMOTIONAL_ENGINE_ENABLED) {
+    console.warn(
+      "[buildPromptContext] EMOTIONAL_RENDER_ENABLED is true but EMOTIONAL_ENGINE_ENABLED is false — render is inert",
+    );
+    return null;
+  }
+
+  // Absent axis state ⇒ degradation: skip + log
+  if (!input.emotionalAxisBands || !input.emotionalAxisLastTrace) {
+    console.warn(
+      "[buildPromptContext] EMOTIONAL_RENDER_ENABLED is true but axis state is absent — skipping render block",
+    );
+    return null;
+  }
+
+  return buildEmotionalRenderBlock(
+    input.emotionalAxisBands,
+    input.emotionalAxisLastTrace,
+    input.emotionalAxisHistory ?? [],
+    'C',  // TG8: Tier C enabled (R6, R8, R5 event-half)
+  );
 }
 
 function joinNonEmpty(parts: string[]): string {

@@ -90,6 +90,7 @@ export function createInitialPostTurnRuntimeState(
 const PostTurnStepNameSchema = z.enum([
   "raw_chunk",
   "extract_signals",
+  "engine_state",
   "structmem",
   "session_chunks",
   "durable_memory",
@@ -101,6 +102,7 @@ const PostTurnStepStateSchema = z.enum(["pending", "completed", "failed"]);
 const PostTurnStepStatusSchema = z.object({
   raw_chunk: PostTurnStepStateSchema,
   extract_signals: PostTurnStepStateSchema,
+  engine_state: PostTurnStepStateSchema,
   structmem: PostTurnStepStateSchema,
   session_chunks: PostTurnStepStateSchema,
   durable_memory: PostTurnStepStateSchema,

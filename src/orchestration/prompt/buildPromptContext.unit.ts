@@ -5,6 +5,7 @@ import type { ChatSession } from "../../db/schema/chat";
 import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
 import type { QueryRewriteResult } from "../../retrieval/query/rewriteQuery";
+import { env } from "../../config/env";
 
 const characterDefaults = {
   name: "Test Character", identity: "A test character.",
@@ -440,5 +441,199 @@ describe("buildPromptContext — internal-logic evidence block", () => {
     // Omitted by default when not provided
     prompt = buildPromptContext(baseInput()).systemPrompt;
     assert.ok(!prompt.includes("[CHARACTER INTERNAL LOGIC EVIDENCE]"), "undefined — block absent");
+  });
+
+  // ===================================================================
+  // TG4 — Render block wiring (F12)
+  // ===================================================================
+
+  describe("buildPromptContext — render block fresh session (TG4b F15)", () => {
+    it("F15: fresh session main_relationship with render+engine on produces expected band line", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+        const cd = {
+          ...characterDefaults,
+          name: "左然",
+          internal_logic: { core_belief: "test" },
+          emotional_axes: {
+            connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+          },
+          emotional_axes_baseline_by_scope: {
+            main_relationship: { connection: 0.15, valence: 0.05, arousal: 0.0, restraint: 0.7 },
+          },
+        };
+
+        // No emotionalAxisBands passed ⇒ render-from-baselines via the helper
+        // But since we're calling buildPromptContext directly (not via the adapter),
+        // we pass the inputs directly as they would be computed by resolveEmotionalRenderInputs
+        const prompt = buildPromptContext({
+          ...baseInput(),
+          characterDefaults: cd as any,
+          internalLogicEvidence: [],
+          // Fresh session: bands from main_relationship baselines with axis-aware thresholds
+          emotionalAxisBands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+          emotionalAxisLastTrace: {
+            tick: 0,
+            axesBefore: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+            axesAfter: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+            couplingsFired: [],
+            effectiveBaselines: {},
+          },
+          emotionalAxisHistory: [],
+        }).systemPrompt;
+
+        assert.ok(prompt.includes("当前状态下的行为基调"), "render block present on fresh session");
+        assert.ok(prompt.includes("克制：偏高"), "restraint 0.7 > 0.65 → 偏高");
+        assert.ok(prompt.includes("亲近：中"), "connection 0.15 centered → 中");
+        assert.ok(prompt.includes("情绪：中"), "valence 0.05 centered → 中");
+        assert.ok(prompt.includes("唤起：中"), "arousal 0 centered → 中");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    it("F15: render-off prompt is byte-identical to baseline (no axis inputs, flags off)", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = false;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = false;
+
+        const input = {
+          ...baseInput(),
+          characterDefaults: { ...characterDefaults, internal_logic: { core_belief: "test" } } as any,
+        };
+
+        // Baseline: no axis inputs at all
+        const baseline = buildPromptContext({ ...input }).systemPrompt;
+
+        // Render-off: with axis inputs but flags still off — must be byte-identical
+        const withInputs = buildPromptContext({
+          ...input,
+          emotionalAxisBands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+          emotionalAxisLastTrace: {
+            tick: 0,
+            axesBefore: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+            axesAfter: { connection: 0.15, valence: 0.05, arousal: 0, restraint: 0.7 },
+            couplingsFired: [],
+            effectiveBaselines: {},
+          },
+          emotionalAxisHistory: [],
+        }).systemPrompt;
+
+        assert.equal(baseline, withInputs, "render-off prompt byte-identical to baseline");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+  });
+
+  describe("buildPromptContext — render block (TG4 F12)", () => {
+    const RENDER_BANDS = { connection: "high" as const, valence: "mid" as const, arousal: "low" as const, restraint: "high" as const };
+    const RENDER_TRACE = {
+      tick: 1, axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+      axesAfter: { connection: 0.7, valence: 0, arousal: -0.1, restraint: 0.7 },
+      couplingsFired: [] as string[], effectiveBaselines: {} as Record<string, number>,
+    };
+    const RENDER_HISTORY: Array<{ tick: number; axes: { connection: number; valence: number; arousal: number; restraint: number } }> = [];
+
+    function baseWithInternalLogic() {
+      const cd = {
+        ...characterDefaults,
+        internal_logic: { core_belief: "test" },
+      } as any;
+      return { ...baseInput(), characterDefaults: cd };
+    }
+
+    it("F12a: render flag off ⇒ no render block (byte-identical to baseline)", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = false;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = false;
+
+        const baseline = buildPromptContext(baseWithInternalLogic()).systemPrompt;
+        assert.ok(!baseline.includes("当前状态下的行为基调"), "baseline has no render block");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    it("F12b: render on + engine off ⇒ no render block (inert, same as baseline)", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = false;
+
+        const prompt = buildPromptContext(baseWithInternalLogic()).systemPrompt;
+        assert.ok(!prompt.includes("当前状态下的行为基调"), "render inert without engine");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    it("F12c: render on + engine on + bands absent ⇒ no render block (degradation)", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+        // No emotionalAxisBands passed ⇒ absent state
+        const prompt = buildPromptContext(baseWithInternalLogic()).systemPrompt;
+        assert.ok(!prompt.includes("当前状态下的行为基调"), "no render block when axis state absent");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
+
+    it("F12d: render on + engine on + state present ⇒ block BETWEEN INTERNAL LOGIC and EVIDENCE", () => {
+      const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+      const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+      try {
+        (env as any).EMOTIONAL_RENDER_ENABLED = true;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+        const prompt = buildPromptContext({
+          ...baseWithInternalLogic(),
+          internalLogicEvidence: [evidenceHit],
+          emotionalAxisBands: RENDER_BANDS,
+          emotionalAxisLastTrace: RENDER_TRACE,
+          emotionalAxisHistory: RENDER_HISTORY,
+        }).systemPrompt;
+
+        // Block must be present
+        assert.ok(prompt.includes("当前状态下的行为基调"), "render block present");
+
+        // Block must appear between INTERNAL LOGIC and INTERNAL LOGIC EVIDENCE
+        const internalLogicPos = prompt.indexOf("[CHARACTER INTERNAL LOGIC]");
+        const renderBlockPos = prompt.indexOf("当前状态下的行为基调");
+        const evidencePos = prompt.indexOf("[CHARACTER INTERNAL LOGIC EVIDENCE]");
+        const basePersonaPos = prompt.indexOf("[BASE PERSONA]");
+
+        assert.ok(renderBlockPos > internalLogicPos, "render block after INTERNAL LOGIC");
+        assert.ok(evidencePos > renderBlockPos, "evidence after render block");
+        assert.ok(basePersonaPos > evidencePos, "base persona after evidence");
+
+        // Must contain the band line
+        assert.ok(prompt.includes("当前状态"), "band line present");
+      } finally {
+        (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+        (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      }
+    });
   });
 });

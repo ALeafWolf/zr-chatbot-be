@@ -34,7 +34,7 @@ class MissingJobRunner extends TestPostTurnRunner {
 }
 
 const PAYLOAD: any = { version: 1, sessionId: "s", userMessage: "hi", assistantReply: "ho", session: { sessionId: "s", characterId: "c", playerId: "p", mode: "canonical_live", continuityScope: "main", continuityFamily: "main_world", personaOverlayId: null, memoryNamespace: "ns", pinnedTime: null, pinnedLocation: null, writebackPolicy: "normal", sessionSummary: null, displayTitle: null, thinking: false, temperature: 0.7 }, derivedState: { inferredMood: "n", inferredActivity: "c", conversationalStance: "n" }, shouldWriteMemory: true, userTurnIndex: 1, assistantTurnIndex: 2, userMessageId: "mu", assistantMessageId: "ma", recentMemorySummaries: [], signals: undefined };
-const PAYLOAD_WITH_SIG: any = { ...PAYLOAD, signals: { memoryFacts: [], structMemEntries: [], emotionalDelta: null, modelReportedConfidence: { memoryFacts: 0.9, emotionalDelta: 0 } } };
+const PAYLOAD_WITH_SIG: any = { ...PAYLOAD, signals: { memoryFacts: [], structMemEntries: [], turnEvent: null, modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 0 } } };
 function job(overrides?: Record<string, unknown>): any { return { id: "j1", sessionId: "s", userMessageId: "mu", assistantMessageId: "ma", status: "running", attempts: 1, maxAttempts: 3, runAfter: new Date(), lockedAt: null, lockedBy: null, stepStatus: null, payload: PAYLOAD, lastError: null, createdAt: new Date(), updatedAt: new Date(), ...overrides }; }
 function st(step: string): any { return markStepCompleted({ ...INITIAL_POST_TURN_STEP_STATUS }, step as any); }
 

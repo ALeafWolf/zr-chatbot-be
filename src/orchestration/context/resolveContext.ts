@@ -145,6 +145,8 @@ export interface ResolvedContext {
   recallThoughtContext: RecallThoughtContext;
   /** True when there are no prior roleplay messages for this session. */
   isFirstUserTurn: boolean;
+  /** Raw session_state DB row (needed by TG4b render wiring — no new query). */
+  sessionStateRow?: Record<string, unknown> | null;
 }
 
 /** Runtime Zod schema for ResolvedContext — structural check on required top-level keys.
@@ -172,6 +174,7 @@ export const ResolvedContextSchema = z.object({
   turnType: z.string(),
   recallThoughtContext: z.record(z.unknown()),
   isFirstUserTurn: z.boolean(),
+  sessionStateRow: z.unknown().nullable(),
 }).passthrough() as unknown as z.ZodType<ResolvedContext>;
 
 /**
@@ -278,6 +281,7 @@ export async function assembleResolvedContext(
     olderRecallExclusiveFirst,
     useFusedMemoryQuery,
     isFirstUserTurn,
+    sessionStateRow,
   } = pre;
 
   const {
@@ -466,6 +470,7 @@ export async function assembleResolvedContext(
     internalLogicEvidence: selectedContext.internalLogicEvidence,
     rerankOutput,
     isFirstUserTurn,
+    sessionStateRow,
     recallThoughtContext: buildRecallThoughtContext({
       memories: selectedContext.memories,
       sessionRecall: selectedContext.sessionRecall,

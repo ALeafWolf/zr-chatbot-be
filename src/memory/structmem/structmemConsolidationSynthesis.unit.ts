@@ -58,9 +58,10 @@ describe("structmemConsolidationSynthesis", () => {
       ],
       semanticSeedEntries: [],
     });
-    // Check the new compactness guidance added by the hardening change,
-    // not just any pre-existing "compact" text.
-    assert.match(prompt, /Keep output compact/);
+    // Check the compactness guidance added by the hardening change. The prompt
+    // is authored in Chinese, so match the localized guidance line
+    // ("保持输出紧凑" = "keep output compact"), not the original English text.
+    assert.match(prompt, /保持输出紧凑/);
   });
 
   it("rejects truncated raw JSON through parseJsonOutput path", () => {

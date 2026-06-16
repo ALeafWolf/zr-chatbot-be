@@ -194,4 +194,103 @@ interaction_defaults:
 
 safe_deflection: "这个话题……暂时不在我能回应的范围之内。"
 
+# ═══════════════════════════════════════════════════════════════════
+# EMOTIONAL ENGINE — axis baselines, drift rates, ranges
+# First-draft values — tunable against probe behaviour.
+# Absent block ⇒ engine disabled for this character.
+# ═══════════════════════════════════════════════════════════════════
+
+emotional_axes:
+  connection:
+    baseline: 0
+    driftRate: 0.02
+    min: -1
+    max: 1
+  valence:
+    baseline: 0
+    driftRate: 0.02
+    min: -1
+    max: 1
+  arousal:
+    baseline: 0
+    driftRate: 0.02
+    min: -1
+    max: 1
+  restraint:
+    baseline: 0.7
+    driftRate: 0.02
+    min: -1
+    max: 1
+
+# ─── Scope-varying baseline overrides (design D8) ─────────────────────────
+# Each scope overrides axis baselines for that relationship stage.
+# Missing axes/scope → default baseline from `emotional_axes`.
+
+emotional_axes_baseline_by_scope:
+  main_pre_relationship:
+    connection: -0.10
+    valence: -0.05
+    arousal: 0.00
+    restraint: 0.85
+  main_situationship:
+    connection: 0.00
+    valence: 0.00
+    arousal: 0.00
+    restraint: 0.78
+  main_relationship:
+    connection: 0.15
+    valence: 0.05
+    arousal: 0.00
+    restraint: 0.70
+  main_engaged:
+    connection: 0.25
+    valence: 0.10
+    arousal: 0.00
+    restraint: 0.62
+  main_married:
+    connection: 0.35
+    valence: 0.15
+    arousal: 0.00
+    restraint: 0.55
+
+# ─── Emotional couplings (rev-5) ─────────────────────────────────────
+# Hand-authored derivations from internal_logic nodes.
+
+emotional_coupling:
+  - id: zr_c1
+    source: arousal
+    target: restraint
+    effect_type: direct_delta
+    coefficient: 0.6
+    derived_from: defense_mechanism
+    label: 紧张自守
+    description: >-
+      情绪一旦被搅动（唤起升高），克制随之增强——他会本能地收紧分寸。源自「防御机制」。
+  - id: zr_c2
+    source: connection
+    target: restraint
+    effect_type: baseline_shift
+    coefficient: -0.4
+    condition:
+      axis: valence
+      threshold: 0.0
+      comparison: above
+    derived_from: transition_rule
+    label: 亲近松动
+    description: >-
+      当亲近升高且情绪为正时，克制的基线被下调——越觉得亲近、氛围越好，他的防备越松。源自「克制→坦露」的过渡规则。
+  - id: zr_c3
+    source: valence
+    target: restraint
+    effect_type: direct_delta
+    coefficient: -0.5
+    condition:
+      axis: valence
+      threshold: -0.2
+      comparison: below
+    derived_from: core_fear
+    label: 失控自守
+    description: >-
+      当情绪明显转负时，克制反而增强——越担心失控、辜负对方，他越收紧防备。源自「核心恐惧」。
+
 version: "2.1"

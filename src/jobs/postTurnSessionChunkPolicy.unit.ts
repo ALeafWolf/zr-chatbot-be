@@ -40,8 +40,8 @@ describe("postTurnPolicies", () => {
     assert.equal(plan.structMemConsolidation.write, false, "sandbox — structMemConsol");
     assert.equal(plan.sessionChunks.write, false, "sandbox — sessionChunks");
     assert.equal(plan.durableMemory.write, false, "sandbox — durable");
-    assert.equal(plan.summaryCompact.write, true, "sandbox — summary");
-    assert.deepEqual(plan.skippedReasons, { structMem: "sandbox_session", structMemConsolidation: "sandbox_session", sessionChunks: "sandbox_session", durableMemory: "writeback_disabled" }, "sandbox — skips");
+    assert.equal(plan.summaryCompact.write, false, "sandbox — summary");
+    assert.deepEqual(plan.skippedReasons, { structMem: "sandbox_session", structMemConsolidation: "sandbox_session", sessionChunks: "sandbox_session", durableMemory: "writeback_disabled", summaryCompact: "sandbox_session" }, "sandbox — skips");
 
     // StructMem suppression
     plan = buildPostTurnWritePlan({ mode: "story", writebackPolicy: "default" }, { STRUCTMEM_ENABLED: true, STRUCTMEM_CONSOLIDATION_ENABLED: false, STRUCTMEM_SUPPRESS_EXTRACTOR_SESSION_CHUNKS: true, STRUCTMEM_NATIVE_EXTRACTOR: false }, { memoryFacts: [candidate("current_session")], structMemEntries: [], shouldWriteMemory: true });
