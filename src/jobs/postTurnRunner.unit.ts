@@ -126,4 +126,28 @@ describe("PostTurnRunner behavior", () => {
     assert.strictEqual(capture2.memoryWrite.status, "failed", "missing job — capture status");
     assert.strictEqual(r2.completeCalls.length, 0, "missing job — no completeJob");
   });
+
+  it("eval isolation: wake() is a no-op while an eval capture is active (review-026)", async () => {
+    class WakeProbeRunner extends PostTurnRunner {
+      public loopRuns = 0;
+      protected override async runLoop(): Promise<void> {
+        this.loopRuns += 1;
+      }
+    }
+
+    // Outside an eval capture, wake() starts the loop.
+    const outside = new WakeProbeRunner();
+    outside.wake();
+    assert.strictEqual(outside.loopRuns, 1, "wake runs the loop outside an eval capture");
+
+    // Inside an eval capture, wake() must NOT start the loop — otherwise the loop
+    // would claim the eval's post-turn job and run the engine outside the capture,
+    // dropping the emotional-axis update snapshot (review-022..025).
+    const inside = new WakeProbeRunner();
+    const capture = createAgentEvalCapture({ scenarioId: "wake-gate", evalSessionId: "s" });
+    await withAgentEvalCapture(capture, async () => {
+      inside.wake();
+    });
+    assert.strictEqual(inside.loopRuns, 0, "wake is a no-op inside an eval capture");
+  });
 });

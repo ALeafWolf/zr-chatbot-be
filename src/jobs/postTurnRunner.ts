@@ -63,6 +63,22 @@ export class PostTurnRunner extends BackgroundRunner {
     super("postTurnRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
   }
 
+  /**
+   * Eval isolation: when a turn runs inside an eval capture, runAgentEval drives
+   * the post-turn job synchronously via runJobByIdForEval → runSyncForEval, inside
+   * the eval AsyncLocalStorage scope. The background loop must NOT claim that job —
+   * running it from the loop executes the engine outside the capture (so the
+   * emotional-axis update snapshot is lost) and races the sync run (double-write).
+   *
+   * `runCharacterTurn` calls `wakePostTurnRunner()` while still inside
+   * `withAgentEvalCapture`, so this gate reliably keeps the loop off eval jobs.
+   * In production there is no eval capture, so `wake()` behaves normally.
+   */
+  override wake(): void {
+    if (getAgentEvalCapture()) return;
+    super.wake();
+  }
+
   protected async runLoop(): Promise<void> {
     while (true) {
       const job = await this.claimNextJob();

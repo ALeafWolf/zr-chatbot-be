@@ -26,6 +26,25 @@ function safeIdPart(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 48);
 }
 
+/**
+ * Clamp a seeded axis-state tick so it represents state PRIOR to the eval turn.
+ *
+ * The post-turn engine advances at `tick = assistantTurnIndex` (which is
+ * `maxSeededTurnIndex + 1` for a freshly seeded session) and its idempotency
+ * guard skips when `persisted.tick >= tick`. A seed authored at tick 1, or a
+ * trajectory carry-over seed at tick N, would collide with the first eval turn
+ * (tick 1) and the engine would never advance — dropping the emotional-axis
+ * update snapshot. Clamping to `maxSeededTurnIndex` guarantees the eval turn
+ * advances from the seed. Only the top-level guard tick is affected; lastTrace/
+ * history ticks (read by render rules) are left untouched by the caller.
+ */
+export function clampSeedAxisTick(
+  authoredTick: number | undefined,
+  maxSeededTurnIndex: number,
+): number {
+  return Math.min(authoredTick ?? 0, maxSeededTurnIndex);
+}
+
 async function embeddingFor(text: string, provided?: number[]): Promise<number[]> {
   return provided ?? (await embedText(text));
 }
@@ -140,11 +159,26 @@ export async function seedEvalSession(
     updatedAt: now,
   });
 
+  // The seeded axis state represents state PRIOR to the eval turn. The post-turn
+  // engine advances at tick = assistantTurnIndex (= maxSeededTurnIndex + 1) and
+  // skips via its idempotency guard when persisted.tick >= that tick. A seed
+  // authored at tick 1 (or a trajectory carry-over seed at tick N) would collide
+  // with the first eval turn (tick 1) and the engine would never advance — losing
+  // the emotional-axis update snapshot. Clamp the persisted top-level tick to the
+  // last seeded turn so the eval turn always advances from the seed. lastTrace/
+  // history ticks are untouched (render rules read those).
+  const seedAxisStateForWrite = input.seedAxisState
+    ? {
+        ...input.seedAxisState,
+        tick: clampSeedAxisTick(input.seedAxisState.tick, maxSeededTurnIndex),
+      }
+    : null;
+
   await db.insert(sessionState).values({
     sessionId,
     derivedState: input.sessionState ?? defaultDerivedState(),
-    localRelationshipDelta: input.seedAxisState
-      ? mergeAxisStateIntoDelta({}, input.seedAxisState)
+    localRelationshipDelta: seedAxisStateForWrite
+      ? mergeAxisStateIntoDelta({}, seedAxisStateForWrite)
       : null,
     lastTurnIndex: maxSeededTurnIndex,
     updatedAt: now,
