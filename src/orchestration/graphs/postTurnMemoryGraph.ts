@@ -19,7 +19,7 @@ import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
 import { getEmotionalAxisEvalConfig } from '../../eval/emotionalAxisEvalConfig';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
-import { readAxisState, writeAxisState } from '../../state/emotionalEngine/axisStatePersistence';
+import { readAxisState, writeAxisState, persistAxisSnapshot, buildAxisTurnExportSnapshot } from '../../state/emotionalEngine/axisStatePersistence';
 import { loadCharacterDefaults } from '../../character/characterDefaults';
 import { getSessionState } from '../../state/sessionStateRepo';
 import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
@@ -162,6 +162,8 @@ export interface PostTurnMemoryGraphDeps {
   emotionalEngineEnabled: boolean;
   /** TG1 (tracing): Injected compute core (default = traced). Wraps advanceCharacterState + computeBands. */
   computeEngineAdvanceFn: typeof computeEngineAdvance;
+  /** TG1: Persist axis snapshot to both session_state and chat_messages atomically. */
+  persistAxisSnapshotFn: typeof persistAxisSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +237,7 @@ export function defaultPostTurnMemoryGraphDeps(overrides?: Partial<PostTurnMemor
     getSessionStateFn: overrides?.getSessionStateFn ?? getSessionState,
     emotionalEngineEnabled: overrides?.emotionalEngineEnabled ?? env.EMOTIONAL_ENGINE_ENABLED,
     computeEngineAdvanceFn: overrides?.computeEngineAdvanceFn ?? tracedComputeEngineAdvance,
+    persistAxisSnapshotFn: overrides?.persistAxisSnapshotFn ?? persistAxisSnapshot,
   };
 }
 
@@ -410,8 +413,34 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
         history: updatedHistory,
       };
 
-      // Write to DB
-      await deps.writeAxisStateFn(session.sessionId, nextPersisted);
+      // TG1: Build per-turn export snapshot
+      const exportSnapshot = buildAxisTurnExportSnapshot({
+        tick,
+        scope,
+        axes: next,
+        bands,
+        axesBefore: trace.axesBefore,
+        eventType: event?.type,
+        eventIntensity: event?.intensity,
+        eventDeltas,
+        couplingsFired: trace.couplingsFired,
+        effectiveBaselines: trace.effectiveBaselines,
+        conditionTransitions: trace.conditionTransitions,
+        resolvedBaselines: {
+          connection: axesConfig.connection.baseline,
+          valence: axesConfig.valence.baseline,
+          arousal: axesConfig.arousal.baseline,
+          restraint: axesConfig.restraint.baseline,
+        },
+      });
+
+      // Persist axis state + message snapshot atomically
+      await deps.persistAxisSnapshotFn(
+        session.sessionId,
+        state.payload.assistantMessageId,
+        nextPersisted,
+        exportSnapshot,
+      );
 
       // Observability snapshot
       deps.recordSnapshotFn({

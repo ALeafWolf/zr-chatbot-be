@@ -22,7 +22,8 @@ function makeMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
     id: overrides.id ?? "msg-0", sessionId: overrides.sessionId ?? SESSION_ID,
     turnIndex: overrides.turnIndex ?? 0, role: overrides.role ?? "user",
     route: overrides.route ?? "roleplay_turn", content: overrides.content ?? "Hello",
-    thoughts: overrides.thoughts ?? null, validatorResult: overrides.validatorResult ?? null,
+    thoughts: overrides.thoughts ?? null, emotionalAxis: overrides.emotionalAxis ?? null,
+    validatorResult: overrides.validatorResult ?? null,
     createdAt: overrides.createdAt ?? new Date("2025-06-01T10:00:00Z"),
   };
 }

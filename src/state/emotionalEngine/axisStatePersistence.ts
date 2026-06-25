@@ -5,9 +5,20 @@
 // Design D2: versioned, merge-preserving, bounded history (cap 6).
 // ---------------------------------------------------------------------------
 
+import { db } from "../../db/client";
+import { chatMessages, sessionState as sessionStateTable } from "../../db/schema/chat";
+import { eq } from "drizzle-orm";
 import { getSessionState, upsertSessionState } from "../sessionStateRepo";
 import type { SessionState } from "../../db/schema/chat";
-import type { PersistedAxisState, AxisName } from "./types";
+import type {
+  PersistedAxisState,
+  AxisName,
+  Band,
+  CharacterStateAxes,
+  TurnEventType,
+  ConditionTransition,
+  EmotionalAxisTurnExportSnapshot,
+} from "./types";
 import { HISTORY_CAP } from "./constants";
 
 // ---------------------------------------------------------------------------
@@ -177,8 +188,247 @@ export async function writeAxisState(
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// TG1: Export snapshot builder
 // ---------------------------------------------------------------------------
+
+/**
+ * Build a versioned `EmotionalAxisTurnExportSnapshot` from the post-turn
+ * engine compute result. Caller provides the values already available in
+ * `applyEngineStateNode` after `computeEngineAdvance`.
+ */
+export function buildAxisTurnExportSnapshot(input: {
+  tick: number;
+  scope: string;
+  axes: CharacterStateAxes;
+  bands: Record<AxisName, Band>;
+  axesBefore: CharacterStateAxes;
+  eventType?: TurnEventType;
+  eventIntensity?: number;
+  eventDeltas?: Partial<CharacterStateAxes>;
+  couplingsFired?: string[];
+  effectiveBaselines?: Partial<CharacterStateAxes>;
+  conditionTransitions?: ConditionTransition[];
+  resolvedBaselines?: CharacterStateAxes;
+}): EmotionalAxisTurnExportSnapshot {
+  const snapshot: EmotionalAxisTurnExportSnapshot = {
+    version: 1,
+    source: "post_turn_engine",
+    tick: input.tick,
+    scope: input.scope,
+    axes: { ...input.axes },
+    bands: { ...input.bands },
+    axes_before: input.axesBefore ? { ...input.axesBefore } : undefined,
+  };
+
+  if (input.eventType !== undefined) {
+    snapshot.event_type = input.eventType;
+  }
+  if (input.eventIntensity !== undefined) {
+    snapshot.event_intensity = input.eventIntensity;
+  }
+  if (input.eventDeltas !== undefined && Object.keys(input.eventDeltas).length > 0) {
+    snapshot.event_deltas = { ...input.eventDeltas };
+  }
+  if (input.couplingsFired !== undefined && input.couplingsFired.length > 0) {
+    snapshot.couplings_fired = [...input.couplingsFired];
+  }
+  if (input.effectiveBaselines !== undefined && Object.keys(input.effectiveBaselines).length > 0) {
+    snapshot.effective_baselines = { ...input.effectiveBaselines };
+  }
+  if (input.conditionTransitions !== undefined && input.conditionTransitions.length > 0) {
+    snapshot.condition_transitions = input.conditionTransitions.map((ct) => ({ ...ct }));
+  }
+  if (input.resolvedBaselines !== undefined) {
+    snapshot.resolved_baselines = { ...input.resolvedBaselines };
+  }
+
+  return snapshot;
+}
+
+// ---------------------------------------------------------------------------
+// TG1: Export snapshot normalizer (safe for malformed stored JSON)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize an unknown stored value into an `EmotionalAxisTurnExportSnapshot`
+ * for export formatting. Returns `null` when the value is null, missing,
+ * version-mismatched, or structurally invalid, so malformed historical data
+ * never breaks the export.
+ */
+export function normalizeAxisTurnExportSnapshot(
+  raw: unknown,
+): EmotionalAxisTurnExportSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const obj = raw as Record<string, unknown>;
+
+  // Version check
+  if (obj.version !== 1) return null;
+  if (obj.source !== "post_turn_engine") return null;
+
+  // Required numeric tick
+  const tick = safeNumber(obj.tick, -1);
+  if (tick < 0) return null;
+
+  // Required scope string
+  if (typeof obj.scope !== "string" || obj.scope.length === 0) return null;
+
+  // Required axes — all four must be finite numbers
+  const axesRaw = obj.axes;
+  if (!axesRaw || typeof axesRaw !== "object") return null;
+  const ax = axesRaw as Record<string, unknown>;
+  const connection = ax.connection;
+  const valence = ax.valence;
+  const arousal = ax.arousal;
+  const restraint = ax.restraint;
+  if (
+    typeof connection !== "number" || !Number.isFinite(connection) ||
+    typeof valence !== "number" || !Number.isFinite(valence) ||
+    typeof arousal !== "number" || !Number.isFinite(arousal) ||
+    typeof restraint !== "number" || !Number.isFinite(restraint)
+  ) {
+    return null;
+  }
+  const axes: CharacterStateAxes = {
+    connection,
+    valence,
+    arousal,
+    restraint,
+  };
+
+  // Required bands — all four must be valid labels
+  const bandsRaw = obj.bands;
+  if (!bandsRaw || typeof bandsRaw !== "object") return null;
+  const br = bandsRaw as Record<string, unknown>;
+  const bConn = br.connection;
+  const bVal = br.valence;
+  const bAro = br.arousal;
+  const bRes = br.restraint;
+  if (
+    !isValidBand(bConn) ||
+    !isValidBand(bVal) ||
+    !isValidBand(bAro) ||
+    !isValidBand(bRes)
+  ) {
+    return null;
+  }
+  const bands: Record<AxisName, Band> = {
+    connection: bConn as Band,
+    valence: bVal as Band,
+    arousal: bAro as Band,
+    restraint: bRes as Band,
+  };
+
+  return {
+    version: 1,
+    source: "post_turn_engine",
+    tick,
+    scope: obj.scope as string,
+    axes,
+    bands,
+    axes_before: safeCharacterStateAxes(obj.axes_before),
+    event_type: typeof obj.event_type === "string" ? (obj.event_type as TurnEventType) : undefined,
+    event_intensity: typeof obj.event_intensity === "number" && Number.isFinite(obj.event_intensity) ? obj.event_intensity : undefined,
+    event_deltas: safePartialCharacterStateAxes(obj.event_deltas),
+    couplings_fired: Array.isArray(obj.couplings_fired) ? obj.couplings_fired.map(String) : undefined,
+    effective_baselines: safePartialCharacterStateAxes(obj.effective_baselines),
+    condition_transitions: Array.isArray(obj.condition_transitions)
+      ? obj.condition_transitions
+      : undefined,
+    resolved_baselines: safeCharacterStateAxes(obj.resolved_baselines),
+  };
+}
+
+function safeCharacterStateAxes(
+  raw: unknown,
+): CharacterStateAxes | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.connection !== "number" &&
+    typeof r.valence !== "number" &&
+    typeof r.arousal !== "number" &&
+    typeof r.restraint !== "number"
+  ) {
+    return undefined;
+  }
+  return {
+    connection: safeNumber(r.connection, 0),
+    valence: safeNumber(r.valence, 0),
+    arousal: safeNumber(r.arousal, 0),
+    restraint: safeNumber(r.restraint, 0),
+  };
+}
+
+function safePartialCharacterStateAxes(
+  raw: unknown,
+): Partial<CharacterStateAxes> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const result: Partial<CharacterStateAxes> = {};
+  if (typeof r.connection === "number") result.connection = r.connection;
+  if (typeof r.valence === "number") result.valence = r.valence;
+  if (typeof r.arousal === "number") result.arousal = r.arousal;
+  if (typeof r.restraint === "number") result.restraint = r.restraint;
+  if (Object.keys(result).length === 0) return undefined;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// TG1: Persist both axis state and message snapshot in one transaction
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist the axis state update and the per-turn message snapshot atomically.
+ * Updates `session_state.local_relationship_delta.axis_state` and
+ * `chat_messages.emotional_axis` for the given `assistantMessageId`
+ * inside a single DB transaction.
+ */
+export async function persistAxisSnapshot(
+  sessionId: string,
+  assistantMessageId: string,
+  nextPersisted: PersistedAxisState,
+  exportSnapshot: EmotionalAxisTurnExportSnapshot,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    // 1. Read current session_state row within the transaction
+    const rows = await tx
+      .select()
+      .from(sessionStateTable)
+      .where(eq(sessionStateTable.sessionId, sessionId))
+      .limit(1);
+    const row = rows[0] ?? null;
+
+    const existingDelta: Record<string, unknown> =
+      row?.localRelationshipDelta
+        ? (row.localRelationshipDelta as Record<string, unknown>)
+        : {};
+
+    const merged = mergeAxisStateIntoDelta(existingDelta, nextPersisted);
+
+    // 2. Upsert session_state with merged delta
+    await tx
+      .insert(sessionStateTable)
+      .values({
+        sessionId,
+        localRelationshipDelta: merged,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: sessionStateTable.sessionId,
+        set: {
+          localRelationshipDelta: merged,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 3. Update chat_messages with the export snapshot
+    await tx
+      .update(chatMessages)
+      .set({ emotionalAxis: exportSnapshot })
+      .where(eq(chatMessages.id, assistantMessageId));
+  });
+}
 
 function safeNumber(v: unknown, fallback: number): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -190,4 +440,8 @@ const VALID_BANDS = new Set(["high", "mid", "low"]);
 function safeBand(v: unknown): "high" | "mid" | "low" {
   if (typeof v === "string" && VALID_BANDS.has(v)) return v as "high" | "mid" | "low";
   return "mid";
+}
+
+function isValidBand(v: unknown): v is "high" | "mid" | "low" {
+  return typeof v === "string" && VALID_BANDS.has(v);
 }

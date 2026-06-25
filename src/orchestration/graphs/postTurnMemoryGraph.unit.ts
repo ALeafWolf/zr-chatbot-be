@@ -209,6 +209,7 @@ function createFakeDeps(): { deps: PostTurnMemoryGraphDeps; calls: DepsCalls } {
         eventDeltas: {},
       };
     }) as any,
+    persistAxisSnapshotFn: async (_sessionId, _messageId, _next, _snapshot) => {},
   };
 
   return { deps, calls };
@@ -443,12 +444,12 @@ describe("postTurnMemoryGraph", () => {
     }>) {
       const captured: {
         computeArgs: any[];
-        writeCalls: Array<{ sessionId: string; state: any }>;
+        persistSnapshotCalls: Array<{ sessionId: string; assistantMessageId: string; state: any; snapshot: any }>;
         getSessionCalls: string[];
         snapshotCalls: any[];
       } = {
         computeArgs: [],
-        writeCalls: [],
+        persistSnapshotCalls: [],
         getSessionCalls: [],
         snapshotCalls: [],
       };
@@ -490,8 +491,8 @@ describe("postTurnMemoryGraph", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       }) as any;
 
-      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
-        captured.writeCalls.push({ sessionId, state });
+      deps.persistAxisSnapshotFn = async (sessionId: string, assistantMessageId: string, state: any, snapshot: any) => {
+        captured.persistSnapshotCalls.push({ sessionId, assistantMessageId, state, snapshot });
       };
 
       deps.getSessionStateFn = async (sessionId: string) => {
@@ -535,7 +536,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
-      assert.equal(captured.writeCalls.length, 1, "write called once");
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once");
       assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
       // Event object passed to compute fn
       assert.ok(captured.computeArgs[0].event !== null, "event passed to compute");
@@ -554,7 +555,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
-      assert.equal(captured.writeCalls.length, 1, "write called once even with null event");
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once even with null event");
       assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
       assert.equal(captured.computeArgs[0].event, null, "null event for drift-only tick");
     });
@@ -568,7 +569,7 @@ describe("postTurnMemoryGraph", () => {
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.computeArgs.length, 0, "compute NOT called when flag off");
-      assert.equal(captured.writeCalls.length, 0, "write NOT called when flag off");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when flag off");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when flag off");
       // Should still have snapshot (only from extraction, not engine)
       const engineSnapshots = captured.snapshotCalls.filter((s: any) => s.engineState);
@@ -619,9 +620,9 @@ describe("postTurnMemoryGraph", () => {
         },
       });
 
-      // Write should have been called with bands reflecting hysteresis
-      assert.equal(captured.writeCalls.length, 1, "write called once");
-      const writtenState = captured.writeCalls[0].state;
+      // Persist should have been called with bands reflecting hysteresis
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once");
+      const writtenState = captured.persistSnapshotCalls[0].state;
       // connection was "high" before, now at 0.6 — still "high" (above 0.55 exit)
       assert.equal(writtenState.bands.connection, "high", "connection stays high via hysteresis");
       // restraint was "high" before, now at 0.6 — still "high" (above 0.55 exit)
@@ -704,7 +705,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes without error");
-      assert.equal(captured.writeCalls.length, 0, "write NOT called when no emotional_axes");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when no emotional_axes");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when no emotional_axes");
       assert.equal(captured.computeArgs.length, 0, "compute NOT called when no emotional_axes");
       // Verify engine_state step was marked complete
@@ -716,8 +717,8 @@ describe("postTurnMemoryGraph", () => {
     it("P1: persisted.tick >= assistantTurnIndex ⇒ skip compute/write, mark complete", async () => {
       const captured: {
         computeArgs: any[];
-        writeCalls: Array<{ sessionId: string; state: any }>;
-      } = { computeArgs: [], writeCalls: [] };
+        persistSnapshotCalls: Array<{ sessionId: string; state: any }>;
+      } = { computeArgs: [], persistSnapshotCalls: [] };
 
       const { deps, calls } = createFakeDeps();
       deps.emotionalEngineEnabled = true;
@@ -745,15 +746,15 @@ describe("postTurnMemoryGraph", () => {
         throw new Error("should NOT be called on retry");
       }) as any;
 
-      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
-        captured.writeCalls.push({ sessionId, state });
+      deps.persistAxisSnapshotFn = async (sessionId: string, _messageId: string, state: any, _snapshot: any) => {
+        captured.persistSnapshotCalls.push({ sessionId, state });
       };
 
       await createPostTurnMemoryGraph(deps).invoke(createInitialState());
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.computeArgs.length, 0, "computeEngineAdvanceFn NOT called on retry");
-      assert.equal(captured.writeCalls.length, 0, "writeAxisStateFn NOT called on retry");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistAxisSnapshotFn NOT called on retry");
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted (retry no-op)");
     });
@@ -831,7 +832,7 @@ describe("postTurnMemoryGraph", () => {
 
         assert.equal(calls.completeJobFn.length, 1, "job completes");
         assert.equal(captured.computeArgs.length, 0, "compute NOT called when eval engineEnabled=false");
-        assert.equal(captured.writeCalls.length, 0, "write NOT called when eval engineEnabled=false");
+        assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when eval engineEnabled=false");
         const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
         assert.equal(engineSteps.length, 1, "engine_state step persisted (short-circuited)");
       } finally {

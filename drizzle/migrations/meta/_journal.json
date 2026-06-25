@@ -1,111 +1,118 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1746299461000,
-      "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1746462261000,
-      "tag": "0001_add_chat_message_thoughts",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1749292800000,
-      "tag": "0002_rename_character_zou_to_zuo",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1749388800000,
-      "tag": "0003_add_session_summaries",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1749475200000,
-      "tag": "0004_add_session_memory_chunks",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1749561600000,
-      "tag": "0005_add_chat_session_display_title",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1749648000000,
-      "tag": "0006_add_chat_session_thinking",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1752000000000,
-      "tag": "0007_add_chat_session_temperature",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1762905600000,
-      "tag": "0008_add_structmem",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1762938000000,
-      "tag": "0009_add_post_turn_jobs",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1762938001000,
-      "tag": "0010_add_structmem_consolidation",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1762938002000,
-      "tag": "0011_add_memory_lifecycle_status",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1762938003000,
-      "tag": "0012_add_chat_message_route",
-      "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "7",
-      "when": 1779918758647,
-      "tag": "0013_add_internal_logic_evidence",
-      "breakpoints": true
-    },
-    {
-      "idx": 14,
-      "version": "7",
-      "when": 1780163299573,
-      "tag": "0014_fine_supernaut",
-      "breakpoints": true
-    }
-  ]
+    "version":  "7",
+    "dialect":  "postgresql",
+    "entries":  [
+                    {
+                        "idx":  0,
+                        "version":  "7",
+                        "when":  1746299461000,
+                        "tag":  "0000_init",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  1,
+                        "version":  "7",
+                        "when":  1746462261000,
+                        "tag":  "0001_add_chat_message_thoughts",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  2,
+                        "version":  "7",
+                        "when":  1749292800000,
+                        "tag":  "0002_rename_character_zou_to_zuo",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  3,
+                        "version":  "7",
+                        "when":  1749388800000,
+                        "tag":  "0003_add_session_summaries",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  4,
+                        "version":  "7",
+                        "when":  1749475200000,
+                        "tag":  "0004_add_session_memory_chunks",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  5,
+                        "version":  "7",
+                        "when":  1749561600000,
+                        "tag":  "0005_add_chat_session_display_title",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  6,
+                        "version":  "7",
+                        "when":  1749648000000,
+                        "tag":  "0006_add_chat_session_thinking",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  7,
+                        "version":  "7",
+                        "when":  1752000000000,
+                        "tag":  "0007_add_chat_session_temperature",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  8,
+                        "version":  "7",
+                        "when":  1762905600000,
+                        "tag":  "0008_add_structmem",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  9,
+                        "version":  "7",
+                        "when":  1762938000000,
+                        "tag":  "0009_add_post_turn_jobs",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  10,
+                        "version":  "7",
+                        "when":  1762938001000,
+                        "tag":  "0010_add_structmem_consolidation",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  11,
+                        "version":  "7",
+                        "when":  1762938002000,
+                        "tag":  "0011_add_memory_lifecycle_status",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  12,
+                        "version":  "7",
+                        "when":  1762938003000,
+                        "tag":  "0012_add_chat_message_route",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  13,
+                        "version":  "7",
+                        "when":  1779918758647,
+                        "tag":  "0013_add_internal_logic_evidence",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  14,
+                        "version":  "7",
+                        "when":  1780163299573,
+                        "tag":  "0014_fine_supernaut",
+                        "breakpoints":  true
+                    },
+                    {
+                        "idx":  15,
+                        "breakpoints":  true,
+                        "when":  1782398125000,
+                        "version":  "7",
+                        "tag":  "0015_add_chat_message_emotional_axis"
+                    }
+                ]
 }

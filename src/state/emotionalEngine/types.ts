@@ -205,3 +205,28 @@ export interface PersistedAxisState {
  * Missing axes fall back to the default `emotional_axes` baseline.
  */
 export type ScopeBaselineOverrides = Record<string, Partial<CharacterStateAxes>>;
+
+// ---------------------------------------------------------------------------
+// TG1: Per-turn export snapshot (stored in chat_messages.emotional_axis JSONB)
+// ---------------------------------------------------------------------------
+
+/**
+ * Versioned per-turn emotional-axis snapshot stored on the assistant message.
+ * Built during the post-turn engine step and consumed by export formatters.
+ */
+export interface EmotionalAxisTurnExportSnapshot {
+  version: 1;
+  source: "post_turn_engine";
+  tick: number;
+  scope: string;
+  axes: CharacterStateAxes;
+  bands: Record<AxisName, Band>;
+  axes_before?: CharacterStateAxes;
+  event_type?: TurnEventType;
+  event_intensity?: number;
+  event_deltas?: Partial<CharacterStateAxes>;
+  couplings_fired?: string[];
+  effective_baselines?: Partial<CharacterStateAxes>;
+  condition_transitions?: ConditionTransition[];
+  resolved_baselines?: CharacterStateAxes;
+}
