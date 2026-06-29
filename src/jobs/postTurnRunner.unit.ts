@@ -26,11 +26,24 @@ class TestPostTurnRunner extends PostTurnRunner {
     return rawGraph;
   }
   async callRunClaimedJob(job: PostTurnJobRow): Promise<boolean> { return await (this as any).runClaimedJob(job); }
-  override async loadAndClaimEvalJob(_jobId: string): Promise<{ job: PostTurnJobRow } | { missing: boolean; completed: boolean }> { return { job: job({ status: "pending", payload: PAYLOAD_WITH_SIG }) as PostTurnJobRow }; }
+  // Override runSyncForEval to avoid DB access in tests — delegates to runClaimedJob
+  protected override async runSyncForEval(_jobId: string): Promise<void> {
+    const j = job({ status: "pending", payload: PAYLOAD_WITH_SIG }) as PostTurnJobRow;
+    const succeeded = await this.runClaimedJob(j);
+    await this.completeJob(j.id);
+    if (!succeeded) throw new Error("post_turn_job_failed");
+  }
 }
 
 class MissingJobRunner extends TestPostTurnRunner {
-  override async loadAndClaimEvalJob(_jobId: string): Promise<{ job: PostTurnJobRow } | { missing: boolean; completed: boolean }> { return { missing: true, completed: false }; }
+  protected override async runSyncForEval(_jobId: string): Promise<void> {
+    const { recordMemoryWriteSnapshot } = require("../eval/evalSnapshots");
+    recordMemoryWriteSnapshot({
+      status: "failed",
+      error: `post_turn_job_not_found:${_jobId}`,
+    });
+    throw new Error(`post_turn_job_not_found:${_jobId}`);
+  }
 }
 
 const PAYLOAD: any = { version: 1, sessionId: "s", userMessage: "hi", assistantReply: "ho", session: { sessionId: "s", characterId: "c", playerId: "p", mode: "canonical_live", continuityScope: "main", continuityFamily: "main_world", personaOverlayId: null, memoryNamespace: "ns", pinnedTime: null, pinnedLocation: null, writebackPolicy: "normal", sessionSummary: null, displayTitle: null, thinking: false, temperature: 0.7 }, derivedState: { inferredMood: "n", inferredActivity: "c", conversationalStance: "n" }, shouldWriteMemory: true, userTurnIndex: 1, assistantTurnIndex: 2, userMessageId: "mu", assistantMessageId: "ma", recentMemorySummaries: [], signals: undefined };
@@ -112,5 +125,29 @@ describe("PostTurnRunner behavior", () => {
     assert.strictEqual(threw2, true, "missing job — throws");
     assert.strictEqual(capture2.memoryWrite.status, "failed", "missing job — capture status");
     assert.strictEqual(r2.completeCalls.length, 0, "missing job — no completeJob");
+  });
+
+  it("eval isolation: wake() is a no-op while an eval capture is active (review-026)", async () => {
+    class WakeProbeRunner extends PostTurnRunner {
+      public loopRuns = 0;
+      protected override async runLoop(): Promise<void> {
+        this.loopRuns += 1;
+      }
+    }
+
+    // Outside an eval capture, wake() starts the loop.
+    const outside = new WakeProbeRunner();
+    outside.wake();
+    assert.strictEqual(outside.loopRuns, 1, "wake runs the loop outside an eval capture");
+
+    // Inside an eval capture, wake() must NOT start the loop — otherwise the loop
+    // would claim the eval's post-turn job and run the engine outside the capture,
+    // dropping the emotional-axis update snapshot (review-022..025).
+    const inside = new WakeProbeRunner();
+    const capture = createAgentEvalCapture({ scenarioId: "wake-gate", evalSessionId: "s" });
+    await withAgentEvalCapture(capture, async () => {
+      inside.wake();
+    });
+    assert.strictEqual(inside.loopRuns, 0, "wake is a no-op inside an eval capture");
   });
 });

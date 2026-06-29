@@ -1,6 +1,8 @@
 ﻿import { describe, it } from "node:test";
 import assert from "node:assert";
+import { MissingAssistantMessageError } from "../../state/emotionalEngine/axisStatePersistence";
 import { createPostTurnMemoryGraph, applyEngineStateInputMapper, applyEngineStateOutputMapper, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
+import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import { createInitialPostTurnRuntimeState } from "../graphState/postTurnGraphState";
 import { INITIAL_POST_TURN_STEP_STATUS, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepState, type PostTurnStepStatus } from "../../jobs/postTurnJobPayload";
 import type { PostTurnWritePlan } from "../../jobs/postTurnPolicies";
@@ -208,6 +210,7 @@ function createFakeDeps(): { deps: PostTurnMemoryGraphDeps; calls: DepsCalls } {
         eventDeltas: {},
       };
     }) as any,
+    persistAxisSnapshotFn: async (_sessionId, _messageId, _next, _snapshot) => {},
   };
 
   return { deps, calls };
@@ -442,12 +445,12 @@ describe("postTurnMemoryGraph", () => {
     }>) {
       const captured: {
         computeArgs: any[];
-        writeCalls: Array<{ sessionId: string; state: any }>;
+        persistSnapshotCalls: Array<{ sessionId: string; assistantMessageId: string; state: any; snapshot: any }>;
         getSessionCalls: string[];
         snapshotCalls: any[];
       } = {
         computeArgs: [],
-        writeCalls: [],
+        persistSnapshotCalls: [],
         getSessionCalls: [],
         snapshotCalls: [],
       };
@@ -489,8 +492,8 @@ describe("postTurnMemoryGraph", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       }) as any;
 
-      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
-        captured.writeCalls.push({ sessionId, state });
+      deps.persistAxisSnapshotFn = async (sessionId: string, assistantMessageId: string, state: any, snapshot: any) => {
+        captured.persistSnapshotCalls.push({ sessionId, assistantMessageId, state, snapshot });
       };
 
       deps.getSessionStateFn = async (sessionId: string) => {
@@ -534,7 +537,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
-      assert.equal(captured.writeCalls.length, 1, "write called once");
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once");
       assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
       // Event object passed to compute fn
       assert.ok(captured.computeArgs[0].event !== null, "event passed to compute");
@@ -553,7 +556,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
-      assert.equal(captured.writeCalls.length, 1, "write called once even with null event");
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once even with null event");
       assert.equal(captured.computeArgs.length, 1, "computeEngineAdvanceFn called once");
       assert.equal(captured.computeArgs[0].event, null, "null event for drift-only tick");
     });
@@ -567,7 +570,7 @@ describe("postTurnMemoryGraph", () => {
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.computeArgs.length, 0, "compute NOT called when flag off");
-      assert.equal(captured.writeCalls.length, 0, "write NOT called when flag off");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when flag off");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when flag off");
       // Should still have snapshot (only from extraction, not engine)
       const engineSnapshots = captured.snapshotCalls.filter((s: any) => s.engineState);
@@ -618,9 +621,9 @@ describe("postTurnMemoryGraph", () => {
         },
       });
 
-      // Write should have been called with bands reflecting hysteresis
-      assert.equal(captured.writeCalls.length, 1, "write called once");
-      const writtenState = captured.writeCalls[0].state;
+      // Persist should have been called with bands reflecting hysteresis
+      assert.equal(captured.persistSnapshotCalls.length, 1, "persistSnapshot called once");
+      const writtenState = captured.persistSnapshotCalls[0].state;
       // connection was "high" before, now at 0.6 — still "high" (above 0.55 exit)
       assert.equal(writtenState.bands.connection, "high", "connection stays high via hysteresis");
       // restraint was "high" before, now at 0.6 — still "high" (above 0.55 exit)
@@ -703,7 +706,7 @@ describe("postTurnMemoryGraph", () => {
       });
 
       assert.equal(calls.completeJobFn.length, 1, "job completes without error");
-      assert.equal(captured.writeCalls.length, 0, "write NOT called when no emotional_axes");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when no emotional_axes");
       assert.equal(captured.getSessionCalls.length, 0, "getSession NOT called when no emotional_axes");
       assert.equal(captured.computeArgs.length, 0, "compute NOT called when no emotional_axes");
       // Verify engine_state step was marked complete
@@ -715,8 +718,8 @@ describe("postTurnMemoryGraph", () => {
     it("P1: persisted.tick >= assistantTurnIndex ⇒ skip compute/write, mark complete", async () => {
       const captured: {
         computeArgs: any[];
-        writeCalls: Array<{ sessionId: string; state: any }>;
-      } = { computeArgs: [], writeCalls: [] };
+        persistSnapshotCalls: Array<{ sessionId: string; state: any }>;
+      } = { computeArgs: [], persistSnapshotCalls: [] };
 
       const { deps, calls } = createFakeDeps();
       deps.emotionalEngineEnabled = true;
@@ -744,17 +747,98 @@ describe("postTurnMemoryGraph", () => {
         throw new Error("should NOT be called on retry");
       }) as any;
 
-      deps.writeAxisStateFn = async (sessionId: string, state: any) => {
-        captured.writeCalls.push({ sessionId, state });
+      deps.persistAxisSnapshotFn = async (sessionId: string, _messageId: string, state: any, _snapshot: any) => {
+        captured.persistSnapshotCalls.push({ sessionId, state });
       };
 
       await createPostTurnMemoryGraph(deps).invoke(createInitialState());
 
       assert.equal(calls.completeJobFn.length, 1, "job completes");
       assert.equal(captured.computeArgs.length, 0, "computeEngineAdvanceFn NOT called on retry");
-      assert.equal(captured.writeCalls.length, 0, "writeAxisStateFn NOT called on retry");
+      assert.equal(captured.persistSnapshotCalls.length, 0, "persistAxisSnapshotFn NOT called on retry");
       const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
       assert.equal(engineSteps.length, 1, "engine_state step persisted (retry no-op)");
+    });
+
+    // -------------------------------------------------------------------
+    // TG5 — Behavioral engine-side variant tests (review-012)
+    // -------------------------------------------------------------------
+
+    it("TG5 F3: noCoupling toggle controls whether couplings reach the engine", async () => {
+      // Minimal non-empty coupling fixture to give the test teeth.
+      const TEST_COUPLINGS = [{ id: "zr_c1", source: "arousal", target: "restraint", effect_type: "direct_delta", coefficient: 0.6, derived_from: "test" }];
+
+      async function runNoCouplingTest(noCoupling: boolean) {
+        const captured: { computeArgs: any[] } = { computeArgs: [] };
+        const { deps, calls } = createFakeDeps();
+        deps.emotionalEngineEnabled = true;
+        // Override loadCharacterDefaultsFn to include non-empty couplings
+        deps.loadCharacterDefaultsFn = (_id: string) => ({
+          character_id: "zuo_ran",
+          name: "Zuo Ran",
+          archetype: "elite_lawyer_controlled_romantic",
+          identity: "",
+          speech_style: { language: "zh-CN", formality: "formal", emotionality: "restrained", preferred_patterns: [], avoid: [] },
+          hard_rules: [],
+          interaction_defaults: { default_continuity_scope: "main", default_emotional_baseline: "controlled_tenderness", default_relationship_baseline: "established_partners", response_length: "full", allows_personal_topics: "true_within_scope" },
+          safe_deflection: "",
+          version: "2.1",
+          emotional_axes: {
+            connection: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            valence: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            arousal: { baseline: 0, driftRate: 0.02, min: -1, max: 1 },
+            restraint: { baseline: 0.7, driftRate: 0.02, min: -1, max: 1 },
+          },
+          emotional_coupling: TEST_COUPLINGS as any,
+        });
+
+        deps.computeEngineAdvanceFn = (async (input: any) => {
+          captured.computeArgs.push(input);
+          return {
+            next: input.axesBefore,
+            trace: { tick: input.tick, axesBefore: input.axesBefore, axesAfter: input.axesBefore, couplingsFired: [], effectiveBaselines: {} },
+            bands: input.previousBands,
+            eventDeltas: {},
+          };
+        }) as any;
+
+        const savedConfig = setEmotionalAxisEvalConfig({ noCoupling });
+        try {
+          await createPostTurnMemoryGraph(deps).invoke(createInitialState());
+          return captured;
+        } finally {
+          setEmotionalAxisEvalConfig(savedConfig);
+        }
+      }
+
+      // With noCoupling=false → couplings should pass through to the engine
+      const withCouplings = await runNoCouplingTest(false);
+      assert.ok(withCouplings.computeArgs.length >= 1, "computeEngineAdvanceFn called");
+      assert.ok(withCouplings.computeArgs[0].couplings.length > 0, "noCoupling=false ⇒ couplings pass through (non-empty)");
+      assert.equal(withCouplings.computeArgs[0].couplings[0].id, "zr_c1", "correct coupling passed through");
+
+      // With noCoupling=true → couplings should be empty
+      const withoutCouplings = await runNoCouplingTest(true);
+      assert.ok(withoutCouplings.computeArgs.length >= 1, "computeEngineAdvanceFn called");
+      assert.equal(withoutCouplings.computeArgs[0].couplings.length, 0, "noCoupling=true ⇒ couplings array is empty");
+    });
+
+    it("TG5 F3: engineEnabled=false via eval config ⇒ engine_state short-circuits", async () => {
+      const savedConfig = setEmotionalAxisEvalConfig({ engineEnabled: false });
+      try {
+        const { captured, calls } = await runEngineTest({
+          turnEvent: { type: 'user_pursues_connection', intensity: 0.5, reason: 'test' },
+          emotionalEngineEnabled: true,  // deps flag is true, eval config overrides
+        });
+
+        assert.equal(calls.completeJobFn.length, 1, "job completes");
+        assert.equal(captured.computeArgs.length, 0, "compute NOT called when eval engineEnabled=false");
+        assert.equal(captured.persistSnapshotCalls.length, 0, "persistSnapshot NOT called when eval engineEnabled=false");
+        const engineSteps = calls.persistStepComplete.filter((c: any) => c.step === "engine_state");
+        assert.equal(engineSteps.length, 1, "engine_state step persisted (short-circuited)");
+      } finally {
+        setEmotionalAxisEvalConfig(savedConfig);
+      }
     });
   });
 
@@ -839,6 +923,60 @@ describe("postTurnMemoryGraph", () => {
       };
       const result = applyEngineStateOutputMapper(noConds);
       assert.deepEqual(result.conditionTransitions, [], "empty conditionTransitions");
+    });
+  });
+
+  // ===================================================================
+  // F1 — MissingAssistantMessageError is propagated, not swallowed
+  // ===================================================================
+
+  describe("applyEngineState — F1 missing-message propagation", () => {
+    it("propagates MissingAssistantMessageError and does NOT mark engine_state complete", async () => {
+      const { deps, calls } = createFakeDeps();
+
+      // Make persistAxisSnapshotFn throw MissingAssistantMessageError
+      deps.persistAxisSnapshotFn = async (_sessionId, _messageId, _next, _snapshot) => {
+        throw new MissingAssistantMessageError("msg-missing", "sess-001");
+      };
+
+      // Ensure engine is enabled and signals have a turn event so engine runs
+      deps.emotionalEngineEnabled = true;
+      deps.extractFn = async (_input: any) => ({
+        memoryFacts: [],
+        structMemEntries: [],
+        turnEvent: { type: 'user_pursues_connection', intensity: 1.0, reason: 'test' },
+        modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 1 },
+      });
+
+      // Build state with signals pre-populated to avoid re-extraction
+      const stepStatus: PostTurnStepStatus = {
+        ...INITIAL_POST_TURN_STEP_STATUS,
+      };
+
+      const initialState = createPostTurnMemoryGraph(deps).invoke({
+        jobId: FAKE_JOB_ID,
+        payload: FAKE_PAYLOAD,
+        session: FAKE_SESSION,
+        stepStatus,
+        completedSteps: [] as string[],
+        errors: [] as Array<{ stage: string; message: string }>,
+        signals: undefined,
+        writePlan: undefined,
+        recentMemoriesStr: "",
+        isComplete: false,
+      } as any);
+
+      const result = await initialState;
+
+      // engine_state should NOT be in completedSteps
+      const engineCompleted = result.completedSteps?.includes('engine_state');
+      assert.equal(engineCompleted, false, "engine_state must NOT be marked complete");
+
+      // An error should be present
+      assert.ok(result.errors && result.errors.length > 0, "errors should be present");
+      const engineError = result.errors?.find((e: { stage: string }) => e.stage === 'applyEngineState');
+      assert.ok(engineError, "should have an applyEngineState error");
+      assert.ok(engineError!.message.includes('msg-missing'), "error should mention missing message id");
     });
   });
 });

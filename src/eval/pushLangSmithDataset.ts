@@ -4,10 +4,12 @@
  *
  * Usage:
  *   npx tsx src/eval/pushLangSmithDataset.ts
+ *   npx tsx src/eval/pushLangSmithDataset.ts --dry-run         # preview only, no API call
  *
  * Requires LANGSMITH_API_KEY and uses LANGSMITH_EVAL_DATASET / LANGSMITH_ENDPOINT.
  */
 import { Client } from "langsmith";
+import { parseArgs } from "node:util";
 import type { ExampleCreate } from "langsmith/schemas";
 import { env } from "../config/env";
 import { flushLangSmithClient } from "./evalProcessDrain";
@@ -73,14 +75,52 @@ export function buildExampleMetadata(
     metadata.expected_final_context_mode = scenario.expected_final_context_mode;
   }
 
+  // TG3: Emotional-axis metadata
+  if (scenario.seedAxisState !== undefined) {
+    metadata.seedAxisState = scenario.seedAxisState;
+  }
+  if (scenario.expectedResolvedBaselines !== undefined) {
+    metadata.expectedResolvedBaselines = scenario.expectedResolvedBaselines;
+  }
+  if (scenario.noScopeOverride !== undefined) {
+    metadata.noScopeOverride = scenario.noScopeOverride;
+  }
+  if (scenario.continuityScope !== undefined) {
+    metadata.continuityScope = scenario.continuityScope;
+  }
+
   return metadata;
 }
 
 async function main(): Promise<void> {
-  requireLangSmithKey();
+  const args = parseArgs({ options: { "dry-run": { type: "boolean", short: "d" } }, strict: true });
+  const dryRun = args.values["dry-run"] ?? false;
 
   const scenarioSet: ScenarioSet =
     (process.env.EVAL_SCENARIO_SET as ScenarioSet) ?? "default";
+
+  // TG6: Use dedicated emotional-axis dataset when running emotional_axis set
+  // (push clears the target dataset, so a shared dataset would lose existing examples)
+  const isEmotionalAxis = scenarioSet === "emotional_axis";
+  const datasetName = isEmotionalAxis
+    ? (process.env.LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET ?? `emotional-axis-${env.LANGSMITH_EVAL_DATASET}`)
+    : env.LANGSMITH_EVAL_DATASET;
+  const { version, scenarios: allScenarios } = loadScenariosBySet(scenarioSet);
+
+  console.log(`Loaded ${allScenarios.length} scenarios (${scenarioSet} set).`);
+
+  if (dryRun) {
+    console.log(`\n[Dry-run] Would push to dataset "${datasetName}":`);
+    console.log(`  scenarios: ${allScenarios.length}`);
+    console.log(`  emotional_axis dataset: ${isEmotionalAxis}`);
+    const sampleAssertions = allScenarios[0]?.assertions?.length ?? 0;
+    console.log(`  first scenario: "${allScenarios[0]?.id ?? "(none)"}" (${sampleAssertions} assertions)`);
+    console.log(`  version: ${version}`);
+    console.log(`\nDry-run complete. Remove --dry-run to push.`);
+    return;
+  }
+
+  requireLangSmithKey();
 
   const client = new Client({
     apiKey: env.LANGSMITH_API_KEY,
@@ -88,11 +128,6 @@ async function main(): Promise<void> {
   });
 
   try {
-    const datasetName = env.LANGSMITH_EVAL_DATASET;
-    const { version, scenarios: allScenarios } = loadScenariosBySet(scenarioSet);
-
-    console.log(`Loaded ${allScenarios.length} scenarios (${scenarioSet} set).`);
-
     let dataset = await client.readDataset({ datasetName }).catch(() => null);
     if (!dataset) {
       dataset = await client.createDataset(datasetName, {

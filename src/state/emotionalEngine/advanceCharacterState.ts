@@ -17,6 +17,8 @@ import type {
   TurnEvent,
   AdvanceResult,
   AxisName,
+  ExtendedStateTrace,
+  PhasesData,
 } from './types';
 
 // All four axis keys as a const array for iteration.
@@ -63,6 +65,9 @@ function checkCondition(
  * @param eventDeltas - Incoming flat axis deltas from the event-to-delta mapping.
  * @param tick       - Monotonic tick number.
  * @param event      - Classified TurnEvent for this tick (Step 3). Recorded in trace; undefined when extraction fails.
+ * @param emitPhases - TG2: When true, capture intermediate phase states and return them in an
+ *                     `ExtendedStateTrace`. The production `StateTrace` is clean — `phases` is
+ *                     absent unless explicitly requested.
  * @returns `{ next, trace }` with the new state and a Phase-4 trace.
  */
 export function advanceCharacterState(
@@ -72,9 +77,13 @@ export function advanceCharacterState(
   eventDeltas: EventDeltas,
   tick: number,
   event?: TurnEvent,
+  emitPhases?: boolean,
 ): AdvanceResult {
   // Snapshot axes before any mutation.
   const axesBefore: CharacterStateAxes = { ...state };
+
+  // TG2: Caputure intermediate phase states when emitPhases is enabled.
+  let phases: PhasesData | undefined;
 
   // ---------------------------------------------------------------
   // Phase 1 — Apply event deltas (clamped)
@@ -91,6 +100,11 @@ export function advanceCharacterState(
   const phase1Delta: CharacterStateAxes = { connection: 0, valence: 0, arousal: 0, restraint: 0 };
   for (const axis of AXES) {
     phase1Delta[axis] = afterPhase1[axis] - state[axis];
+  }
+
+  // TG2: Record phase after event deltas applied.
+  if (emitPhases) {
+    phases = { afterEventDelta: { ...afterPhase1 }, afterCoupling: { ...afterPhase1 }, afterDrift: { ...afterPhase1 }, afterClamp: { ...afterPhase1 } };
   }
 
   // ---------------------------------------------------------------
@@ -118,6 +132,11 @@ export function advanceCharacterState(
   for (const axis of AXES) {
     const d = directDeltas[axis];
     if (d !== undefined) afterPhase2[axis] += d;
+  }
+
+  // TG2: Record phase after coupling deltas applied.
+  if (emitPhases && phases) {
+    phases.afterCoupling = { ...afterPhase2 };
   }
 
   // ---------------------------------------------------------------
@@ -189,6 +208,11 @@ export function advanceCharacterState(
     }
   }
 
+  // TG2: Record phase after drift toward effective baseline.
+  if (emitPhases && phases) {
+    phases.afterDrift = { ...afterDrift };
+  }
+
   // ---------------------------------------------------------------
   // Phase 4 — Clamp each axis + build trace
   // ---------------------------------------------------------------
@@ -197,6 +221,11 @@ export function advanceCharacterState(
   for (const axis of AXES) {
     const config = axesConfig[axis];
     next[axis] = clamp(next[axis], config.min, config.max);
+  }
+
+  // TG2: Record phase after clamp — afterClamp MUST equal axesAfter.
+  if (emitPhases && phases) {
+    phases.afterClamp = { ...next };
   }
 
   // Compute condition transitions (F25): detect couplings whose condition flipped
@@ -221,7 +250,7 @@ export function advanceCharacterState(
     }
   }
 
-  const trace = {
+  const baseTrace = {
     tick,
     event,
     axesBefore,
@@ -231,5 +260,10 @@ export function advanceCharacterState(
     conditionTransitions: conditionTransitions.length > 0 ? conditionTransitions : undefined,
   };
 
-  return { next, trace };
+  if (emitPhases) {
+    const extended: ExtendedStateTrace = { ...baseTrace, phases };
+    return { next, trace: extended };
+  }
+
+  return { next, trace: baseTrace };
 }

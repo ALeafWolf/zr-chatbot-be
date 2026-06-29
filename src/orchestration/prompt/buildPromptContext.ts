@@ -30,8 +30,10 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
-import { buildEmotionalRenderBlock } from "./renderEmotionalState";
-import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
+import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
+import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
+import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
+import { getEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -163,6 +165,12 @@ export function buildPromptContext(input: {
   emotionalAxisLastTrace?: StateTrace;
   /** TG4: Axis value history from persisted axis state. */
   emotionalAxisHistory?: HistoryEntry[];
+  /** TG1: Source of the render input data. */
+  source?: "persisted_axis_state" | "scope_baseline_synthetic";
+  /** TG1: Tick number from the source trace. */
+  sourceTick?: number;
+  /** TG1: Scope-resolved baselines. */
+  resolvedBaselines?: CharacterStateAxes;
   userMessage: string;
   queryRewrite?: QueryRewriteResult;
 }): PromptContext {
@@ -189,6 +197,9 @@ export function buildPromptContext(input: {
     emotionalAxisBands,
     emotionalAxisLastTrace,
     emotionalAxisHistory,
+    source,
+    sourceTick,
+    resolvedBaselines,
     userMessage,
     queryRewrite,
   } = input;
@@ -280,6 +291,33 @@ export function buildPromptContext(input: {
     emotionalAxisLastTrace,
     emotionalAxisHistory,
   });
+
+  // TG1: Capture render snapshot for eval (no-op when not in an eval context).
+  // Only record when the resolver actually produced emotional axis inputs AND the
+  // render block was built — a disabled/inert/gated render path must not fabricate
+  // a synthetic snapshot or record rule IDs that did not affect the prompt.
+  if (emotionalAxisBands && emotionalAxisLastTrace && renderEmotionalBlock !== null) {
+    const evalConfig = getEmotionalAxisEvalConfig();
+    // TG5 N1: When bands-only is active, the render block has no rule texts,
+    // so the snapshot must not report rule IDs that were never rendered.
+    const isBandsOnly = evalConfig.bandsOnly;
+    const renderRuleIds = isBandsOnly ? [] : selectRenderRuleMatches(
+      emotionalAxisBands,
+      emotionalAxisLastTrace,
+      emotionalAxisHistory ?? [],
+      "C",
+    ).map((m) => m.id);
+
+    recordEmotionalAxisRenderSnapshot({
+      source: source ?? "persisted_axis_state",
+      sourceTick: sourceTick ?? 0,
+      bands: emotionalAxisBands,
+      renderRuleIds,
+      renderBlock: renderEmotionalBlock,
+      tier: "C",
+      resolvedBaselines: resolvedBaselines ?? { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+    });
+  }
 
   const relationshipExprBody = buildRelationshipExpressionContent(
     personaOverlay.relationship_status,
@@ -591,6 +629,10 @@ function buildEmotionalRenderBlockFromInput(input: {
   // Render flag gating: EMOTIONAL_RENDER_ENABLED off ⇒ no block
   if (!env.EMOTIONAL_RENDER_ENABLED) return null;
 
+  // TG5: Eval-only variant render toggle (checked alongside env)
+  const evalConfig = getEmotionalAxisEvalConfig();
+  if (!evalConfig.renderEnabled) return null;
+
   // Render-flag-requires-engine-flag enforcement
   if (!env.EMOTIONAL_ENGINE_ENABLED) {
     console.warn(
@@ -605,6 +647,12 @@ function buildEmotionalRenderBlockFromInput(input: {
       "[buildPromptContext] EMOTIONAL_RENDER_ENABLED is true but axis state is absent — skipping render block",
     );
     return null;
+  }
+
+  // TG5: bands-only variant — emit band line only, no rule texts
+  if (evalConfig.bandsOnly) {
+    const bandLine = formatBandLine(input.emotionalAxisBands);
+    return `[当前状态下的行为基调]\n${bandLine}`;
   }
 
   return buildEmotionalRenderBlock(

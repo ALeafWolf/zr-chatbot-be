@@ -11,9 +11,12 @@ import {
 import {
   buildExperimentVariantMetadata,
   buildExperimentVariantTags,
+  buildEmotionalAxisVariantMetadata,
+  buildEmotionalAxisVariantTags,
   readAndValidateExperimentVariants,
 } from "../experimentVariants";
 import { cleanupEvalSession } from "./cleanupEvalSession";
+import type { PersistedAxisState } from "../../state/emotionalEngine/types";
 import type {
   AgentEvalInput,
   EvalSeedMessage,
@@ -146,6 +149,9 @@ export function normalizeAgentEvalInput(raw: Record<string, unknown>): AgentEval
     structMemConsolidations: Array.isArray(raw.structMemConsolidations)
       ? (raw.structMemConsolidations as AgentEvalInput["structMemConsolidations"])
       : undefined,
+    seedAxisState: raw.seedAxisState
+      ? (typeof raw.seedAxisState === "object" ? (raw.seedAxisState as PersistedAxisState) : undefined)
+      : undefined,
     canonReferenceIds: Array.isArray(raw.canonReferenceIds)
       ? (raw.canonReferenceIds as string[])
       : undefined,
@@ -174,19 +180,23 @@ export async function runAgentEval(
   });
 
   try {
-    await withTraceContext(
-      {
-        eval: true,
-        characterId: input.sessionSeed.characterId ?? env.DEFAULT_CHARACTER_ID,
-        baseMetadata: {
-          scenarioId: input.scenarioId,
-          evalSessionId: seeded.sessionId,
-          evalMode: "agent_turn",
-          configOverrides: input.configOverrides ?? {},
-          ...buildExperimentVariantMetadata(),
+      await withTraceContext(
+        {
+          eval: true,
+          characterId: input.sessionSeed.characterId ?? env.DEFAULT_CHARACTER_ID,
+          baseMetadata: {
+            scenarioId: input.scenarioId,
+            evalSessionId: seeded.sessionId,
+            evalMode: "agent_turn",
+            configOverrides: input.configOverrides ?? {},
+            ...buildExperimentVariantMetadata(),
+            ...buildEmotionalAxisVariantMetadata(),
+          },
+          tags: [
+            ...buildExperimentVariantTags(),
+            ...buildEmotionalAxisVariantTags(),
+          ],
         },
-        tags: buildExperimentVariantTags(),
-      },
       async () =>
         await withAgentEvalCapture(capture, async () => {
           const turn = await runCharacterTurn({

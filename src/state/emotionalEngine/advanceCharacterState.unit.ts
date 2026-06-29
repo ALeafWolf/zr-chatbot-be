@@ -361,4 +361,61 @@ describe("advanceCharacterState — TG1 pure engine core", () => {
       assert.ok(result.trace.couplingsFired.includes("shiftDown"), "shiftDown fired");
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // TG2 — eval-only phase emission
+  // ---------------------------------------------------------------------------
+
+  describe("TG2 — phase emission (eval-only)", () => {
+
+    it("does not emit phases when emitPhases is false/undefined (default)", () => {
+      const state: CharacterStateAxes = { connection: 0, valence: 0, arousal: 0, restraint: 0.7 };
+      const result = advanceCharacterState(state, ZUO_RAN_AXES, NO_COUPLINGS, {}, 1);
+      assert.equal((result.trace as any).phases, undefined, "phases absent without emitPhases");
+    });
+
+    it("emits four phases when emitPhases is true", () => {
+      const state: CharacterStateAxes = { connection: 0, valence: 0, arousal: 0, restraint: 0.7 };
+      const result = advanceCharacterState(state, ZUO_RAN_AXES, NO_COUPLINGS, { arousal: 0.08 }, 1, undefined, true);
+      const phases = (result.trace as any).phases;
+      assert.ok(phases, "phases present when emitPhases is true");
+      assert.ok(phases.afterEventDelta, "afterEventDelta present");
+      assert.ok(phases.afterCoupling, "afterCoupling present");
+      assert.ok(phases.afterDrift, "afterDrift present");
+      assert.ok(phases.afterClamp, "afterClamp present");
+    });
+
+    it("afterClamp equals axesAfter", () => {
+      const state: CharacterStateAxes = { connection: 0, valence: 0, arousal: 0, restraint: 0.7 };
+      const result = advanceCharacterState(state, ZUO_RAN_AXES, NO_COUPLINGS, { arousal: 0.08 }, 1, undefined, true);
+      const phases = (result.trace as any).phases;
+      assert.deepEqual(phases.afterClamp, result.trace.axesAfter, "afterClamp === axesAfter");
+    });
+
+    it("afterEventDelta reflects clamped event delta", () => {
+      const state: CharacterStateAxes = { connection: 0, valence: 0, arousal: 0, restraint: 0.7 };
+      // arousal +0.08 → afterEventDelta.arousal = 0.08
+      const result = advanceCharacterState(state, ZUO_RAN_AXES, NO_COUPLINGS, { arousal: 0.08 }, 1, undefined, true);
+      const phases = (result.trace as any).phases;
+      assert.equal(phases.afterEventDelta.arousal, 0.08, "afterEventDelta.arousal = 0.08");
+      // couplingsFired is empty (no couplings), so afterCoupling == afterEventDelta
+      assert.deepEqual(phases.afterCoupling, phases.afterEventDelta, "afterCoupling === afterEventDelta when no couplings fire");
+    });
+
+    it("phase states progress monotonically through the engine steps", () => {
+      // zr_c1-like coupling: arousal direct_delta → restraint
+      const c1: EmotionalCoupling = { id: "zr_c1", source: "arousal", target: "restraint", effect_type: "direct_delta", coefficient: 0.6, derived_from: "test" };
+      // zr_c2-like coupling: connection baseline_shift → restraint
+      const c2: EmotionalCoupling = { id: "zr_c2", source: "connection", target: "restraint", effect_type: "baseline_shift", coefficient: -0.4, derived_from: "test", condition: { axis: "valence", threshold: 0, comparison: "above" } };
+      const state: CharacterStateAxes = { connection: 0.5, valence: 0.2, arousal: 0.1, restraint: 0.7 };
+      const result = advanceCharacterState(state, ZUO_RAN_AXES, [c1, c2], { arousal: 0.08 }, 1, undefined, true);
+      const phases = (result.trace as any).phases;
+      // afterEventDelta: arousal=0.18, restraint still 0.7
+      // afterCoupling: zr_c1 fires (arousal→restraint +0.6*0.08=0.048), so restraint rises
+      assert.ok(phases.afterCoupling.restraint > phases.afterEventDelta.restraint, "restraint rises after coupling (zr_c1)");
+      // afterDrift: axes drift toward baselines
+      // afterClamp: final clamped state equals axesAfter
+      assert.deepEqual(phases.afterClamp, result.trace.axesAfter, "afterClamp === axesAfter (final)");
+    });
+  });
 });

@@ -6,6 +6,7 @@ import type {
   TurnType,
 } from "./appCommandTypes";
 import { APP_COMMAND_EXPORT } from "./appCommandTypes";
+import { normalizeAxisTurnExportSnapshot } from "../../state/emotionalEngine/axisStatePersistence";
 
 // ---------------------------------------------------------------------------
 // Route mapping: TurnType → chat_messages.route value
@@ -169,6 +170,11 @@ function buildJsonExport(
       if (options.include_thoughts) {
         entry.thoughts = normalizeThoughts(m.thoughts, options.include_native_thoughts);
       }
+      // TG1: Include emotional_axis when a valid snapshot exists
+      const axisSnapshot = normalizeAxisTurnExportSnapshot(m.emotionalAxis);
+      if (axisSnapshot) {
+        entry.emotional_axis = axisSnapshot;
+      }
       return entry;
     }),
   };
@@ -260,6 +266,18 @@ function buildTextExport(
     parts.push("");
     parts.push(m.content);
     parts.push("");
+
+    // TG1: Include emotional-axis block when a valid snapshot exists
+    const axisSnapshot = normalizeAxisTurnExportSnapshot(m.emotionalAxis);
+    if (axisSnapshot) {
+      parts.push("[Emotional Axis]");
+      parts.push(`  tick: ${axisSnapshot.tick}`);
+      parts.push(`  scope: ${axisSnapshot.scope}`);
+      for (const axis of ['connection', 'valence', 'arousal', 'restraint'] as const) {
+        parts.push(`  ${axis}: ${axisSnapshot.axes[axis]} (${axisSnapshot.bands[axis]})`);
+      }
+      parts.push("");
+    }
 
     if (includeThoughts) {
       const normalized = normalizeThoughts(m.thoughts, includeNative);

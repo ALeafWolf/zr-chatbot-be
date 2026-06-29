@@ -63,6 +63,22 @@ export class PostTurnRunner extends BackgroundRunner {
     super("postTurnRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
   }
 
+  /**
+   * Eval isolation: when a turn runs inside an eval capture, runAgentEval drives
+   * the post-turn job synchronously via runJobByIdForEval → runSyncForEval, inside
+   * the eval AsyncLocalStorage scope. The background loop must NOT claim that job —
+   * running it from the loop executes the engine outside the capture (so the
+   * emotional-axis update snapshot is lost) and races the sync run (double-write).
+   *
+   * `runCharacterTurn` calls `wakePostTurnRunner()` while still inside
+   * `withAgentEvalCapture`, so this gate reliably keeps the loop off eval jobs.
+   * In production there is no eval capture, so `wake()` behaves normally.
+   */
+  override wake(): void {
+    if (getAgentEvalCapture()) return;
+    super.wake();
+  }
+
   protected async runLoop(): Promise<void> {
     while (true) {
       const job = await this.claimNextJob();
@@ -100,28 +116,111 @@ export class PostTurnRunner extends BackgroundRunner {
     return { job: rows[0]! };
   }
 
+  /**
+   * Run a post-turn job synchronously inside the eval capture context,
+   * bypassing the background queue/claim entirely.
+   *
+   * This is called from runAgentEval after runCharacterTurn enqueues the job.
+   * It atomically claims the job (status='running'), reads the payload,
+   * runs the post-turn memory graph, and marks the job completed — all within
+   * the caller's AsyncLocalStorage scope.
+   *
+   * By claiming the job first, the background loop cannot pick it up
+   * (it only claims 'pending'/'retry' jobs or 'running' with expired locks).
+   *
+   * Protected so unit tests can override without DB access.
+   */
+  protected async runSyncForEval(jobId: string): Promise<void> {
+    // Atomically claim the job so the background loop cannot take it
+    const claimRows = await db
+      .update(postTurnJobs)
+      .set({
+        status: "running",
+        lockedAt: new Date(),
+        lockedBy: "eval-sync",
+        updatedAt: new Date(),
+      })
+      .where(eq(postTurnJobs.id, jobId))
+      .returning();
+
+    if (claimRows.length === 0) {
+      recordMemoryWriteSnapshot({
+        status: "failed",
+        error: `post_turn_job_not_found:${jobId}`,
+      });
+      throw new Error(`post_turn_job_not_found:${jobId}`);
+    }
+    const job = claimRows[0]!;
+    recordMemoryWriteSnapshot({
+      postTurnJobId: job.id,
+      status: "not_run",
+    });
+
+    try {
+      const payload = parsePostTurnJobPayload(job.payload);
+      const stepStatus = normalizeStepStatus(job.stepStatus);
+      const session = chatSessionFromSnapshot(payload.session);
+      const recentMemoriesStr = payload.recentMemorySummaries
+        .slice(0, 3)
+        .join("\n");
+
+      const deps = defaultPostTurnMemoryGraphDeps({
+        persistStepComplete: this.persistStepComplete.bind(this),
+        completeJobFn: this.completeJob.bind(this),
+        wakeConsolidationFn: () => structmemConsolidationRunner.wake(),
+        extractFn: tracedExtract,
+      });
+
+      const initialState = createInitialPostTurnRuntimeState(
+        { jobId: job.id, attempts: job.attempts, payload, stepStatus },
+        session,
+        recentMemoriesStr,
+      );
+
+      const graph = this.createGraph(deps);
+      const state = await graph.invoke(initialState, {
+        tags: ["turn:background", "subsystem:post_turn", "graph:postTurnMemoryGraph", "eval:sync"],
+        metadata: {
+          postTurnJobId: job.id,
+          sessionId: payload.sessionId,
+          evalMode: true,
+        },
+      });
+
+      if (state.errors && state.errors.length > 0) {
+        const stages = state.errors.map((e: { stage: string }) => e.stage).join(", ");
+        const messages = state.errors.map((e: { stage: string; message: string }) => `${e.stage}: ${e.message}`).join("; ");
+        const retryReason = state.lastRetryReason ? ` (retry reason: ${state.lastRetryReason})` : "";
+        throw new Error(`Post-turn memory graph failed [${stages}]: ${messages}${retryReason}`);
+      }
+
+      await this.completeJob(job.id);
+      recordMemoryWriteSnapshot({ status: "completed" });
+    } catch (err) {
+      await this.failJob(job, err);
+      recordMemoryWriteSnapshot({
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
   async runJobByIdForEval(jobId: string): Promise<void> {
-    const result = await this.loadAndClaimEvalJob(jobId);
-    if ("missing" in result) {
-      if (result.missing) {
+    try {
+      await this.runSyncForEval(jobId);
+    } catch (err) {
+      // runSyncForEval already records failure snapshot for DB-not-found.
+      // For other errors (test overrides, graph failures), ensure the snapshot
+      // reflects the failure state.
+      const capture = getAgentEvalCapture();
+      if (capture && capture.memoryWrite.status !== "failed") {
         recordMemoryWriteSnapshot({
           status: "failed",
-          error: `post_turn_job_not_found:${jobId}`,
+          error: err instanceof Error ? err.message : String(err),
         });
-        throw new Error(`post_turn_job_not_found:${jobId}`);
       }
-      recordMemoryWriteSnapshot({ status: "completed" });
-      return;
-    }
-    const succeeded = await this.runClaimedJob(result.job);
-    // Force "completed" so the live PostTurnRunner never re-claims this eval job.
-    // runClaimedJob marks the job completed on graph success; on failure it marks
-    // it "retry", which the live runner would then pick up after cleanupEvalSession
-    // has already deleted the eval session — causing an FK violation in structmem_events.
-    await this.completeJob(result.job.id);
-    if (!succeeded) {
-      const error = getAgentEvalCapture()?.memoryWrite.error ?? "post_turn_job_failed";
-      throw new Error(error);
+      throw err;
     }
   }
 

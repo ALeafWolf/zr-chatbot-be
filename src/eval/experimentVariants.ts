@@ -43,6 +43,27 @@ export const VALIDATOR_VARIANTS = [
 ] as const;
 export type ValidatorVariant = (typeof VALIDATOR_VARIANTS)[number];
 
+// ---------------------------------------------------------------------------
+// TG5: Emotional-axis variants
+// ---------------------------------------------------------------------------
+
+/**
+ * Emotional-axis eval variant descriptors.
+ * Each variant specifies how the engine and render paths are configured.
+ *
+ * Design D7: Variants use injected/config toggles, not env-var mutation.
+ */
+export const EMOTIONAL_AXIS_VARIANTS = [
+  "baseline_no_emotional_axis",
+  "axis_state_no_render",
+  "full_axis_coupling_render",
+  "engine_no_coupling_full_render",
+  "axis_bands_only",
+] as const;
+export type EmotionalAxisVariant = (typeof EMOTIONAL_AXIS_VARIANTS)[number];
+
+export const DEFAULT_EMOTIONAL_AXIS_VARIANT: EmotionalAxisVariant = "full_axis_coupling_render";
+
 export interface ExperimentVariantDescriptor {
   graphVersion: GraphVersion;
   rerankVariant: RerankVariant;
@@ -475,6 +496,48 @@ export function getVariantRunMatrix(): Record<string, VariantOption[]> {
         implemented: false,
       },
     ],
+    emotionalAxisVariant: [
+      {
+        envVar: "EMOTIONAL_AXIS_VARIANT",
+        value: "baseline_no_emotional_axis",
+        description: "Engine off, render off — no emotional axis data.",
+        isDefault: false,
+        requiredEnvVars: [],
+        implemented: true,
+      },
+      {
+        envVar: "EMOTIONAL_AXIS_VARIANT",
+        value: "axis_state_no_render",
+        description: "Engine on, render off — update snapshot only, no render block.",
+        isDefault: false,
+        requiredEnvVars: [],
+        implemented: true,
+      },
+      {
+        envVar: "EMOTIONAL_AXIS_VARIANT",
+        value: "full_axis_coupling_render",
+        description: "Engine on, render on, full couplings — default behavior.",
+        isDefault: true,
+        requiredEnvVars: [],
+        implemented: true,
+      },
+      {
+        envVar: "EMOTIONAL_AXIS_VARIANT",
+        value: "engine_no_coupling_full_render",
+        description: "Engine on, render on, empty couplings — no coupling effects.",
+        isDefault: false,
+        requiredEnvVars: [],
+        implemented: true,
+      },
+      {
+        envVar: "EMOTIONAL_AXIS_VARIANT",
+        value: "axis_bands_only",
+        description: "Engine on, render on, band line only — no rule texts.",
+        isDefault: false,
+        requiredEnvVars: [],
+        implemented: true,
+      },
+    ],
   };
 }
 
@@ -512,8 +575,107 @@ export function formatVariantRunMatrixMarkdown(): string {
 }
 
 // ---------------------------------------------------------------------------
+// TG5: Emotional-axis variant config
+// ---------------------------------------------------------------------------
+
+/**
+ * Injected config for emotional-axis eval variants.
+ * NOT env-var driven — passed explicitly to the runner so module-level
+ * `env` reads remain stable (design D7).
+ */
+export interface EmotionalAxisVariantConfig {
+  /** Whether the emotional engine runs (post-turn advance, couplings). */
+  engineEnabled: boolean;
+  /** Whether the emotional render block is injected into the prompt. */
+  renderEnabled: boolean;
+  /** When true, pass empty couplings to the engine (no direct/baseline_shift effects). */
+  noCoupling: boolean;
+  /** When true, render emits only the band line, suppressing rule texts. */
+  bandsOnly: boolean;
+}
+
+/**
+ * Map a variant name to its concrete config.
+ */
+export function resolveEmotionalAxisVariantConfig(
+  variant: EmotionalAxisVariant,
+): EmotionalAxisVariantConfig {
+  switch (variant) {
+    case "baseline_no_emotional_axis":
+      return { engineEnabled: false, renderEnabled: false, noCoupling: false, bandsOnly: false };
+    case "axis_state_no_render":
+      return { engineEnabled: true, renderEnabled: false, noCoupling: false, bandsOnly: false };
+    case "full_axis_coupling_render":
+      return { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: false };
+    case "engine_no_coupling_full_render":
+      return { engineEnabled: true, renderEnabled: true, noCoupling: true, bandsOnly: false };
+    case "axis_bands_only":
+      return { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Emotional-axis env gate guardrails (PR review fix D3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that the selected emotional-axis variant's production env gates
+ * are enabled. Fails fast when a variant requires engine or render data but
+ * the corresponding env gate is disabled.
+ *
+ * Error messages name the selected variant and the missing env var, following
+ * the existing guardrail style from `validateExperimentVariants()`.
+ *
+ * @param variant - The selected emotional-axis variant to validate.
+ * @throws VariantGuardrailError when a required gate is disabled.
+ */
+export function validateEmotionalAxisVariantGuard(
+  variant: EmotionalAxisVariant,
+): void {
+  const config = resolveEmotionalAxisVariantConfig(variant);
+
+  // Engine gate: all variants except baseline require engine
+  if (config.engineEnabled) {
+    if (!isEnvTruthy("EMOTIONAL_ENGINE_ENABLED")) {
+      throw new VariantGuardrailError(
+        "EMOTIONAL_ENGINE_DISABLED",
+        `Emotional-axis variant "${variant}" requires EMOTIONAL_ENGINE_ENABLED=1. ` +
+        `Set EMOTIONAL_ENGINE_ENABLED=1 in your environment or use EMOTIONAL_AXIS_VARIANT=baseline_no_emotional_axis.`,
+      );
+    }
+  }
+
+  // Render gate: only variants with renderEnabled=true require render
+  if (config.renderEnabled) {
+    if (!isEnvTruthy("EMOTIONAL_RENDER_ENABLED")) {
+      throw new VariantGuardrailError(
+        "EMOTIONAL_RENDER_DISABLED",
+        `Emotional-axis variant "${variant}" requires EMOTIONAL_RENDER_ENABLED=1. ` +
+        `Set EMOTIONAL_RENDER_ENABLED=1 in your environment or use EMOTIONAL_AXIS_VARIANT=axis_state_no_render.`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Metadata and tag builders
 // ---------------------------------------------------------------------------
+
+/**
+ * Read the emotional-axis variant from the environment.
+ * Defaults to `full_axis_coupling_render`.
+ */
+export function readEmotionalAxisVariant(
+  overrides?: string,
+): EmotionalAxisVariant {
+  const raw = (overrides ?? process.env.EMOTIONAL_AXIS_VARIANT ?? "").trim().toLowerCase();
+  if (!raw) return DEFAULT_EMOTIONAL_AXIS_VARIANT;
+  const valid = EMOTIONAL_AXIS_VARIANTS as readonly string[];
+  if (valid.includes(raw)) return raw as EmotionalAxisVariant;
+  throw new Error(
+    `Unsupported EMOTIONAL_AXIS_VARIANT: "${raw}". Valid values: ${EMOTIONAL_AXIS_VARIANTS.join(", ")}`,
+  );
+}
 
 /**
  * Build a flat metadata object suitable for LangSmith trace/experiment metadata.
@@ -552,6 +714,28 @@ export function buildExperimentVariantMetadata(
     retrievalVariant: d.retrievalVariant,
     validatorVariant: d.validatorVariant,
   };
+}
+
+/**
+ * Build emotional-axis variant metadata for LangSmith traces/experiments.
+ */
+export function buildEmotionalAxisVariantMetadata(
+  variant?: EmotionalAxisVariant,
+): Record<string, string> | undefined {
+  const v = variant ?? readEmotionalAxisVariant();
+  if (v === DEFAULT_EMOTIONAL_AXIS_VARIANT) return undefined;
+  return { emotionalAxisVariant: v };
+}
+
+/**
+ * Build emotional-axis variant tags for LangSmith tracing.
+ */
+export function buildEmotionalAxisVariantTags(
+  variant?: EmotionalAxisVariant,
+): string[] {
+  const v = variant ?? readEmotionalAxisVariant();
+  if (v === DEFAULT_EMOTIONAL_AXIS_VARIANT) return [];
+  return [`variant:emotional_axis:${v}`];
 }
 
 /**

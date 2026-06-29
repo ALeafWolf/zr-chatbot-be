@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { loadScenariosBySet, loadRerankScenarios } from "./loadEvalScenarios";
+import { loadScenariosBySet, loadRerankScenarios, scenarioToEvalInputs } from "./loadEvalScenarios";
+import type { Scenario } from "./evalTypes";
 
 describe("loadEvalScenarios", () => {
   it("loadScenariosBySet default: returns version string and scenarios with required fields", () => {
@@ -30,6 +31,43 @@ describe("loadEvalScenarios", () => {
         assert.ok(validTypes.includes(a.type), `${s.id} — valid assertion type "${a.type}"`);
       }
     }
+  });
+
+  it("F1: scenarioToEvalInputs includes seedAxisState when present on scenario", () => {
+    const scenario: Scenario = {
+      id: "test_seed_axis",
+      description: "seed axis test",
+      session: { mode: "test", continuity_scope: "main", continuity_family: "main_world" },
+      assertions: [],
+      seedAxisState: {
+        version: 1,
+        tick: 3,
+        axes: { connection: 0.25, valence: -0.1, arousal: 0.05, restraint: 0.6 },
+        lastTrace: {
+          tick: 3,
+          axesBefore: { connection: 0.2, valence: 0, arousal: 0, restraint: 0.7 },
+          axesAfter: { connection: 0.25, valence: -0.1, arousal: 0.05, restraint: 0.6 },
+          couplingsFired: ["zr_c1"],
+          effectiveBaselines: {},
+        },
+        bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+        history: [],
+      },
+    };
+    const inputs = scenarioToEvalInputs(scenario);
+    assert.ok(inputs.seedAxisState, "seedAxisState is present in output");
+    assert.deepEqual(inputs.seedAxisState, scenario.seedAxisState);
+  });
+
+  it("F1: scenarioToEvalInputs omits seedAxisState when not on scenario", () => {
+    const scenario: Scenario = {
+      id: "test_no_seed",
+      description: "no seed",
+      session: { mode: "test", continuity_scope: "main", continuity_family: "main_world" },
+      assertions: [],
+    };
+    const inputs = scenarioToEvalInputs(scenario);
+    assert.equal(inputs.seedAxisState, undefined);
   });
 
   it("loadScenariosBySet with rerank: rerank set filters; all set includes both", () => {

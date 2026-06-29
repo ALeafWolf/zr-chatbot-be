@@ -4,7 +4,9 @@ import {
   readAxisState,
   parsePersistedAxisState,
   mergeAxisStateIntoDelta,
+  persistAxisSnapshotTx,
 } from "./axisStatePersistence";
+import type { AxisPersistenceTx } from "./axisStatePersistence";
 import { HISTORY_CAP } from "./constants";
 import type { PersistedAxisState } from "./types";
 
@@ -317,6 +319,92 @@ describe("axisStatePersistence — TG2", () => {
       assert.deepEqual(
         (merged.axis_state as PersistedAxisState).tick,
         state.tick,
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // D4 — persistAxisSnapshotTx message-update verification
+  // ---------------------------------------------------------------------------
+
+  describe("persistAxisSnapshotTx — message-update verification (D4)", () => {
+    /** Build a fake transaction object that reads from the given mock state. */
+    function fakeTx(overrides?: {
+      selectRows?: Array<Record<string, unknown>>;
+      updateReturning?: unknown[];
+    }): AxisPersistenceTx {
+      const selectRows = overrides?.selectRows ?? [{ localRelationshipDelta: { existing_key: "keep" } }];
+      const updateReturning = overrides?.updateReturning ?? [{ id: "msg-123" }];
+      return {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve(selectRows),
+            }),
+          }),
+        }),
+        insert: () => ({
+          values: () => ({
+            onConflictDoUpdate: () => Promise.resolve(),
+          }),
+        }),
+        update: () => ({
+          set: () => ({
+            where: () => ({
+              returning: () => Promise.resolve(updateReturning),
+            }),
+          }),
+        }),
+      };
+    }
+
+    const validState = {
+      version: 1 as const,
+      tick: 0,
+      axes: { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+      lastTrace: {
+        tick: 0,
+        axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+        axesAfter: { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+        couplingsFired: [],
+        effectiveBaselines: {},
+      },
+      bands: { connection: "mid" as const, valence: "mid" as const, arousal: "mid" as const, restraint: "mid" as const },
+      history: [],
+    };
+
+    const validSnapshot = {
+      version: 1 as const,
+      source: "post_turn_engine" as const,
+      tick: 0,
+      scope: "test",
+      axes: { connection: 0, valence: 0, arousal: 0, restraint: 0 },
+      bands: { connection: "mid" as const, valence: "mid" as const, arousal: "mid" as const, restraint: "mid" as const },
+    };
+
+    it("succeeds when assistant message row is found", async () => {
+      await assert.doesNotReject(() =>
+        persistAxisSnapshotTx(
+          fakeTx(),
+          "session-1",
+          "msg-123",
+          validState,
+          validSnapshot,
+        ),
+      );
+    });
+
+    it("throws when assistant message row is not found (empty returning)", async () => {
+      await assert.rejects(
+        () =>
+          persistAxisSnapshotTx(
+            fakeTx({ updateReturning: [] }),
+            "session-1",
+            "msg-999",
+            validState,
+            validSnapshot,
+          ),
+        /assistant message "msg-999" not found/,
       );
     });
   });

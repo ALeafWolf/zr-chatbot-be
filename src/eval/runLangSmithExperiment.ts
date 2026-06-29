@@ -34,11 +34,17 @@ import {
 import {
   buildExperimentVariantMetadata,
   readAndValidateExperimentVariants,
+  readEmotionalAxisVariant,
+  resolveEmotionalAxisVariantConfig,
+  validateEmotionalAxisVariantGuard,
+  type EmotionalAxisVariant,
 } from "./experimentVariants";
+import { withEmotionalAxisEvalConfig } from "./emotionalAxisEvalConfig";
+import { preflightEmotionalAxisLangSmithRun } from "./preflightLangSmith";
 import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { runAgentEval } from "./langsmith/runAgentEval";
-import type { AgentEvalOutput } from "./evalSnapshots";
+import type { AgentEvalOutput, EmotionalAxisEvalSnapshot } from "./evalSnapshots";
 import { internalLogicJudgeRunEvaluator } from "./evaluators/internalLogicJudge";
 
 export type EvalTargetOutput = AgentEvalOutput | {
@@ -65,6 +71,20 @@ export async function evalTarget(
 ): Promise<EvalTargetOutput> {
   if (inputs.eval_mode === "agent_turn") {
     try {
+      // When running the emotional-axis scenario set, apply the selected variant
+      // config to runtime behavior and validate env gates before any model calls.
+      const isEmotionalAxisRun =
+        (process.env.EVAL_SCENARIO_SET ?? "").trim().toLowerCase() === "emotional_axis";
+
+      if (isEmotionalAxisRun) {
+        const variant: EmotionalAxisVariant = readEmotionalAxisVariant();
+        const variantConfig = resolveEmotionalAxisVariantConfig(variant);
+        validateEmotionalAxisVariantGuard(variant);
+        return await withEmotionalAxisEvalConfig(variantConfig, () =>
+          runAgentEval(inputs),
+        );
+      }
+
       return await runAgentEval(inputs);
     } catch (e) {
       return {
@@ -219,9 +239,11 @@ function assertionsEvaluator(args: {
       | { rerank?: { selected?: Array<{ id: string; source: string }>; finalContextMode?: string; fallbackUsed?: boolean } }
       | undefined;
     const rerankCtx = buildRerankAssertionContext(retrieval?.rerank);
-    if (rerankCtx) {
-      ctx = rerankCtx;
-    }
+    // Merge rerank context (if any) with emotional-axis snapshot
+    ctx = {
+      ...(rerankCtx ?? {}),
+      emotionalAxis: outputs.emotionalAxis as AssertionContext["emotionalAxis"],
+    };
   }
 
   const results: EvaluationResult[] = [];
@@ -248,6 +270,56 @@ function assertionsEvaluator(args: {
       ? "All assertions passed."
       : (firstFailReason ?? "One or more assertions failed."),
   });
+
+  return { results };
+}
+
+/**
+ * TG6: Aggregate emotional-axis metrics evaluator.
+ * Computes metrics from the emotional-axis eval snapshot on agent_turn outputs.
+ * All metrics use conformance/stability/agreement labels — no external ground-truth accuracy.
+ */
+function emotionalAxisAggregateEvaluator(args: {
+  example: Example;
+  outputs: Record<string, unknown>;
+}): { results: EvaluationResult[] } {
+  const results: EvaluationResult[] = [];
+  const emotionalAxis = args.outputs.emotionalAxis as EmotionalAxisEvalSnapshot | undefined;
+  if (!emotionalAxis) return { results };
+
+  // Update-side metrics
+  const hasEvent = Boolean(emotionalAxis.event);
+  const hasDeltas = Boolean(emotionalAxis.eventDeltas && Object.keys(emotionalAxis.eventDeltas).length > 0);
+  const hasCouplings = Array.isArray(emotionalAxis.couplingsFired) && emotionalAxis.couplingsFired.length > 0;
+
+  results.push({
+    key: "emotional_axis_has_update",
+    score: 1,
+    comment: `update: event=${hasEvent} deltas=${hasDeltas} couplings=${hasCouplings}`,
+  });
+  results.push({
+    key: "emotional_axis_coupling_count",
+    score: emotionalAxis.couplingsFired?.length ?? 0,
+    comment: `couplings_fired=${emotionalAxis.couplingsFired?.length ?? 0}`,
+  });
+
+  // Render-side metrics
+  const hasRender = Boolean(emotionalAxis.render);
+  const renderRuleCount = emotionalAxis.render?.renderRuleIds?.length ?? 0;
+  results.push({
+    key: "emotional_axis_has_render",
+    score: hasRender ? 1 : 0,
+    comment: `render=${hasRender} rules=${renderRuleCount}`,
+  });
+
+  // Source tag
+  if (emotionalAxis.render) {
+    results.push({
+      key: "emotional_axis_render_source",
+      score: emotionalAxis.render.source === "persisted_axis_state" ? 1 : 0,
+      comment: `source=${emotionalAxis.render.source}`,
+    });
+  }
 
   return { results };
 }
@@ -322,6 +394,9 @@ async function main(): Promise<void> {
     const { version } = loadScenariosFromFile();
     const variants = readAndValidateExperimentVariants();
 
+    // F2: Preflight emotional-axis env gates before any LangSmith calls.
+    preflightEmotionalAxisLangSmithRun();
+
     const variantSuffix = [
       variants.rerankVariant !== "llm_rerank_v1" ? `rerank:${variants.rerankVariant}` : "",
       variants.retrievalVariant !== "tier3_current" ? `retrieval:${variants.retrievalVariant}` : "",
@@ -354,6 +429,18 @@ async function main(): Promise<void> {
           referenceOutputs?: Record<string, unknown>;
         }) =>
           retrievalQualityEvaluator({
+            example: args.example,
+            outputs: args.outputs,
+          }),
+        // TG6: Emotional-axis aggregate metrics (per-row, for comparison)
+        (args: {
+          run: Run;
+          example: Example;
+          inputs: Record<string, unknown>;
+          outputs: Record<string, unknown>;
+          referenceOutputs?: Record<string, unknown>;
+        }) =>
+          emotionalAxisAggregateEvaluator({
             example: args.example,
             outputs: args.outputs,
           }),

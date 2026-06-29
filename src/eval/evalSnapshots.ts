@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AxisName, Band, CharacterStateAxes } from "../state/emotionalEngine/types";
 
 export type EvalMemorySource =
   | "interactive_memory"
@@ -112,6 +113,53 @@ export interface MemoryWriteEvalSnapshot {
   };
 }
 
+/**
+ * TG1: Dedicated emotional-axis eval snapshot capturing both the update-side
+ * (post-turn engine advance) and render-side (foreground prompt building) data.
+ * Rule IDs (`renderRuleIds`) may be absent until TG2.
+ */
+export interface EmotionalAxisEvalSnapshot {
+  /** Update-side: classified TurnEvent from the post-turn extractor. */
+  event?: { type: string; intensity: number; reason: string };
+  /** Update-side: model-reported confidence for turnEvent parse presence. */
+  modelReportedConfidence?: number;
+  /** Update-side: axes state before the engine tick. */
+  axesBefore?: CharacterStateAxes;
+  /** Update-side: event deltas applied this tick (clamped). */
+  eventDeltas?: Partial<CharacterStateAxes>;
+  /** Update-side: coupling ids whose effect was non-zero this tick. */
+  couplingsFired?: string[];
+  /** Update-side: shifted effective baselines after baseline_shift couplings. */
+  effectiveBaselines?: Partial<CharacterStateAxes>;
+  /** Update-side: condition transitions detected this tick. */
+  conditionTransitions?: Array<{ id: string; from: boolean; to: boolean }>;
+  /** Update-side: axes state after the full engine tick. */
+  axesAfter?: CharacterStateAxes;
+  /** Update-side: band labels computed after the engine tick. */
+  bandsAfter?: Record<AxisName, Band>;
+  /** Update-side: tick number when this update was computed. */
+  tick?: number;
+  /** Update-side: continuityScope used during the engine tick. */
+  scope?: string;
+  /** Update-side: scope-resolved baselines used this tick. */
+  resolvedBaselines?: CharacterStateAxes;
+
+  /** Render-side: source of the render input data. */
+  render?: {
+    source: "persisted_axis_state" | "scope_baseline_synthetic";
+    sourceTick: number;
+    bands: Record<AxisName, Band>;
+    /** Rule IDs matched during render select; empty until TG2. */
+    renderRuleIds: string[];
+    /** The final render block text injected into the system prompt. */
+    renderBlock: string | null;
+    /** Render tier used when building the render block. */
+    tier: "A" | "B" | "C";
+    /** Scope-resolved baselines used by the resolver at render time. */
+    resolvedBaselines: CharacterStateAxes;
+  };
+}
+
 export interface UsageEvalSnapshot {
   llmSpans: Array<{
     spanName: string;
@@ -141,6 +189,8 @@ export interface AgentEvalOutput {
   error?: string;
   retrieval?: RetrievalEvalSnapshot;
   validation?: ValidationEvalSnapshot;
+  /** TG1: Dedicated emotional-axis eval snapshot. */
+  emotionalAxis?: EmotionalAxisEvalSnapshot;
   memoryWrite: MemoryWriteEvalSnapshot;
   usage: UsageEvalSnapshot;
   latencyMs: number;
@@ -158,6 +208,8 @@ export interface AgentEvalCapture {
   retrieval?: RetrievalEvalSnapshot;
   validationAttempts: ValidationEvalSnapshot["attempts"];
   validation?: ValidationEvalSnapshot;
+  /** TG1: Dedicated emotional-axis eval snapshot (built incrementally). */
+  emotionalAxis?: EmotionalAxisEvalSnapshot;
   memoryWrite: MemoryWriteEvalSnapshot;
   usage: UsageEvalSnapshot;
 }
@@ -329,6 +381,41 @@ export function recordMemoryWriteSnapshot(
   };
 }
 
+/**
+ * TG1: Record (merge) an emotional-axis update snapshot onto the current capture.
+ * Only fields provided in `patch` are set; existing fields are preserved.
+ * This is safe to call from the post-turn engine node after `computeEngineAdvance`.
+ */
+export function recordEmotionalAxisUpdateSnapshot(
+  patch: EmotionalAxisEvalSnapshot,
+): void {
+  const capture = getAgentEvalCapture();
+  if (!capture) return;
+  capture.emotionalAxis = {
+    ...patch,
+    render: capture.emotionalAxis?.render,
+  };
+}
+
+/**
+ * TG1: Record (merge) an emotional-axis render snapshot onto the current capture.
+ * Only the `render` sub-object is set; existing update-side fields are preserved.
+ * Safe to call from the foreground prompt-building path.
+ *
+ * This function does NOT fabricate update-side fields — if only a render snapshot
+ * has been captured, `axesBefore`/`axesAfter`/etc. remain undefined.
+ */
+export function recordEmotionalAxisRenderSnapshot(
+  render: EmotionalAxisEvalSnapshot["render"],
+): void {
+  const capture = getAgentEvalCapture();
+  if (!capture) return;
+  capture.emotionalAxis = {
+    ...(capture.emotionalAxis ?? {} as EmotionalAxisEvalSnapshot),
+    render,
+  };
+}
+
 export function incrementDurableMemoryStatus(
   status: "written" | "deduplicated" | "below_threshold",
 ): void {
@@ -373,6 +460,9 @@ export function buildAgentEvalOutput(input: {
       : {}),
     ...(input.capture.validation
       ? { validation: input.capture.validation }
+      : {}),
+    ...(input.capture.emotionalAxis
+      ? { emotionalAxis: input.capture.emotionalAxis }
       : {}),
     memoryWrite: input.capture.memoryWrite,
     usage: input.capture.usage,

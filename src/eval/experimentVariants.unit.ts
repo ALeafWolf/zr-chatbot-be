@@ -7,6 +7,10 @@ import {
   DEFAULT_RERANK_VARIANT, DEFAULT_CONTEXT_PLANNER_VARIANT, DEFAULT_RETRIEVAL_VARIANT, DEFAULT_VALIDATOR_VARIANT, DEFAULT_GRAPH_VERSION,
   RERANK_VARIANTS, CONTEXT_PLANNER_VARIANTS, RETRIEVAL_VARIANTS, VALIDATOR_VARIANTS, GRAPH_VERSIONS,
   validateExperimentVariants, readAndValidateExperimentVariants, getVariantRunMatrix,
+  readEmotionalAxisVariant, resolveEmotionalAxisVariantConfig,
+  buildEmotionalAxisVariantMetadata, buildEmotionalAxisVariantTags,
+  DEFAULT_EMOTIONAL_AXIS_VARIANT,
+  validateEmotionalAxisVariantGuard,
 } from "./experimentVariants";
 
 describe("experiment variants", () => {
@@ -141,6 +145,7 @@ describe("experiment variants", () => {
       const matrix = getVariantRunMatrix();
       assert.ok(matrix.graphVersion, "graph"); assert.ok(matrix.rerankVariant, "rerank");
       assert.ok(matrix.retrievalVariant, "retrieval"); assert.ok(matrix.contextPlannerVariant, "planner"); assert.ok(matrix.validatorVariant, "validator");
+      assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant in matrix");
       for (const [, options] of Object.entries(matrix)) {
         for (const opt of options) {
           assert.ok(typeof opt.envVar === "string", "envVar"); assert.ok(typeof opt.value === "string", "value");
@@ -149,6 +154,211 @@ describe("experiment variants", () => {
         }
       }
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG5 — Emotional-axis variant config
+  // ---------------------------------------------------------------------------
+
+  describe("TG5 — emotional-axis variant config", () => {
+    it("readEmotionalAxisVariant returns default when no env/override", () => {
+      const r = withClearedEnv();
+      const variant = readEmotionalAxisVariant();
+      assert.equal(variant, "full_axis_coupling_render", "default variant");
+      r();
+    });
+
+    it("readEmotionalAxisVariant accepts valid variant names", () => {
+      for (const v of ["baseline_no_emotional_axis", "axis_state_no_render", "full_axis_coupling_render", "engine_no_coupling_full_render", "axis_bands_only"] as const) {
+        assert.equal(readEmotionalAxisVariant(v), v, `valid variant: ${v}`);
+      }
+    });
+
+    it("readEmotionalAxisVariant throws on invalid variant", () => {
+      assert.throws(() => readEmotionalAxisVariant("bogus_variant"), /Unsupported.*EMOTIONAL_AXIS_VARIANT/, "throws on bogus");
+    });
+
+    it("resolveEmotionalAxisVariantConfig maps all five variants correctly", () => {
+      const configs = {
+        baseline_no_emotional_axis: { engineEnabled: false, renderEnabled: false, noCoupling: false, bandsOnly: false },
+        axis_state_no_render: { engineEnabled: true, renderEnabled: false, noCoupling: false, bandsOnly: false },
+        full_axis_coupling_render: { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: false },
+        engine_no_coupling_full_render: { engineEnabled: true, renderEnabled: true, noCoupling: true, bandsOnly: false },
+        axis_bands_only: { engineEnabled: true, renderEnabled: true, noCoupling: false, bandsOnly: true },
+      };
+      for (const [variant, expected] of Object.entries(configs)) {
+        const actual = resolveEmotionalAxisVariantConfig(variant as any);
+        assert.equal(actual.engineEnabled, expected.engineEnabled, `${variant} engineEnabled`);
+        assert.equal(actual.renderEnabled, expected.renderEnabled, `${variant} renderEnabled`);
+        assert.equal(actual.noCoupling, expected.noCoupling, `${variant} noCoupling`);
+        assert.equal(actual.bandsOnly, expected.bandsOnly, `${variant} bandsOnly`);
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // TG6 — Emotional-axis variant metadata/tags wiring
+    // -------------------------------------------------------------------
+
+    it("TG6: buildEmotionalAxisVariantMetadata returns metadata for non-default variant", () => {
+      const meta = buildEmotionalAxisVariantMetadata("axis_state_no_render");
+      assert.ok(meta, "metadata present for non-default variant");
+      assert.equal(meta!.emotionalAxisVariant, "axis_state_no_render");
+    });
+
+    it("TG6: buildEmotionalAxisVariantMetadata returns undefined for default variant", () => {
+      const meta = buildEmotionalAxisVariantMetadata(DEFAULT_EMOTIONAL_AXIS_VARIANT);
+      assert.equal(meta, undefined, "no metadata for default variant");
+    });
+
+    it("TG6: buildEmotionalAxisVariantTags returns tag for non-default variant", () => {
+      const tags = buildEmotionalAxisVariantTags("axis_state_no_render");
+      assert.ok(tags.includes("variant:emotional_axis:axis_state_no_render"), "tag for non-default");
+    });
+
+    it("TG6: buildEmotionalAxisVariantTags returns empty for default variant", () => {
+      const tags = buildEmotionalAxisVariantTags(DEFAULT_EMOTIONAL_AXIS_VARIANT);
+      assert.equal(tags.length, 0, "no tags for default variant");
+    });
+
+    it("N1: no-arg builders read EMOTIONAL_AXIS_VARIANT (real runAgentEval path)", () => {
+      const saved = process.env.EMOTIONAL_AXIS_VARIANT;
+      try {
+        process.env.EMOTIONAL_AXIS_VARIANT = "axis_state_no_render";
+        assert.deepEqual(
+          buildEmotionalAxisVariantTags(),
+          ["variant:emotional_axis:axis_state_no_render"],
+          "no-arg tags read env",
+        );
+        assert.equal(
+          buildEmotionalAxisVariantMetadata()?.emotionalAxisVariant,
+          "axis_state_no_render",
+          "no-arg metadata reads env",
+        );
+      } finally {
+        if (saved === undefined) delete process.env.EMOTIONAL_AXIS_VARIANT;
+        else process.env.EMOTIONAL_AXIS_VARIANT = saved;
+      }
+    });
+
+    it("getVariantRunMatrix includes emotionalAxisVariant with all 5 entries", () => {
+      const matrix = getVariantRunMatrix();
+      assert.ok(matrix.emotionalAxisVariant, "emotionalAxisVariant category");
+      assert.equal(matrix.emotionalAxisVariant.length, 5, "5 emotional-axis variants");
+      const ids = matrix.emotionalAxisVariant.map((o) => o.value);
+      assert.ok(ids.includes("baseline_no_emotional_axis"), "baseline");
+      assert.ok(ids.includes("axis_state_no_render"), "no render");
+      assert.ok(ids.includes("full_axis_coupling_render"), "full");
+      assert.ok(ids.includes("engine_no_coupling_full_render"), "no coupling");
+      assert.ok(ids.includes("axis_bands_only"), "bands only");
+    });
+
+    // -------------------------------------------------------------------
+    // D3 — Emotional-axis env gate guardrails
+    // -------------------------------------------------------------------
+
+    describe("validateEmotionalAxisVariantGuard — env gate guardrails (D3)", () => {
+      const emotionalKeys = ["EMOTIONAL_ENGINE_ENABLED", "EMOTIONAL_RENDER_ENABLED"];
+
+      function clearEmotionalEnv(): () => void {
+        const prev: Record<string, string | undefined> = {};
+        for (const k of emotionalKeys) { prev[k] = process.env[k]; delete process.env[k]; }
+        return () => { for (const k of emotionalKeys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; } };
+      }
+
+      function setEmotionalEnv(key: string, value: string): () => void {
+        const prev = process.env[key];
+        process.env[key] = value;
+        return () => { if (prev === undefined) delete process.env[key]; else process.env[key] = prev; };
+      }
+
+      it("passes for baseline_no_emotional_axis when all gates disabled", () => {
+        const r = clearEmotionalEnv();
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("baseline_no_emotional_axis"),
+          "baseline passes with no gates",
+        );
+        r();
+      });
+
+      it("throws for axis_state_no_render when EMOTIONAL_ENGINE_ENABLED is off", () => {
+        const r = clearEmotionalEnv();
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("axis_state_no_render"),
+          /EMOTIONAL_ENGINE_ENABLED/,
+          "engine gate required for axis_state_no_render",
+        );
+        r();
+      });
+
+      it("passes for axis_state_no_render when engine gate is on and render gate off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        const r2 = clearEmotionalEnv(); // clears render
+        // Re-set engine after clear
+        process.env.EMOTIONAL_ENGINE_ENABLED = "1";
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("axis_state_no_render"),
+          "axis_state_no_render passes with engine gate only",
+        );
+        r2();
+        r1();
+      });
+
+      it("throws for full_axis_coupling_render when EMOTIONAL_RENDER_ENABLED is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("full_axis_coupling_render"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for full variant",
+        );
+        r1();
+      });
+
+      it("passes for full_axis_coupling_render when both gates are on", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        const r2 = setEmotionalEnv("EMOTIONAL_RENDER_ENABLED", "1");
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("full_axis_coupling_render"),
+          "full variant passes with both gates",
+        );
+        r2();
+        r1();
+      });
+
+      it("throws for engine_no_coupling_full_render when render gate is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("engine_no_coupling_full_render"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for no-coupling variant",
+        );
+        r1();
+      });
+
+      it("throws for axis_bands_only when render gate is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("axis_bands_only"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for bands-only variant",
+        );
+        r1();
+      });
+
+      it("error message includes the variant name and missing env var", () => {
+        const r = clearEmotionalEnv();
+        try {
+          validateEmotionalAxisVariantGuard("full_axis_coupling_render");
+          assert.fail("expected guard to throw");
+        } catch (err) {
+          const msg = (err as Error).message;
+          assert.ok(msg.includes("full_axis_coupling_render"), "error includes variant name");
+          assert.ok(msg.includes("EMOTIONAL_ENGINE_ENABLED"), "error includes missing env var");
+        } finally {
+          r();
+        }
+      });
+    });
+
   });
 });
 

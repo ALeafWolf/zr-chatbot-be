@@ -33,6 +33,8 @@ export interface Scenario {
   recentMessages?: unknown[];
   sessionSummary?: string;
   sessionState?: unknown;
+  /** TG1: Deterministic axis state seed written to session_state.local_relationship_delta.axis_state before runCharacterTurn. */
+  seedAxisState?: unknown;
   durableMemories?: unknown[];
   sessionChunks?: unknown[];
   structMemEntries?: unknown[];
@@ -47,6 +49,14 @@ export interface Scenario {
   expected_behavior?: string;
   /** Expected substring in retrieved canon for retrieval-quality metrics. */
   retrieval_expected_needle?: string;
+
+  // --- TG3: Emotional-axis scenario fields ---
+  /** Expected scope-resolved baselines for this scenario. */
+  expectedResolvedBaselines?: Record<string, number>;
+  /** When true, use structural-base (YAML base) baselines instead of scope-resolved. */
+  noScopeOverride?: boolean;
+  /** Expected continuity scope for this scenario (overrides session.continuity_scope for assertion context). */
+  continuityScope?: string;
 
   // --- Rerank scenario fields (optional, for LangSmith metadata) ---
   /** Memory IDs the reranker should select. */

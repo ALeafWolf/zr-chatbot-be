@@ -22,8 +22,9 @@ Metrics captured in agent-turn mode include retrieval (including **memory rerank
 - **Full-turn runner** (`src/eval/langsmith/runAgentEval.ts`) — seeds, runs a turn through `runCharacterTurn`, executes the post-turn job synchronously when enqueued, captures `AgentEvalOutput`, and cleans up.
 - **Usage tracking** — LLM token counts and estimated cost are captured per span and aggregated.
 - **Deterministic assertions** (`src/eval/evalAssertions.ts`) — reply checks, validator field checks, canon/retrieval checks, and **rerank-specific** assertion types.
-- **Rerank evaluators** (`src/eval/evaluators/rerankEvaluators.ts`) — precision/recall/rejection/context-mode LangSmith evaluators (standalone helpers; not yet registered in `runLangSmithExperiment.ts`).
+- **Rerank evaluators** (`src/eval/evaluators/rerankEvaluators.ts`) — precision/recall/rejection/context-mode LangSmith evaluators (registered in `runLangSmithExperiment.ts`).
 - **Rerank scenario library** (`src/eval/datasets/rerankScenarios.ts`) — labeled scenarios for memory-rerank behavior (separate from `scenarios.json`; not pushed by default).
+- **Emotional-axis eval** (`src/eval/runEmotionalAxisCli.ts`, `src/eval/datasets/emotionalAxisScenarios.ts`) — covers the emotional engine (post-turn axis update, couplings, bands) and the render block, with a dedicated snapshot, 43-scenario set, axis assertion types, and five A/B variants. See [Emotional-Axis Eval](#emotional-axis-eval-engine-update--render-block).
 
 ### What's not yet implemented
 
@@ -50,6 +51,15 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 # Required for eval experiments
 LANGSMITH_EVAL_DATASET=zuoran-phase1-eval
+
+# Emotional-axis eval (see the Emotional-Axis Eval section). Both default OFF;
+# EMOTIONAL_ENGINE_ENABLED=true is required for the update side, plus
+# EMOTIONAL_RENDER_ENABLED=true for the render side. The push writes to a dedicated
+# dataset (LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET, default emotional-axis-${LANGSMITH_EVAL_DATASET});
+# point LANGSMITH_EVAL_DATASET at it to run the experiment.
+EMOTIONAL_ENGINE_ENABLED=true
+EMOTIONAL_RENDER_ENABLED=true
+# LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET=emotional-axis-zuoran-phase1-eval
 
 # Experiment naming prefix (default: "zuoran")
 # LANGSMITH_EXPERIMENT_PREFIX=zuoran
@@ -136,6 +146,7 @@ Post-turn jobs are enqueued only when the persisted route is `roleplay_turn`. Ap
 | `ValidationEvalSnapshot` | Each validation attempt, final pass/rewrite/deflection state | `orchestration/generation/generateAndValidate.ts` |
 | `MemoryWriteEvalSnapshot` | Post-turn job status, extraction counts, write plan, durable/session/structmem write counts, summary compaction | `jobs/postTurnRunner.ts`, memory write modules, `orchestration/persistence/turnPersistence.ts` |
 | `UsageEvalSnapshot` | Per-LLM-span input/output tokens, estimated cost, aggregated totals | `observability/langsmithTracing.ts` |
+| `EmotionalAxisEvalSnapshot` | **Update side:** classified `event`, `eventDeltas`, `couplingsFired`, `axesBefore`/`axesAfter`, `bandsAfter`, `effectiveBaselines`, `conditionTransitions`, `tick`, `scope`. **Render side:** `render.{source, renderRuleIds, renderBlock, tier, bands}` | post-turn graph (update) + prompt-context render (render); see [Emotional-Axis Eval](#emotional-axis-eval-engine-update--render-block) |
 
 ### Isolation guarantees
 
@@ -334,6 +345,19 @@ Implemented in `src/eval/evalAssertions.ts`:
 | `rerank_context_mode` | `value` | Rerank `finalContextMode` must match (e.g. `recent_only`, `selected_memory`) |
 | `rerank_no_fallback` | — | Reranker must not fall back to deterministic selector |
 | `max_irrelevant_selected` | `values` (forbidden sources), `min_scenes` (max count) | Cap irrelevant source selections |
+| `turn_event_type` | `value` | Classified `emotionalAxis.event.type` must equal value (axis) |
+| `axis_delta_sign` | `field` (axis), `value` (`+`/`-`/`stable`) | Sign of `eventDeltas[axis]` this tick (axis) |
+| `axis_after_between` | `field` (axis), `value` (`"min,max"`) | `axesAfter[axis]` must fall in range (axis) |
+| `axis_band_equals` | `field` (axis), `value` (`high`/`mid`/`low`) | `bandsAfter[axis]` must equal value (axis) |
+| `couplings_fired_contains` | `values` (coupling ids) | All listed couplings must have fired (axis) |
+| `couplings_fired_not_contains` | `values` (coupling ids) | None of the listed couplings may have fired (axis) |
+| `effective_baseline_shifted` | `field` (axis), `value` (`+`/`-`), `min_scenes` (min magnitude) | `effectiveBaselines[axis]` shifted vs `resolvedBaselines[axis]` (axis) |
+| `condition_transition` | `field` (coupling id), `expected` (from bool), `value` (`true`/`false` = to) | A coupling condition flipped from→to this tick (axis) |
+| `render_rule_triggered` | `values` (rule ids R1–R8) | All listed render rules must be in `render.renderRuleIds` (axis) |
+| `render_block_contains` | `value` | Injected `render.renderBlock` must contain substring (axis) |
+| `render_block_not_contains` | `value` | Injected `render.renderBlock` must NOT contain substring (axis) |
+
+Axis assertions (marked **(axis)**) read `ctx.emotionalAxis` and **fail closed** when the relevant snapshot field is absent. See [Emotional-Axis Eval](#emotional-axis-eval-engine-update--render-block).
 
 **Note:** `agent_turn` LangSmith rows currently expose `ValidationEvalSnapshot`, not raw `ValidationResult`. Use `contains_*` / `not_contains` reply assertions for full-turn evals; use `validator_*` assertions in validator-only rows with `input_draft`.
 
@@ -355,6 +379,7 @@ All seed fields are optional except `session`.
 | `structMemConsolidations` | array | Pre-seeded StructMem consolidations |
 | `canonReferenceIds` | string[] | Expected canon reference IDs (documentation / future use) |
 | `configOverrides` | object | Override pipeline config for this eval only |
+| `seedAxisState` | object | Pre-turn emotional-axis state (`axes`, `bands`, `tick`, `lastTrace`, `history`). Top-level `tick` is auto-clamped to the last seeded turn so the eval turn always advances the engine (see [Emotional-Axis Eval](#emotional-axis-eval-engine-update--render-block)) |
 | `input_draft` | string | Fixed draft for validator-only eval |
 | `validator_retrieved_canon` | string | Canon excerpt passed to validator in validator-only eval |
 | `retrieval_expected_needle` | string | Needle substring for retrieval-quality metrics |
@@ -402,6 +427,7 @@ Control which scenarios are pushed with the `EVAL_SCENARIO_SET` env var:
 | `default` (or unset) | `scenarios.json` only |
 | `rerank` | Rerank scenarios from `src/eval/datasets/rerankScenarios.ts` only |
 | `probes` | Probe scenarios from `src/eval/datasets/probeScenarios.ts` only |
+| `emotional_axis` | Emotional-axis scenarios from `src/eval/datasets/emotionalAxisScenarios.ts` only (43 rows). Pushed to a **dedicated** dataset — see [Emotional-Axis Eval](#emotional-axis-eval-engine-update--render-block) |
 | `all` | `scenarios.json` + rerank scenarios + probe scenarios |
 
 Examples:
@@ -495,6 +521,17 @@ VALIDATOR_VARIANT=strict_attribution VALIDATOR_STRICT_ATTRIBUTION=1 npm run eval
 
 # Combined variants
 RERANK_VARIANT=hybrid_score RETRIEVAL_VARIANT=hyde_enabled CANON_QUERY_HYDE=1 npm run eval:langsmith
+
+# Emotional-axis variant — requires EVAL_SCENARIO_SET=emotional_axis and the
+# emotional-axis dataset. The variant is applied to agent_turn runtime behavior
+# via withEmotionalAxisEvalConfig, not just trace tags/metadata.
+EMOTIONAL_AXIS_VARIANT=axis_state_no_render EMOTIONAL_ENGINE_ENABLED=1 npm run eval:emotional-axis:langsmith
+
+# Full render variant — requires both engine and render gates
+EMOTIONAL_AXIS_VARIANT=full_axis_coupling_render EMOTIONAL_ENGINE_ENABLED=1 EMOTIONAL_RENDER_ENABLED=1 npm run eval:emotional-axis:langsmith
+
+# Baseline variant — no emotional-engine gates required
+EMOTIONAL_AXIS_VARIANT=baseline_no_emotional_axis npm run eval:emotional-axis:langsmith
 ```
 
 #### Variant guardrails
@@ -507,6 +544,18 @@ The `validateExperimentVariants()` function in `src/eval/experimentVariants.ts` 
 - `CONTEXT_PLANNER_VARIANT=no_rewrite` — not yet implemented, fails fast
 - `CONTEXT_PLANNER_VARIANT=structured_query` — not yet implemented, fails fast
 - `VALIDATOR_VARIANT=lightweight` — not yet implemented, fails fast
+
+**Emotional-axis** variant gate matrix (checked by `preflightEmotionalAxisLangSmithRun()` in `src/eval/preflightLangSmith.ts` for LangSmith runs, and by `validateEmotionalAxisVariantGuard()` in `src/eval/experimentVariants.ts` for the local CLI):
+
+| Variant | Requires gate |
+|---------|--------------|
+| `baseline_no_emotional_axis` | None |
+| `axis_state_no_render` | `EMOTIONAL_ENGINE_ENABLED=1` |
+| `full_axis_coupling_render` | `EMOTIONAL_ENGINE_ENABLED=1` + `EMOTIONAL_RENDER_ENABLED=1` |
+| `engine_no_coupling_full_render` | `EMOTIONAL_ENGINE_ENABLED=1` + `EMOTIONAL_RENDER_ENABLED=1` |
+| `axis_bands_only` | `EMOTIONAL_ENGINE_ENABLED=1` + `EMOTIONAL_RENDER_ENABLED=1` |
+
+`baseline_no_emotional_axis` requires no production gates and can run with engine/render disabled. Error messages name the selected variant and the missing env var.
 
 Validation runs at experiment startup; misconfigured variants produce clear error messages before any model calls or traces.
 
@@ -721,6 +770,114 @@ Output example:
 }
 ```
 
+## Emotional-Axis Eval (engine update + render block)
+
+The emotional-axis harness extends `agent_turn` evals to cover the **emotional engine** (post-turn axis update, couplings, bands) and the **render block** (the emotion-derived text injected into the system prompt). It reuses the same isolated-session machinery (`seedEvalSession` → `runCharacterTurn` → synchronous post-turn → `cleanupEvalSession`) and adds a dedicated snapshot, scenario set, axis assertion types, and five A/B variants.
+
+**Design notes:**
+- **D7** — variant behavior is controlled by an *injected* config (`setEmotionalAxisEvalConfig`), never by mutating env globals. The engine gate (`postTurnMemoryGraph`) and render gate (`buildPromptContext`) read this config.
+- **D8** — assertions check *internal conformance* (event classification, delta signs, bands, couplings, render rules), not external ground-truth accuracy. Model-vs-author event-classification differences are expected signal, not bugs.
+
+### Snapshot — `EmotionalAxisEvalSnapshot`
+
+Captured on `outputs.emotionalAxis` (`src/eval/evalSnapshots.ts`):
+
+| Side | Fields |
+| --- | --- |
+| **Update** | `event {type, intensity, reason}`, `modelReportedConfidence`, `axesBefore`, `eventDeltas`, `couplingsFired[]`, `effectiveBaselines`, `conditionTransitions[]`, `axesAfter`, `bandsAfter`, `tick`, `scope`, `resolvedBaselines` |
+| **Render** | `render { source, sourceTick, bands, renderRuleIds[], renderBlock, tier (A/B/C), resolvedBaselines }` — `source` is `persisted_axis_state` (normal) or `scope_baseline_synthetic` (fallback when no persisted state exists) |
+
+### Scenarios
+
+43 scenarios in `src/eval/datasets/emotionalAxisScenarios.ts`, loaded with `EVAL_SCENARIO_SET=emotional_axis`. Grouped by ID prefix:
+
+| Prefix | Count | Focus |
+| --- | --- | --- |
+| `AX` | 12 | Update side — event classification + axis deltas |
+| `CP` | 6 | Couplings (`zr_c1`/`zr_c2`/`zr_c3`) and baseline shifts |
+| `RENDER` | 9 | Render rules R1–R8 and render-block content |
+| `S6` | 4 | Scope / baseline resolution |
+| `TRAJ-ESC` | 3 | Escalation trajectory (multi-turn) |
+| `TRAJ-INT` | 4 | Intimacy trajectory (multi-turn) |
+| `TRAJ-SC` | 5 | Slow-burn / accumulation trajectory (multi-turn) |
+
+Scenarios carry a `seedAxisState` field (pre-turn axis state). **The seed's top-level `tick` is auto-clamped** to the last seeded turn (`clampSeedAxisTick`) so the eval turn always advances the engine. Without this, a seed authored at the eval turn's tick collides with the engine's idempotency guard (`persisted.tick >= tick`) and the update snapshot is silently dropped.
+
+### Variants (5)
+
+Selected with `--variant <name>` (CLI) or `EMOTIONAL_AXIS_VARIANT` (env); default `full_axis_coupling_render`.
+
+| Variant | engine | render | couplings | render output |
+| --- | --- | --- | --- | --- |
+| `baseline_no_emotional_axis` | off | off | — | — |
+| `axis_state_no_render` | on | off | on | none |
+| `full_axis_coupling_render` (default) | on | on | on | full |
+| `engine_no_coupling_full_render` | on | on | **off** | full |
+| `axis_bands_only` | on | on | on | band line only (rule texts suppressed) |
+
+### Local CLI — `eval:emotional-axis`
+
+The fast inner loop. Runs scenarios through `runAgentEval`, evaluates axis assertions against the snapshot, and writes reports to `eval-results/emotional-axis/latest/` (`results.json`, `summary.md`, `failures.md`; plus `comparison.md` for `--compare`).
+
+```bash
+npm run eval:emotional-axis                                   # all 43, default variant
+npm run eval:emotional-axis -- --scenario AX01                # single scenario (inspect one snapshot)
+npm run eval:emotional-axis -- --variant axis_bands_only      # all scenarios under one variant
+npm run eval:emotional-axis -- --compare                      # run all 5 variants → comparison.md A/B tables
+npm run eval:emotional-axis -- --trajectory TRAJ-SC           # multi-turn with T→T+1 state carry-over
+npm run eval:emotional-axis -- --dry-run                      # preview scenarios/variant, no model calls
+EMOTIONAL_AXIS_SMOKE=1 npm run eval:emotional-axis            # deterministic stub reports, no model calls
+```
+
+**Trajectory mode** threads turn N's `emotionalAxis` snapshot into turn N+1's seed (`buildCarryOverSeed`), so accumulation assertions (e.g. `axis_after_between connection 0.15,0.6` by T5) test cumulative drift across a conversation.
+
+> **To inspect *where* the snapshot is, use the CLI single-scenario run — not LangSmith.** The CLI prints `emotionalAxis` inline and exercises the exact same `seedEvalSession` + post-turn engine + capture path. `runLangSmithExperiment.ts` has no per-scenario filter.
+
+### LangSmith — push + experiment
+
+```bash
+# 1) push the emotional-axis scenarios to a DEDICATED dataset
+npm run eval:emotional-axis:push
+#    → writes to LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET, default `emotional-axis-${LANGSMITH_EVAL_DATASET}`
+
+# 2) run the experiment AGAINST THAT DATASET (PowerShell)
+$env:LANGSMITH_EVAL_DATASET = "emotional-axis-<your-base>"; npm run eval:emotional-axis:langsmith
+```
+
+> ⚠️ **Dataset-name gotcha.** The push auto-derives a dedicated dataset name (`emotional-axis-…`) so it won't clobber your regression set. But `runLangSmithExperiment.ts` evaluates `LANGSMITH_EVAL_DATASET` **verbatim** and does not auto-switch for the emotional-axis set. If you run `eval:emotional-axis:langsmith` without pointing `LANGSMITH_EVAL_DATASET` at the emotional-axis dataset, it evaluates the wrong dataset and you see no axis snapshots. Override `LANGSMITH_EVAL_DATASET` for the run. Do **not** instead set `LANGSMITH_EMOTIONAL_AXIS_EVAL_DATASET` to your base dataset — the push clears its target dataset first.
+
+#### LangSmith runtime behavior
+
+When `EVAL_SCENARIO_SET=emotional_axis`, `runLangSmithExperiment.ts` applies the selected `EMOTIONAL_AXIS_VARIANT` to `agent_turn` **runtime** behavior through `withEmotionalAxisEvalConfig(...)`, not just trace metadata/tags. Before any LangSmith evaluation starts, `preflightEmotionalAxisLangSmithRun()` validates the env gates and throws immediately if a required gate is disabled (see variant gate matrix above).
+
+Within each `agent_turn` row, `evalTarget()` wraps `runAgentEval()` with the variant's injected config so the engine gate (`postTurnMemoryGraph`, `buildPromptContext`) sees the correct `engineEnabled`/`renderEnabled`/`noCoupling`/`bandsOnly` flags. Ordinary (`non-emotional_axis`) LangSmith runs are not affected.
+
+#### Metadata and tags
+
+Emotional-axis variant metadata and tags are attached to each trace when the variant is non-default:
+
+| Source | Non-default example | Default variant |
+|--------|-------------------|-----------------|
+| `metadata.emotionalAxisVariant` | `"axis_state_no_render"` | omitted |
+| Tag `variant:emotional_axis:<name>` | `"variant:emotional_axis:axis_state_no_render"` | omitted |
+
+These appear alongside the other variant metadata (`graphVersion`, `rerankVariant`, `retrievalVariant`, `validatorVariant`) and tags (`variant:rerank:*`, etc.) in the LangSmith UI. See [Interpreting Results](#interpreting-results).
+
+The experiment runs every row (`maxConcurrency: 1`; each `agent_turn` row is a live model call). `emotionalAxisAggregateEvaluator` emits per-row feedback keys:
+
+| Feedback key | Meaning |
+| --- | --- |
+| `emotional_axis_has_update` | Presence marker (scores `1` whenever a snapshot exists) |
+| `emotional_axis_coupling_count` | Number of couplings fired this turn |
+| `emotional_axis_has_render` | `1` if a render snapshot was captured, else `0` |
+| `emotional_axis_render_source` | `1` if `render.source = persisted_axis_state`, else `0` |
+
+Per-assertion `assertion_N_pass` / `all_assertions_pass` come from `assertionsEvaluator`, which forwards `ctx.emotionalAxis` for `agent_turn` rows.
+
+### Live-run isolation
+
+Live runs need a real DB and live models. `PostTurnRunner.wake()` is a **no-op while an eval capture is active**, so the module-level background loop never claims the eval's post-turn job and runs the engine outside the capture (which would drop the update snapshot). The synchronous `runSyncForEval` path is the sole in-context executor. As belt-and-braces, **keep the backend server (port 4000) stopped during live eval runs** — a second worker still adds DB write contention even though the snapshot is now protected.
+
 ## Interpreting Results
 
 ### In the terminal
@@ -808,7 +965,7 @@ When `retrieval.rerank.fallbackUsed` is `true`, the deterministic selector ran i
 | `estimatedCostUsd: null` | Unknown model pricing | `llmSpans[].pricingKnown` |
 | `rerank.rerankVariant=deterministic_only` | Intentional variant (not a failure) | Check `rerank.fallbackReason=variant_deterministic_only` |
 | `rerank.rerankVariant=hybrid_score` | Non-LLM hybrid selector in use | Check `rerank.fallbackUsed=false` if successful |
-| Guardrail error at startup | Misconfigured variant env vars | Check `CANON_QUERY_HYDE`, `STRUCTMEM_MOTIF_PROBE_ENABLED`, or `VALIDATOR_STRICT_ATTRIBUTION` |
+| Guardrail error at startup | Misconfigured variant env vars | Check `CANON_QUERY_HYDE`, `STRUCTMEM_MOTIF_PROBE_ENABLED`, `VALIDATOR_STRICT_ATTRIBUTION`, `EMOTIONAL_ENGINE_ENABLED`, or `EMOTIONAL_RENDER_ENABLED` |
 
 ## Running Subset-Specific Eval
 
@@ -854,11 +1011,14 @@ Key variant test files:
 
 | Test file | Covers |
 |-----------|--------|
-| `src/eval/experimentVariants.unit.ts` | Variant parsing, alias normalization, metadata/tags, guardrails |
+| `src/eval/experimentVariants.unit.ts` | Variant parsing, alias normalization, metadata/tags, guardrails (incl. emotional-axis env gates) |
 | `src/eval/agentEvalCliHelpers.unit.ts` | CLI argument validation, scenario-set filtering |
 | `src/eval/loadEvalScenarios.unit.ts` | Scenario loading by set, rerank scenario eval_mode |
 | `src/orchestration/graphs/roleplayPreGenerationGraph.unit.ts` | Variant routing, hybrid score node, deterministic-only path |
 | `src/orchestration/context/hybridScoreRerank.unit.ts` | Hybrid score selection algorithm |
+| `src/eval/emotionalAxisEvalConfig.unit.ts` | Scoped config helper (`withEmotionalAxisEvalConfig`) |
+| `src/eval/preflightLangSmith.unit.ts` | LangSmith emotional-axis preflight gate validation (non-axis, baseline, engine/render gate failures) |
+| `src/orchestration/graphs/postTurnMemoryGraph.unit.ts` | Engine state node (incl. `MissingAssistantMessageError` propagation) |
 
 ## Debugging
 
@@ -918,8 +1078,11 @@ console.log(JSON.stringify(result, null, 2));
 | `src/eval/langsmith/seedEvalSession.ts` | Isolated session seeding |
 | `src/eval/langsmith/cleanupEvalSession.ts` | Session cleanup |
 | `src/eval/langsmith/runAgentEval.ts` | Full-turn eval runner |
-| `src/eval/runLangSmithExperiment.ts` | LangSmith experiment entry point |
-| `src/eval/pushLangSmithDataset.ts` | Dataset upload |
+| `src/eval/runLangSmithExperiment.ts` | LangSmith experiment entry point (incl. `emotionalAxisAggregateEvaluator`) |
+| `src/eval/pushLangSmithDataset.ts` | Dataset upload (derives dedicated `emotional-axis-*` dataset for `emotional_axis` set) |
+| `src/eval/runEmotionalAxisCli.ts` | Emotional-axis local CLI (single / variant / compare / trajectory / smoke) |
+| `src/eval/datasets/emotionalAxisScenarios.ts` | Emotional-axis scenario library (43 rows; set `emotional_axis`) |
+| `src/eval/emotionalAxisEvalConfig.ts` | Injected variant config (engine / render / coupling / bands toggles; design D7) + scoped `withEmotionalAxisEvalConfig()` helper |
 | `src/eval/runEval.ts` | Local validator/retrieval CLI |
 | `src/eval/runRetrievalEvalCli.ts` | Retrieval-only CLI |
 | `src/eval/retrievalEvalRunner.ts` | Tier-3 retrieval eval helper |
@@ -928,6 +1091,7 @@ console.log(JSON.stringify(result, null, 2));
 | `src/observability/langsmithTracing.ts` | Tracing + usage capture |
 | `src/eval/evalProcessDrain.ts` | LangSmith client flush helper (submits pending traces before exit) |
 | `src/eval/experimentVariants.ts` | Variant metadata helper, guardrails, run matrix |
+| `src/eval/preflightLangSmith.ts` | Emotional-axis LangSmith preflight gate validation (fail-fast before `evaluate(...)`) |
 | `src/eval/runAgentEvalCli.ts` | Full-turn agent eval CLI |
 | `src/eval/agentEvalCliHelpers.ts` | CLI argument/validation helpers |
 | `src/eval/datasets/rerankScenarios.ts` | Rerank scenario library |

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildExportArtifact } from "./exportSessionRawTurns";
 import type { ChatMessage } from "../../db/schema/chat";
-import type { ExportOptions } from "./appCommandTypes";
+import type { ExportOptions, FileExportResult } from "./appCommandTypes";
+import type { EmotionalAxisTurnExportSnapshot } from "../../state/emotionalEngine/types";
 
 function opts(
   format: ExportOptions["format"],
@@ -26,6 +27,7 @@ function makeMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
     route: overrides.route ?? "roleplay_turn",
     content: overrides.content ?? "Hello",
     thoughts: overrides.thoughts ?? null,
+    emotionalAxis: overrides.emotionalAxis ?? null,
     validatorResult: overrides.validatorResult ?? null,
     createdAt: overrides.createdAt ?? new Date("2025-01-01T00:00:00Z"),
   };
@@ -298,5 +300,215 @@ describe("buildExportArtifact", () => {
     assert.equal(parsed.message_count, 6);
     const appMsgs = parsed.messages.filter((m: { route: string }) => m.route === "app_command");
     assert.equal(appMsgs.length, 2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG1: Emotional-axis snapshot export
+  // ---------------------------------------------------------------------------
+
+  const validAxisSnapshot: EmotionalAxisTurnExportSnapshot = {
+    version: 1,
+    source: "post_turn_engine",
+    tick: 3,
+    scope: "main_married",
+    axes: { connection: 0.23, valence: 0.10, arousal: -0.12, restraint: 0.68 },
+    bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+    axes_before: { connection: 0.0, valence: 0.0, arousal: 0.0, restraint: 0.5 },
+    event_type: "user_shows_warmth",
+    event_intensity: 0.6,
+    event_deltas: { connection: 0.23, valence: 0.10 },
+  };
+
+  const messagesWithAxisSnapshot: ChatMessage[] = [
+    makeMsg({ id: "a1", turnIndex: 0, role: "user", content: "hello" }),
+    makeMsg({ id: "a2", turnIndex: 1, role: "assistant", route: "roleplay_turn", content: "Hi there!", emotionalAxis: validAxisSnapshot }),
+    makeMsg({ id: "a3", turnIndex: 2, role: "user", content: "I appreciate you" }),
+    makeMsg({ id: "a4", turnIndex: 3, role: "assistant", route: "roleplay_turn", content: "Of course!", emotionalAxis: {
+      version: 1,
+      source: "post_turn_engine",
+      tick: 4,
+      scope: "main_married",
+      axes: { connection: 0.45, valence: 0.30, arousal: 0.10, restraint: 0.50 },
+      bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" },
+    } }),
+  ];
+
+  it("JSON export includes emotional_axis on messages with a valid snapshot", () => {
+    const r = buildExportArtifact(messagesWithAxisSnapshot, opts("json"), SESSION_ID, "Axis Test");
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.message_count, 4);
+
+    // User message — no emotional_axis
+    assert.equal(parsed.messages[0].emotional_axis, undefined, "user message has no emotional_axis");
+
+    // Assistant message with snapshot (tick 3)
+    const em1 = parsed.messages[1].emotional_axis;
+    assert.ok(em1, "assistant message has emotional_axis");
+    assert.equal(em1.version, 1);
+    assert.equal(em1.tick, 3);
+    assert.equal(em1.scope, "main_married");
+    assert.deepEqual(em1.axes, { connection: 0.23, valence: 0.10, arousal: -0.12, restraint: 0.68 });
+    assert.deepEqual(em1.bands, { connection: "mid", valence: "mid", arousal: "mid", restraint: "high" });
+    assert.deepEqual(em1.axes_before, { connection: 0.0, valence: 0.0, arousal: 0.0, restraint: 0.5 });
+    assert.equal(em1.event_type, "user_shows_warmth");
+    assert.equal(em1.event_intensity, 0.6);
+    assert.deepEqual(em1.event_deltas, { connection: 0.23, valence: 0.10 });
+    assert.equal(em1.source, "post_turn_engine");
+
+    // Second assistant message with snapshot (tick 4, minimal fields)
+    const em2 = parsed.messages[3].emotional_axis;
+    assert.ok(em2, "second assistant message has emotional_axis");
+    assert.equal(em2.tick, 4);
+    assert.equal(em2.axes.connection, 0.45);
+    assert.equal(em2.bands.connection, "mid");
+    // Optional fields not present
+    assert.equal(em2.axes_before, undefined);
+    assert.equal(em2.event_type, undefined);
+  });
+
+  it("TXT export includes [Emotional Axis] block for messages with a valid snapshot", () => {
+    const r = buildExportArtifact(messagesWithAxisSnapshot, opts("txt"), SESSION_ID, "Axis Test");
+    const content = r.artifact.content;
+
+    // Header present
+    assert.match(content, /Session Transcript/);
+
+    // First assistant message (tick 3) — full emotional axis block
+    assert.match(content, /\[Emotional Axis\]/);
+    assert.match(content, /tick: 3/);
+    assert.match(content, /scope: main_married/);
+    assert.match(content, /connection: 0.23 \(mid\)/);
+    assert.match(content, /valence: 0.1 \(mid\)/);
+    assert.match(content, /restraint: 0.68 \(high\)/);
+
+    // Second assistant message (tick 4)
+    assert.match(content, /tick: 4/);
+    assert.match(content, /connection: 0.45 \(mid\)/);
+
+    // User message — no axis block between user turn markers
+    const userSection = content.split(/--- Turn 0 \| User ---/)[1]?.split(/--- Turn 1 \| Assistant ---/)[0] ?? "";
+    assert.doesNotMatch(userSection, /\[Emotional Axis\]/, "user message has no axis block");
+  });
+
+  it("JSON export omits emotional_axis when snapshot is null", () => {
+    const r = buildExportArtifact(twoTurnMessages, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    for (const msg of parsed.messages) {
+      assert.equal(msg.emotional_axis, undefined, "messages without snapshot have no emotional_axis field");
+    }
+  });
+
+  it("TXT export omits [Emotional Axis] block when snapshot is null", () => {
+    const r = buildExportArtifact(twoTurnMessages, opts("txt"), SESSION_ID, null);
+    assert.doesNotMatch(r.artifact.content, /\[Emotional Axis\]/, "no axis block for null snapshots");
+  });
+
+  it("JSON export ignores malformed emotional_axis snapshots", () => {
+    const malformedMessages: ChatMessage[] = [
+      makeMsg({ id: "m1", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "bad", emotionalAxis: { version: 999, source: "unknown" } }),
+      makeMsg({ id: "m2", turnIndex: 1, role: "assistant", route: "roleplay_turn", content: "not object", emotionalAxis: "string instead of object" }),
+      makeMsg({ id: "m3", turnIndex: 2, role: "assistant", route: "roleplay_turn", content: "missing axes", emotionalAxis: { version: 1, source: "post_turn_engine", tick: 1, scope: "test" } }),
+      makeMsg({ id: "m4", turnIndex: 3, role: "assistant", route: "roleplay_turn", content: "null", emotionalAxis: null }),
+    ];
+    const r = buildExportArtifact(malformedMessages, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.message_count, 4);
+    for (const msg of parsed.messages) {
+      assert.equal(msg.emotional_axis, undefined, `malformed message ${msg.id} has no emotional_axis field`);
+    }
+  });
+
+  it("TXT export ignores malformed emotional_axis snapshots", () => {
+    const malformedMessages: ChatMessage[] = [
+      makeMsg({ id: "m1", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "bad", emotionalAxis: { version: 999, source: "unknown" } }),
+      makeMsg({ id: "m2", turnIndex: 1, role: "assistant", route: "roleplay_turn", content: "not object", emotionalAxis: "string instead of object" }),
+      makeMsg({ id: "m3", turnIndex: 2, role: "assistant", route: "roleplay_turn", content: "missing axes", emotionalAxis: { version: 1, source: "post_turn_engine", tick: 1, scope: "test" } }),
+    ];
+    const r = buildExportArtifact(malformedMessages, opts("txt"), SESSION_ID, null);
+    assert.doesNotMatch(r.artifact.content, /\[Emotional Axis\]/, "no axis block for malformed snapshots");
+  });
+
+  // ---------------------------------------------------------------------------
+  // F2: Partial axes / invalid bands — must be rejected, not coerced
+  // ---------------------------------------------------------------------------
+
+  it("F2: JSON export rejects snapshot with partial axes (missing valence)", () => {
+    const partialAxes: ChatMessage[] = [
+      makeMsg({ id: "f2a", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "partial",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 1, scope: "main",
+          axes: { connection: 0.2 },
+          bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" },
+        },
+      }),
+    ];
+    const r = buildExportArtifact(partialAxes, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.messages[0].emotional_axis, undefined, "partial axes rejected");
+  });
+
+  it("F2: JSON export rejects snapshot with non-finite axis value", () => {
+    const nanAxes: ChatMessage[] = [
+      makeMsg({ id: "f2b", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "nan",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 1, scope: "main",
+          axes: { connection: Infinity, valence: 0, arousal: 0, restraint: 0 },
+          bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" },
+        },
+      }),
+    ];
+    const r = buildExportArtifact(nanAxes, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.messages[0].emotional_axis, undefined, "non-finite axis rejected");
+  });
+
+  it("F2: JSON export rejects snapshot with invalid band label", () => {
+    const invalidBand: ChatMessage[] = [
+      makeMsg({ id: "f2c", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "bad band",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 1, scope: "main",
+          axes: { connection: 0.2, valence: 0, arousal: 0, restraint: 0 },
+          bands: { connection: "nonsense", valence: "mid", arousal: "mid", restraint: "mid" },
+        },
+      }),
+    ];
+    const r = buildExportArtifact(invalidBand, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.messages[0].emotional_axis, undefined, "invalid band label rejected");
+  });
+
+  it("F2: JSON export rejects snapshot with missing bands entirely", () => {
+    const missingBands: ChatMessage[] = [
+      makeMsg({ id: "f2d", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "no bands",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 1, scope: "main",
+          axes: { connection: 0.2, valence: 0, arousal: 0, restraint: 0 },
+        },
+      }),
+    ];
+    const r = buildExportArtifact(missingBands, opts("json"), SESSION_ID, null);
+    const parsed = JSON.parse(r.artifact.content);
+    assert.equal(parsed.messages[0].emotional_axis, undefined, "missing bands rejected");
+  });
+
+  it("F2: TXT export also rejects partial axes and invalid bands", () => {
+    const badMessages: ChatMessage[] = [
+      makeMsg({ id: "f2e", turnIndex: 0, role: "assistant", route: "roleplay_turn", content: "partial",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 1, scope: "main",
+          axes: { connection: 0.2 },
+          bands: { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" },
+        },
+      }),
+      makeMsg({ id: "f2f", turnIndex: 1, role: "assistant", route: "roleplay_turn", content: "bad band",
+        emotionalAxis: {
+          version: 1, source: "post_turn_engine", tick: 2, scope: "main",
+          axes: { connection: 0.2, valence: 0, arousal: 0, restraint: 0 },
+          bands: { connection: "nonsense", valence: "mid", arousal: "mid", restraint: "mid" },
+        },
+      }),
+    ];
+    const r = buildExportArtifact(badMessages, opts("txt"), SESSION_ID, null);
+    assert.doesNotMatch(r.artifact.content, /\[Emotional Axis\]/, "no axis block for partial/invalid data");
   });
 });

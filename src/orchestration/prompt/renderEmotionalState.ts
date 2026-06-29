@@ -37,6 +37,19 @@ export interface RenderTriggerContext {
   history: HistoryEntry[];
 }
 
+/**
+ * TG2: Full match metadata returned by `selectRenderRuleMatches`.
+ * Enables eval/diagnostics to observe which rules fired without
+ * re-deriving selection logic.
+ */
+export interface RenderRuleMatch {
+  id: string;
+  tier: Tier;
+  priority: number;
+  isTraceTriggered: boolean;
+  text: string;
+}
+
 // ---------------------------------------------------------------------------
 // Band-line helpers
 // ---------------------------------------------------------------------------
@@ -191,6 +204,7 @@ const RULES: RenderRule[] = [
 
 /**
  * Select up to RENDER_BUDGET (2) rules for the current turn.
+ * Returns full match metadata for eval/diagnostics.
  *
  * Priority sort: lower number = higher priority.
  * Tie-break: trace/event-triggered rules beat pure-state rules at equal priority.
@@ -198,15 +212,15 @@ const RULES: RenderRule[] = [
  * @param bands     - Current axis bands (with hysteresis).
  * @param lastTrace - Last engine trace (couplingsFired, effectiveBaselines).
  * @param history   - Axis history (bounded).
- * @param tier      - Current render tier ('A' — Tier A rules only in TG4).
- * @returns Ordered array of selected rule texts (≤2).
+ * @param tier      - Current render tier.
+ * @returns Ordered array of selected rule matches (≤2), each with id/tier/priority/isTraceTriggered/text.
  */
-export function selectRenderRules(
+export function selectRenderRuleMatches(
   bands: Record<AxisName, Band>,
   lastTrace: StateTrace,
   history: HistoryEntry[],
   tier: Tier,
-): string[] {
+): RenderRuleMatch[] {
   const ctx: RenderTriggerContext = { bands, lastTrace, history };
 
   // Filter by tier and check trigger
@@ -226,7 +240,32 @@ export function selectRenderRules(
 
   // Enforce budget
   const selected = triggered.slice(0, RENDER_BUDGET);
-  return selected.map((rule) => rule.text);
+  return selected.map((rule) => ({
+    id: rule.id,
+    tier: rule.tier,
+    priority: rule.priority,
+    isTraceTriggered: rule.isTraceTriggered,
+    text: rule.text,
+  }));
+}
+
+/**
+ * Select up to RENDER_BUDGET (2) rules and return only their texts.
+ * Delegates to `selectRenderRuleMatches` so production output is byte-identical.
+ *
+ * @param bands     - Current axis bands (with hysteresis).
+ * @param lastTrace - Last engine trace (couplingsFired, effectiveBaselines).
+ * @param history   - Axis history (bounded).
+ * @param tier      - Current render tier.
+ * @returns Ordered array of selected rule texts (≤2).
+ */
+export function selectRenderRules(
+  bands: Record<AxisName, Band>,
+  lastTrace: StateTrace,
+  history: HistoryEntry[],
+  tier: Tier,
+): string[] {
+  return selectRenderRuleMatches(bands, lastTrace, history, tier).map((m) => m.text);
 }
 
 // ---------------------------------------------------------------------------

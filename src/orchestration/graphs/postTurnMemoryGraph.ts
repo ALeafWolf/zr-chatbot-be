@@ -14,11 +14,12 @@ import { maybeCompactSessionSummary, type SessionSummaryCompactResult, type Mayb
 import { extractPostTurnSignals, type ExtractSignalsInput, type PostTurnSignals } from '../../llm/extraction/extractPostTurnSignals';
 import { buildPostTurnWritePlan, type PostTurnWritePlan, type PostTurnWritePlanSession, type PostTurnWritePlanEnv, type PostTurnWritePlanSignals } from '../../jobs/postTurnPolicies';
 import { isStepComplete, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepStatus } from '../../jobs/postTurnJobPayload';
-import { recordMemoryWriteSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
+import { recordMemoryWriteSnapshot, recordEmotionalAxisUpdateSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
 import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
+import { getEmotionalAxisEvalConfig } from '../../eval/emotionalAxisEvalConfig';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
-import { readAxisState, writeAxisState } from '../../state/emotionalEngine/axisStatePersistence';
+import { readAxisState, writeAxisState, persistAxisSnapshot, buildAxisTurnExportSnapshot, MissingAssistantMessageError } from '../../state/emotionalEngine/axisStatePersistence';
 import { loadCharacterDefaults } from '../../character/characterDefaults';
 import { getSessionState } from '../../state/sessionStateRepo';
 import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
@@ -161,6 +162,8 @@ export interface PostTurnMemoryGraphDeps {
   emotionalEngineEnabled: boolean;
   /** TG1 (tracing): Injected compute core (default = traced). Wraps advanceCharacterState + computeBands. */
   computeEngineAdvanceFn: typeof computeEngineAdvance;
+  /** TG1: Persist axis snapshot to both session_state and chat_messages atomically. */
+  persistAxisSnapshotFn: typeof persistAxisSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +237,7 @@ export function defaultPostTurnMemoryGraphDeps(overrides?: Partial<PostTurnMemor
     getSessionStateFn: overrides?.getSessionStateFn ?? getSessionState,
     emotionalEngineEnabled: overrides?.emotionalEngineEnabled ?? env.EMOTIONAL_ENGINE_ENABLED,
     computeEngineAdvanceFn: overrides?.computeEngineAdvanceFn ?? tracedComputeEngineAdvance,
+    persistAxisSnapshotFn: overrides?.persistAxisSnapshotFn ?? persistAxisSnapshot,
   };
 }
 
@@ -282,7 +286,9 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
     if (isStepComplete(state.stepStatus, 'engine_state')) return {};
 
     // Gate: flag off → skip (mark complete, no-op)
-    if (!deps.emotionalEngineEnabled) {
+    const evalConfig = getEmotionalAxisEvalConfig();
+    const engineEnabled = deps.emotionalEngineEnabled && evalConfig.engineEnabled;
+    if (!engineEnabled) {
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     }
@@ -359,14 +365,38 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       const previousBands: Record<AxisName, Band> = persisted?.bands ?? {
         connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid',
       };
-      const { next, trace, bands } = await deps.computeEngineAdvanceFn({
+      // TG5: noCoupling variant suppresses all coupling effects
+      const effectiveCouplings = evalConfig.noCoupling ? [] : (defaults.emotional_coupling ?? []);
+
+      const { next, trace, bands, eventDeltas } = await deps.computeEngineAdvanceFn({
         axesBefore: currentState,
         event: event ?? null,
         axesConfig,
-        couplings: defaults.emotional_coupling ?? [],
+        couplings: effectiveCouplings,
         previousBands,
         tick,
         scope,
+      });
+
+      // TG1: Capture emotional-axis update snapshot (post-turn)
+      recordEmotionalAxisUpdateSnapshot({
+        event: event ?? undefined,
+        modelReportedConfidence: signals.modelReportedConfidence.turnEvent,
+        axesBefore: trace.axesBefore,
+        eventDeltas,
+        couplingsFired: trace.couplingsFired,
+        effectiveBaselines: trace.effectiveBaselines,
+        conditionTransitions: trace.conditionTransitions,
+        axesAfter: trace.axesAfter,
+        bandsAfter: bands,
+        tick,
+        scope,
+        resolvedBaselines: {
+          connection: axesConfig.connection.baseline,
+          valence: axesConfig.valence.baseline,
+          arousal: axesConfig.arousal.baseline,
+          restraint: axesConfig.restraint.baseline,
+        },
       });
 
       // Append to history
@@ -383,8 +413,34 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
         history: updatedHistory,
       };
 
-      // Write to DB
-      await deps.writeAxisStateFn(session.sessionId, nextPersisted);
+      // TG1: Build per-turn export snapshot
+      const exportSnapshot = buildAxisTurnExportSnapshot({
+        tick,
+        scope,
+        axes: next,
+        bands,
+        axesBefore: trace.axesBefore,
+        eventType: event?.type,
+        eventIntensity: event?.intensity,
+        eventDeltas,
+        couplingsFired: trace.couplingsFired,
+        effectiveBaselines: trace.effectiveBaselines,
+        conditionTransitions: trace.conditionTransitions,
+        resolvedBaselines: {
+          connection: axesConfig.connection.baseline,
+          valence: axesConfig.valence.baseline,
+          arousal: axesConfig.arousal.baseline,
+          restraint: axesConfig.restraint.baseline,
+        },
+      });
+
+      // Persist axis state + message snapshot atomically
+      await deps.persistAxisSnapshotFn(
+        session.sessionId,
+        state.payload.assistantMessageId,
+        nextPersisted,
+        exportSnapshot,
+      );
 
       // Observability snapshot
       deps.recordSnapshotFn({
@@ -399,9 +455,15 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     } catch (err) {
-      // Catch + log; never fail the job for axis-state problems
+      // F1: Missing assistant message is a distinct failure — do NOT mark
+      // engine_state complete. Propagate the error so the graph routes to
+      // errorSink and the job can surface this as a durable failure.
+      if (err instanceof MissingAssistantMessageError) {
+        return { errors: [{ stage: 'applyEngineState', message: err.message }] };
+      }
+      // All other axis-state errors: catch + log, mark complete to avoid
+      // retry loops. Degradation is safe (drift-only next tick).
       console.error(`[applyEngineState] Error advancing character state: ${(err as Error).message}`);
-      // Mark complete to avoid retry loops — degradation is safe (drift-only next tick)
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     }
