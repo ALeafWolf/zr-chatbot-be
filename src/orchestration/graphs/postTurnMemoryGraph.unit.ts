@@ -1,5 +1,6 @@
 ﻿import { describe, it } from "node:test";
 import assert from "node:assert";
+import { MissingAssistantMessageError } from "../../state/emotionalEngine/axisStatePersistence";
 import { createPostTurnMemoryGraph, applyEngineStateInputMapper, applyEngineStateOutputMapper, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
 import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import { createInitialPostTurnRuntimeState } from "../graphState/postTurnGraphState";
@@ -922,6 +923,60 @@ describe("postTurnMemoryGraph", () => {
       };
       const result = applyEngineStateOutputMapper(noConds);
       assert.deepEqual(result.conditionTransitions, [], "empty conditionTransitions");
+    });
+  });
+
+  // ===================================================================
+  // F1 — MissingAssistantMessageError is propagated, not swallowed
+  // ===================================================================
+
+  describe("applyEngineState — F1 missing-message propagation", () => {
+    it("propagates MissingAssistantMessageError and does NOT mark engine_state complete", async () => {
+      const { deps, calls } = createFakeDeps();
+
+      // Make persistAxisSnapshotFn throw MissingAssistantMessageError
+      deps.persistAxisSnapshotFn = async (_sessionId, _messageId, _next, _snapshot) => {
+        throw new MissingAssistantMessageError("msg-missing", "sess-001");
+      };
+
+      // Ensure engine is enabled and signals have a turn event so engine runs
+      deps.emotionalEngineEnabled = true;
+      deps.extractFn = async (_input: any) => ({
+        memoryFacts: [],
+        structMemEntries: [],
+        turnEvent: { type: 'user_pursues_connection', intensity: 1.0, reason: 'test' },
+        modelReportedConfidence: { memoryFacts: 0.9, turnEvent: 1 },
+      });
+
+      // Build state with signals pre-populated to avoid re-extraction
+      const stepStatus: PostTurnStepStatus = {
+        ...INITIAL_POST_TURN_STEP_STATUS,
+      };
+
+      const initialState = createPostTurnMemoryGraph(deps).invoke({
+        jobId: FAKE_JOB_ID,
+        payload: FAKE_PAYLOAD,
+        session: FAKE_SESSION,
+        stepStatus,
+        completedSteps: [] as string[],
+        errors: [] as Array<{ stage: string; message: string }>,
+        signals: undefined,
+        writePlan: undefined,
+        recentMemoriesStr: "",
+        isComplete: false,
+      } as any);
+
+      const result = await initialState;
+
+      // engine_state should NOT be in completedSteps
+      const engineCompleted = result.completedSteps?.includes('engine_state');
+      assert.equal(engineCompleted, false, "engine_state must NOT be marked complete");
+
+      // An error should be present
+      assert.ok(result.errors && result.errors.length > 0, "errors should be present");
+      const engineError = result.errors?.find((e: { stage: string }) => e.stage === 'applyEngineState');
+      assert.ok(engineError, "should have an applyEngineState error");
+      assert.ok(engineError!.message.includes('msg-missing'), "error should mention missing message id");
     });
   });
 });

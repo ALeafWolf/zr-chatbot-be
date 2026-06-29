@@ -22,7 +22,7 @@ import { loadScenariosBySet } from "./loadEvalScenarios";
 import { loadPersonaOverlay } from "../character/characterDefaults";
 import { checkAssertion, runAllAssertions, type AssertionContext } from "./evalAssertions";
 import type { EmotionalAxisEvalSnapshot } from "./evalSnapshots";
-import { resolveEmotionalAxisVariantConfig, readEmotionalAxisVariant, type EmotionalAxisVariant } from "./experimentVariants";
+import { resolveEmotionalAxisVariantConfig, readEmotionalAxisVariant, validateEmotionalAxisVariantGuard, type EmotionalAxisVariant } from "./experimentVariants";
 import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "./emotionalAxisEvalConfig";
 
 // ---------------------------------------------------------------------------
@@ -263,6 +263,13 @@ async function main(): Promise<void> {
       return;
     }
 
+    // F3: Pre-validate ALL variants before any scenario/model work.
+    // This prevents running baseline scenarios before discovering that a
+    // later variant (e.g. axis_state_no_render) requires engine gates.
+    for (const v of EMOTIONAL_AXIS_VARIANTS) {
+      validateEmotionalAxisVariantGuard(v);
+    }
+
     interface VariantRun {
       variant: string;
       results: ScenarioResult[];
@@ -372,6 +379,9 @@ async function main(): Promise<void> {
       console.error(`\nDry-run complete.`);
       return;
     }
+
+    // Validate env gates before running trajectory turns
+    validateEmotionalAxisVariantGuard(variant);
 
     // T→T+1 carry-over: track the cumulative emotional state across turns
     let carriedSeed: Record<string, unknown> | undefined;
@@ -485,6 +495,9 @@ async function main(): Promise<void> {
     console.error(`\nSet EMOTIONAL_AXIS_SMOKE=1 for no-model report generation.`);
     return;
   }
+
+  // Validate env gates before running scenarios
+  validateEmotionalAxisVariantGuard(variant);
 
   // Ensure output directory
   ensureResultsDir();

@@ -34,7 +34,13 @@ import {
 import {
   buildExperimentVariantMetadata,
   readAndValidateExperimentVariants,
+  readEmotionalAxisVariant,
+  resolveEmotionalAxisVariantConfig,
+  validateEmotionalAxisVariantGuard,
+  type EmotionalAxisVariant,
 } from "./experimentVariants";
+import { withEmotionalAxisEvalConfig } from "./emotionalAxisEvalConfig";
+import { preflightEmotionalAxisLangSmithRun } from "./preflightLangSmith";
 import { runRetrievalEvalForScenario } from "./retrievalEvalRunner";
 import type { QueryRewriteResult } from "../retrieval/query/rewriteQuery";
 import { runAgentEval } from "./langsmith/runAgentEval";
@@ -65,6 +71,20 @@ export async function evalTarget(
 ): Promise<EvalTargetOutput> {
   if (inputs.eval_mode === "agent_turn") {
     try {
+      // When running the emotional-axis scenario set, apply the selected variant
+      // config to runtime behavior and validate env gates before any model calls.
+      const isEmotionalAxisRun =
+        (process.env.EVAL_SCENARIO_SET ?? "").trim().toLowerCase() === "emotional_axis";
+
+      if (isEmotionalAxisRun) {
+        const variant: EmotionalAxisVariant = readEmotionalAxisVariant();
+        const variantConfig = resolveEmotionalAxisVariantConfig(variant);
+        validateEmotionalAxisVariantGuard(variant);
+        return await withEmotionalAxisEvalConfig(variantConfig, () =>
+          runAgentEval(inputs),
+        );
+      }
+
       return await runAgentEval(inputs);
     } catch (e) {
       return {
@@ -373,6 +393,9 @@ async function main(): Promise<void> {
   try {
     const { version } = loadScenariosFromFile();
     const variants = readAndValidateExperimentVariants();
+
+    // F2: Preflight emotional-axis env gates before any LangSmith calls.
+    preflightEmotionalAxisLangSmithRun();
 
     const variantSuffix = [
       variants.rerankVariant !== "llm_rerank_v1" ? `rerank:${variants.rerankVariant}` : "",

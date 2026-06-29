@@ -10,6 +10,7 @@ import {
   readEmotionalAxisVariant, resolveEmotionalAxisVariantConfig,
   buildEmotionalAxisVariantMetadata, buildEmotionalAxisVariantTags,
   DEFAULT_EMOTIONAL_AXIS_VARIANT,
+  validateEmotionalAxisVariantGuard,
 } from "./experimentVariants";
 
 describe("experiment variants", () => {
@@ -249,6 +250,113 @@ describe("experiment variants", () => {
       assert.ok(ids.includes("full_axis_coupling_render"), "full");
       assert.ok(ids.includes("engine_no_coupling_full_render"), "no coupling");
       assert.ok(ids.includes("axis_bands_only"), "bands only");
+    });
+
+    // -------------------------------------------------------------------
+    // D3 — Emotional-axis env gate guardrails
+    // -------------------------------------------------------------------
+
+    describe("validateEmotionalAxisVariantGuard — env gate guardrails (D3)", () => {
+      const emotionalKeys = ["EMOTIONAL_ENGINE_ENABLED", "EMOTIONAL_RENDER_ENABLED"];
+
+      function clearEmotionalEnv(): () => void {
+        const prev: Record<string, string | undefined> = {};
+        for (const k of emotionalKeys) { prev[k] = process.env[k]; delete process.env[k]; }
+        return () => { for (const k of emotionalKeys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; } };
+      }
+
+      function setEmotionalEnv(key: string, value: string): () => void {
+        const prev = process.env[key];
+        process.env[key] = value;
+        return () => { if (prev === undefined) delete process.env[key]; else process.env[key] = prev; };
+      }
+
+      it("passes for baseline_no_emotional_axis when all gates disabled", () => {
+        const r = clearEmotionalEnv();
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("baseline_no_emotional_axis"),
+          "baseline passes with no gates",
+        );
+        r();
+      });
+
+      it("throws for axis_state_no_render when EMOTIONAL_ENGINE_ENABLED is off", () => {
+        const r = clearEmotionalEnv();
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("axis_state_no_render"),
+          /EMOTIONAL_ENGINE_ENABLED/,
+          "engine gate required for axis_state_no_render",
+        );
+        r();
+      });
+
+      it("passes for axis_state_no_render when engine gate is on and render gate off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        const r2 = clearEmotionalEnv(); // clears render
+        // Re-set engine after clear
+        process.env.EMOTIONAL_ENGINE_ENABLED = "1";
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("axis_state_no_render"),
+          "axis_state_no_render passes with engine gate only",
+        );
+        r2();
+        r1();
+      });
+
+      it("throws for full_axis_coupling_render when EMOTIONAL_RENDER_ENABLED is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("full_axis_coupling_render"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for full variant",
+        );
+        r1();
+      });
+
+      it("passes for full_axis_coupling_render when both gates are on", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        const r2 = setEmotionalEnv("EMOTIONAL_RENDER_ENABLED", "1");
+        assert.doesNotThrow(
+          () => validateEmotionalAxisVariantGuard("full_axis_coupling_render"),
+          "full variant passes with both gates",
+        );
+        r2();
+        r1();
+      });
+
+      it("throws for engine_no_coupling_full_render when render gate is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("engine_no_coupling_full_render"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for no-coupling variant",
+        );
+        r1();
+      });
+
+      it("throws for axis_bands_only when render gate is off", () => {
+        const r1 = setEmotionalEnv("EMOTIONAL_ENGINE_ENABLED", "1");
+        assert.throws(
+          () => validateEmotionalAxisVariantGuard("axis_bands_only"),
+          /EMOTIONAL_RENDER_ENABLED/,
+          "render gate required for bands-only variant",
+        );
+        r1();
+      });
+
+      it("error message includes the variant name and missing env var", () => {
+        const r = clearEmotionalEnv();
+        try {
+          validateEmotionalAxisVariantGuard("full_axis_coupling_render");
+          assert.fail("expected guard to throw");
+        } catch (err) {
+          const msg = (err as Error).message;
+          assert.ok(msg.includes("full_axis_coupling_render"), "error includes variant name");
+          assert.ok(msg.includes("EMOTIONAL_ENGINE_ENABLED"), "error includes missing env var");
+        } finally {
+          r();
+        }
+      });
     });
 
   });

@@ -29,6 +29,29 @@ const AXIS_STATE_KEY = "axis_state";
 const CURRENT_VERSION = 1 as const;
 
 // ---------------------------------------------------------------------------
+// Typed error for missing assistant message (F1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by `persistAxisSnapshot` / `persistAxisSnapshotTx` when the
+ * `chat_messages.emotional_axis` update matches no row. Callers (e.g.
+ * `applyEngineStateNode` in `postTurnMemoryGraph.ts`) should check for this
+ * error type and NOT mark the engine step complete when it is caught.
+ */
+export class MissingAssistantMessageError extends Error {
+  constructor(
+    public readonly assistantMessageId: string,
+    public readonly sessionId: string,
+  ) {
+    super(
+      `persistAxisSnapshot: assistant message "${assistantMessageId}" not found in session "${sessionId}". ` +
+      `The session_state update has been rolled back.`,
+    );
+    this.name = "MissingAssistantMessageError";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
 
@@ -379,6 +402,98 @@ function safePartialCharacterStateAxes(
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimal transaction interface matching the Drizzle methods used by
+ * `persistAxisSnapshotTx`. This avoids importing heavy ORM types for
+ * testability.
+ *
+ * The return types are intentionally loose (Record<string, unknown>) to
+ * accept both real Drizzle transactions and test fakes.
+ */
+export interface AxisPersistenceTx {
+  select: () => {
+    from: (table: unknown) => {
+      where: (condition: unknown) => {
+        limit: (n: number) => Promise<Array<Record<string, unknown>>>;
+      };
+    };
+  };
+  insert: (table: unknown) => {
+    values: (data: Record<string, unknown>) => {
+      onConflictDoUpdate: (config: {
+        target: unknown;
+        set: Record<string, unknown>;
+      }) => Promise<void>;
+    };
+  };
+  update: (table: unknown) => {
+    set: (data: Record<string, unknown>) => {
+      where: (condition: unknown) => {
+        returning: (fields: Record<string, unknown>) => Promise<unknown[]>;
+      };
+    };
+  };
+}
+
+/**
+ * Inner transaction body for `persistAxisSnapshot()`, extracted for testability.
+ *
+ * Accepts a transaction handle directly so tests can pass a fake tx without
+ * mocking the entire `db` module.
+ */
+export async function persistAxisSnapshotTx(
+  tx: AxisPersistenceTx,
+  sessionId: string,
+  assistantMessageId: string,
+  nextPersisted: PersistedAxisState,
+  exportSnapshot: EmotionalAxisTurnExportSnapshot,
+): Promise<void> {
+  // 1. Read current session_state row within the transaction
+  const rows = await tx
+    .select()
+    .from(sessionStateTable)
+    .where(eq(sessionStateTable.sessionId, sessionId))
+    .limit(1);
+  const row = rows[0] ?? null;
+
+  const existingDelta: Record<string, unknown> =
+    row?.localRelationshipDelta
+      ? (row.localRelationshipDelta as Record<string, unknown>)
+      : {};
+
+  const merged = mergeAxisStateIntoDelta(existingDelta, nextPersisted);
+
+  // 2. Upsert session_state with merged delta
+  await tx
+    .insert(sessionStateTable)
+    .values({
+      sessionId,
+      localRelationshipDelta: merged,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: sessionStateTable.sessionId,
+      set: {
+        localRelationshipDelta: merged,
+        updatedAt: new Date(),
+      },
+    });
+
+  // 3. Update chat_messages with the export snapshot
+  const updated = await tx
+    .update(chatMessages)
+    .set({ emotionalAxis: exportSnapshot })
+    .where(eq(chatMessages.id, assistantMessageId))
+    .returning({ id: chatMessages.id });
+
+    // 4. Verify that the assistant message row was updated.
+    //    If no row matched, throw so the transaction rolls back both the
+    //    session_state upsert and the message update.
+    if (updated.length === 0) {
+      throw new MissingAssistantMessageError(assistantMessageId, sessionId);
+    }
+}
+
+/**
  * Persist the axis state update and the per-turn message snapshot atomically.
  * Updates `session_state.local_relationship_delta.axis_state` and
  * `chat_messages.emotional_axis` for the given `assistantMessageId`
@@ -391,42 +506,13 @@ export async function persistAxisSnapshot(
   exportSnapshot: EmotionalAxisTurnExportSnapshot,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    // 1. Read current session_state row within the transaction
-    const rows = await tx
-      .select()
-      .from(sessionStateTable)
-      .where(eq(sessionStateTable.sessionId, sessionId))
-      .limit(1);
-    const row = rows[0] ?? null;
-
-    const existingDelta: Record<string, unknown> =
-      row?.localRelationshipDelta
-        ? (row.localRelationshipDelta as Record<string, unknown>)
-        : {};
-
-    const merged = mergeAxisStateIntoDelta(existingDelta, nextPersisted);
-
-    // 2. Upsert session_state with merged delta
-    await tx
-      .insert(sessionStateTable)
-      .values({
-        sessionId,
-        localRelationshipDelta: merged,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: sessionStateTable.sessionId,
-        set: {
-          localRelationshipDelta: merged,
-          updatedAt: new Date(),
-        },
-      });
-
-    // 3. Update chat_messages with the export snapshot
-    await tx
-      .update(chatMessages)
-      .set({ emotionalAxis: exportSnapshot })
-      .where(eq(chatMessages.id, assistantMessageId));
+    await persistAxisSnapshotTx(
+      tx as unknown as AxisPersistenceTx,
+      sessionId,
+      assistantMessageId,
+      nextPersisted,
+      exportSnapshot,
+    );
   });
 }
 

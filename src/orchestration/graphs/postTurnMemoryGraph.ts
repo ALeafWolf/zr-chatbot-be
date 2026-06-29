@@ -19,7 +19,7 @@ import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
 import { getEmotionalAxisEvalConfig } from '../../eval/emotionalAxisEvalConfig';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
-import { readAxisState, writeAxisState, persistAxisSnapshot, buildAxisTurnExportSnapshot } from '../../state/emotionalEngine/axisStatePersistence';
+import { readAxisState, writeAxisState, persistAxisSnapshot, buildAxisTurnExportSnapshot, MissingAssistantMessageError } from '../../state/emotionalEngine/axisStatePersistence';
 import { loadCharacterDefaults } from '../../character/characterDefaults';
 import { getSessionState } from '../../state/sessionStateRepo';
 import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
@@ -455,9 +455,15 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     } catch (err) {
-      // Catch + log; never fail the job for axis-state problems
+      // F1: Missing assistant message is a distinct failure — do NOT mark
+      // engine_state complete. Propagate the error so the graph routes to
+      // errorSink and the job can surface this as a durable failure.
+      if (err instanceof MissingAssistantMessageError) {
+        return { errors: [{ stage: 'applyEngineState', message: err.message }] };
+      }
+      // All other axis-state errors: catch + log, mark complete to avoid
+      // retry loops. Degradation is safe (drift-only next tick).
       console.error(`[applyEngineState] Error advancing character state: ${(err as Error).message}`);
-      // Mark complete to avoid retry loops — degradation is safe (drift-only next tick)
       const newStepStatus = await deps.persistStepComplete(state.jobId, 'engine_state', state.payload, state.stepStatus);
       return { stepStatus: newStepStatus, completedSteps: [...(state.completedSteps ?? []), 'engine_state'] };
     }

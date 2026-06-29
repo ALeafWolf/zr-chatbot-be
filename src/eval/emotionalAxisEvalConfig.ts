@@ -71,3 +71,24 @@ export function applyEmotionalAxisVariant(variant: EmotionalAxisVariant): void {
   const { resolveEmotionalAxisVariantConfig } = require("./experimentVariants");
   setEmotionalAxisEvalConfig(resolveEmotionalAxisVariantConfig(variant));
 }
+
+/**
+ * Scoped emotional-axis eval config helper (design D1).
+ *
+ * Applies a partial emotional-axis eval config for the duration of the
+ * async callback, then restores the previous config in `finally`.
+ *
+ * This prevents config leakage across rows, scenarios, or test cases
+ * without requiring callers to manually save/restore.
+ */
+export async function withEmotionalAxisEvalConfig<T>(
+  config: Partial<EmotionalAxisEvalConfig>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = setEmotionalAxisEvalConfig(config);
+  try {
+    return await fn();
+  } finally {
+    activeConfig = prev;
+  }
+}

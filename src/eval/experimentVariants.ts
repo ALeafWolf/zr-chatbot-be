@@ -615,6 +615,49 @@ export function resolveEmotionalAxisVariantConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Emotional-axis env gate guardrails (PR review fix D3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that the selected emotional-axis variant's production env gates
+ * are enabled. Fails fast when a variant requires engine or render data but
+ * the corresponding env gate is disabled.
+ *
+ * Error messages name the selected variant and the missing env var, following
+ * the existing guardrail style from `validateExperimentVariants()`.
+ *
+ * @param variant - The selected emotional-axis variant to validate.
+ * @throws VariantGuardrailError when a required gate is disabled.
+ */
+export function validateEmotionalAxisVariantGuard(
+  variant: EmotionalAxisVariant,
+): void {
+  const config = resolveEmotionalAxisVariantConfig(variant);
+
+  // Engine gate: all variants except baseline require engine
+  if (config.engineEnabled) {
+    if (!isEnvTruthy("EMOTIONAL_ENGINE_ENABLED")) {
+      throw new VariantGuardrailError(
+        "EMOTIONAL_ENGINE_DISABLED",
+        `Emotional-axis variant "${variant}" requires EMOTIONAL_ENGINE_ENABLED=1. ` +
+        `Set EMOTIONAL_ENGINE_ENABLED=1 in your environment or use EMOTIONAL_AXIS_VARIANT=baseline_no_emotional_axis.`,
+      );
+    }
+  }
+
+  // Render gate: only variants with renderEnabled=true require render
+  if (config.renderEnabled) {
+    if (!isEnvTruthy("EMOTIONAL_RENDER_ENABLED")) {
+      throw new VariantGuardrailError(
+        "EMOTIONAL_RENDER_DISABLED",
+        `Emotional-axis variant "${variant}" requires EMOTIONAL_RENDER_ENABLED=1. ` +
+        `Set EMOTIONAL_RENDER_ENABLED=1 in your environment or use EMOTIONAL_AXIS_VARIANT=axis_state_no_render.`,
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Metadata and tag builders
 // ---------------------------------------------------------------------------
 
