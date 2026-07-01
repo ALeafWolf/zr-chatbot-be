@@ -1,5 +1,7 @@
 # Chatbot backend
 
+[![Deploy zr-chatbot-be](https://github.com/ALeafWolf/zr-chatbot-be/actions/workflows/deploy.yml/badge.svg)](https://github.com/ALeafWolf/zr-chatbot-be/actions/workflows/deploy.yml)
+
 Fastify 5 HTTP API for the Zuoran character chat bot. TypeScript, Drizzle ORM, PostgreSQL with `pgvector`, multi-provider LLM routing (Anthropic / OpenAI / DeepSeek).
 
 The backend reads canon data from PostgreSQL. Chat-owned tables — sessions, messages, memory embeddings, StructMem, post-turn jobs, persona overlays — are defined here and migrated with Drizzle.

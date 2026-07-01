@@ -1,0 +1,35 @@
+name: Deploy zr-chatbot-be
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # allow manual runs from the Actions tab
+
+# Never let two deploys touch the box at once; a newer push cancels an in-flight one.
+concurrency:
+  group: deploy-zr-chatbot-be
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH in, pull, build, restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m # npm ci + tsup build on the 2 GB box can be slow
+          script: |
+            set -e                          # fail the job if ANY step errors
+            export NVM_DIR="$HOME/.nvm"
+            . "$NVM_DIR/nvm.sh"             # nvm is NOT auto-loaded over SSH
+            nvm use 20                      # Fastify 5 / LangChain 1.x need Node 20
+            cd ~/projects/zr-chatbot/backend
+            git fetch origin
+            git reset --hard origin/main    # exact match; .env, dist/, node_modules are gitignored
+            npm ci                          # lockfile is committed
+            npm run build                   # postbuild copies character YAML into dist/
+            pm2 restart zr-chatbot-be       # app loads its own .env via dotenv
+            pm2 save
