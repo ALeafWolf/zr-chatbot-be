@@ -11,7 +11,7 @@ export async function createApp() {
   server.setErrorHandler(handleHttpError);
 
   await server.register(cors, {
-    origin: env.FRONTEND_ORIGIN,
+    origin: env.frontendOrigins,
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   });
 

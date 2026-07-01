@@ -16,16 +16,22 @@ export async function streamMessageHandler(
   const { id: sessionId } = MessageParams.parse(req.params);
   const { content } = SendMessageBody.parse(req.body);
 
+  // hijack() bypasses @fastify/cors, so the SSE response needs its own CORS header or
+  // cross-origin browsers block the read ("NetworkError"). Access-Control-Allow-Origin
+  // can only carry ONE origin, so echo the caller's Origin when it's in the allow-list.
+  const requestOrigin = req.headers.origin;
+  const allowOrigin =
+    requestOrigin && env.frontendOrigins.includes(requestOrigin)
+      ? requestOrigin
+      : env.frontendOrigins[0];
+
   reply.hijack();
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
-    // hijack() bypasses @fastify/cors, so the SSE response needs its own CORS
-    // header or cross-origin browsers block the read ("NetworkError"). Mirror the
-    // plugin's configured origin (env.FRONTEND_ORIGIN).
-    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN,
+    "Access-Control-Allow-Origin": allowOrigin,
     Vary: "Origin",
   });
 

@@ -47,7 +47,9 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
 
   // Server
-  // HTTP port and browser client origin.
+  // HTTP port and browser client origin(s).
+  // FRONTEND_ORIGIN may be a comma-separated allow-list (e.g. the deployed SPA origin
+  // plus http://localhost:5173 for local cross-origin testing); see `frontendOrigins`.
   PORT: z
     .string()
     .default("4000")
@@ -523,5 +525,12 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+// Parse FRONTEND_ORIGIN into an allow-list. @fastify/cors takes the array and echoes
+// back whichever origin matches the caller; the SSE handler mirrors the caller's Origin
+// the same way (an SSE Access-Control-Allow-Origin can only carry one value).
+const frontendOrigins = parsed.data.FRONTEND_ORIGIN.split(",")
+  .map((o) => o.trim())
+  .filter((o) => o.length > 0);
+
+export const env = { ...parsed.data, frontendOrigins };
 export type Env = typeof env;
