@@ -8,3 +8,4 @@ dist
 *.log
 eval-results/
 _db_backups/
+docs/deployment
