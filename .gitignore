@@ -7,3 +7,4 @@ dist
 *.tsbuildinfo
 *.log
 eval-results/
+_db_backups/
