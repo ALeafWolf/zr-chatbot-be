@@ -5,6 +5,7 @@ import {
 } from "../../orchestration/turn/runCharacterTurn";
 import { MessageParams, SendMessageBody } from "./chatSchemas";
 import { writeCharacterTurnEvent, writeSse } from "./sse";
+import { env } from "../../config/env";
 
 type MessageRequest = FastifyRequest<{ Params: { id: string } }>;
 
@@ -21,6 +22,11 @@ export async function streamMessageHandler(
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
+    // hijack() bypasses @fastify/cors, so the SSE response needs its own CORS
+    // header or cross-origin browsers block the read ("NetworkError"). Mirror the
+    // plugin's configured origin (env.FRONTEND_ORIGIN).
+    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN,
+    Vary: "Origin",
   });
 
   const ac = new AbortController();
