@@ -47,8 +47,19 @@ const StructMemCrossSessionItemSchema = z.object({
   tags: z.array(z.string().trim().min(1)).max(8).default([]),
 });
 
+const MAX_CROSS_SESSION_STABLE_ITEMS = 3;
+
 export const StructMemCrossSessionDistillationOutputSchema = z.object({
-  stable_items: z.array(StructMemCrossSessionItemSchema).max(3).default([]),
+  stable_items: z
+    .array(StructMemCrossSessionItemSchema)
+    .default([])
+    .transform((items) =>
+      items.length <= MAX_CROSS_SESSION_STABLE_ITEMS
+        ? items
+        : [...items]
+            .sort((a, b) => b.importance_score - a.importance_score)
+            .slice(0, MAX_CROSS_SESSION_STABLE_ITEMS),
+    ),
 });
 
 export type StructMemCrossSessionItem = z.infer<
@@ -229,6 +240,7 @@ function buildCrossSessionDistillationPrompt(input: {
     "判断当前会话的 StructMem 综合结果是否包含稳定的跨会话记忆。",
     "只返回那些应当有助于同一记忆命名空间下未来会话的条目。",
     "不要包含一次性场景细节、短暂情绪，或缺乏依据的推测。",
+    "stable_items 最多包含 3 条。如果稳定的候选超过 3 条，只保留最重要的 3 条。",
     "如果没有足够稳定的内容，则返回一个空的 stable_items 数组。",
     "",
     `Current confidence: ${input.confidenceScore ?? "unknown"}`,
@@ -248,7 +260,7 @@ async function distillCrossSessionStructMemImpl(input: {
   const userContent = buildCrossSessionDistillationPrompt(input);
   const systemDistill =
     "你是一个保守的记忆提炼工作器。" +
-    "只返回一个 JSON 对象（不要使用 markdown)。字段包括: stable_items (数组)。";
+    "只返回一个 JSON 对象（不要使用 markdown)。字段包括: stable_items (数组，至多 3 条)。";
 
   const runChat = () =>
     chatJsonWithFallback(

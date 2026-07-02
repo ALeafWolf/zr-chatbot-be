@@ -90,6 +90,31 @@ describe("structmemConsolidationSynthesis", () => {
     assert.equal(parsed.stable_items[0]!.category, "recurring_preference");
   });
 
+  it("truncates cross-session distillation to the 3 most important items", () => {
+    // Reproduces the production failure: the model returned more than 3
+    // stable_items and the old .max(3) schema rejected the whole payload.
+    const makeItem = (summary: string, importance: number) => ({
+      category: "recurring_preference",
+      summary_text: summary,
+      confidence_score: 0.8,
+      importance_score: importance,
+      tags: [],
+    });
+    const parsed = StructMemCrossSessionDistillationOutputSchema.parse({
+      stable_items: [
+        makeItem("low", 0.4),
+        makeItem("highest", 0.9),
+        makeItem("mid", 0.6),
+        makeItem("high", 0.8),
+      ],
+    });
+    assert.equal(parsed.stable_items.length, 3);
+    assert.deepEqual(
+      parsed.stable_items.map((item) => item.summary_text),
+      ["highest", "high", "mid"],
+    );
+  });
+
   it("rejects cross-session distillation categories outside the allowed set", () => {
     assert.throws(() =>
       StructMemCrossSessionDistillationOutputSchema.parse({
