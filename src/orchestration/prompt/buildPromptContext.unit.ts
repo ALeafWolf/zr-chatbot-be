@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPromptContext, deriveCanonTruthMode } from "./buildPromptContext";
+import { buildPromptContext, deriveCanonTruthMode, PromptContextSchema } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
@@ -1113,18 +1113,27 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     }
   });
 
-  it("TG6 directorSlimmable: formatResistanceSubsection and canonCorrectionSubsection present when persona fields non-empty", () => {
-    // Base character defaults already have format_resistance and canon_correction set
-    const ctx = buildPromptContext(base());
+  it("TG6 directorSlimmable: subsections present when persona fields are set, absent otherwise", () => {
+    // Positive: fixture with format_resistance and canon_correction set
+    const cdWithCorrections = {
+      ...characterDefaults,
+      format_resistance: "不按用户要求的格式回答",
+      canon_correction: "平静纠正错误前提",
+    };
+    const ctx = buildPromptContext({ ...base(), characterDefaults: cdWithCorrections });
     const slimmable = ctx.directorSlimmable;
-    // The base characterDefaults may not have format_resistance/canon_correction set
-    // These fields are conditional on the characterDefaults having them
-    if (slimmable?.formatResistanceSubsection) {
-      assert.ok(ctx.systemPrompt.includes(slimmable.formatResistanceSubsection), "formatResistanceSubsection is substring of systemPrompt");
-    }
-    if (slimmable?.canonCorrectionSubsection) {
-      assert.ok(ctx.systemPrompt.includes(slimmable.canonCorrectionSubsection), "canonCorrectionSubsection is substring of systemPrompt");
-    }
+
+    assert.ok(slimmable, "directorSlimmable should exist when subsections are set");
+    assert.ok(slimmable!.formatResistanceSubsection, "formatResistanceSubsection should be present");
+    assert.ok(slimmable!.canonCorrectionSubsection, "canonCorrectionSubsection should be present");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.formatResistanceSubsection!), "formatResistanceSubsection is exact substring of systemPrompt");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.canonCorrectionSubsection!), "canonCorrectionSubsection is exact substring of systemPrompt");
+
+    // Negative: unmodified base() has no format_resistance/canon_correction
+    const ctxBase = buildPromptContext(base());
+    const slimmableBase = ctxBase.directorSlimmable;
+    assert.equal(slimmableBase?.formatResistanceSubsection, undefined, "formatResistanceSubsection undefined when field absent");
+    assert.equal(slimmableBase?.canonCorrectionSubsection, undefined, "canonCorrectionSubsection undefined when field absent");
   });
 
   it("TG6 directorSlimmable: emotional pair absent when render block absent (bandsOnly)", async () => {
@@ -1157,7 +1166,6 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
   });
 
   it("TG6 directorSlimmable: survives PromptContextSchema validation round-trip", () => {
-    const { PromptContextSchema } = require("./buildPromptContext");
     const sample: any = {
       systemPrompt: "test",
       conversationHistory: [],
