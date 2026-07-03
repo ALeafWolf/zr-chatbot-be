@@ -505,6 +505,10 @@ const envSchema = z.object({
     .transform((v) => parseEnabledFlag(v)),
   RESPONSE_DIRECTOR_MODEL: z.string().default("EXTRACTOR_MODEL"),
   RESPONSE_DIRECTOR_FALLBACK_MODEL: z.string().default(""),
+  // TG6: CSV of blocks to slim when the director provides a concrete directive.
+  // Valid tokens: emotional_render, format_resistance, canon_correction.
+  // Default empty string = no slimming. Unknown tokens are warned + ignored.
+  RESPONSE_DIRECTOR_SLIM_BLOCKS: z.string().default(""),
 
   // LangSmith
   // Optional tracing, project metadata, and eval dataset name.

@@ -121,6 +121,22 @@ export interface PromptContext {
   emotionalRenderRuleTexts?: string[];
   /** TG2: Last emotional trace event type (e.g. "user_discloses_vulnerability"). */
   emotionalLastTraceEvent?: string;
+  /** TG6: Exact rendered strings of slimmable prompt units for director-gated slimming. */
+  directorSlimmable?: DirectorSlimmable;
+  /** TG6: Ids of prompt units that were actually slimmed this turn (for trace/eval correlation). */
+  directorSlimmedBlocks?: string[];
+}
+
+/** TG6: Exact rendered strings of slimmable prompt units for replace-with-fallback slimming. */
+export interface DirectorSlimmable {
+  /** Exact top-level block text of [当前状态下的行为基调] (full, with rule texts). */
+  emotionalRenderBlock?: string;
+  /** Exact replacement: band-line-only variant `[当前状态下的行为基调]\n${bandLine}`. */
+  emotionalBandLineBlock?: string;
+  /** Exact subsection text inside [BASE PERSONA] for [格式抗性], or undefined when absent. */
+  formatResistanceSubsection?: string;
+  /** Exact subsection text inside [BASE PERSONA] for [纠正方式], or undefined when absent. */
+  canonCorrectionSubsection?: string;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -145,6 +161,13 @@ export const PromptContextSchema = z.object({
   emotionalBandLine: z.string().optional(),
   emotionalRenderRuleTexts: z.array(z.string()).optional(),
   emotionalLastTraceEvent: z.string().optional(),
+  directorSlimmable: z.object({
+    emotionalRenderBlock: z.string().optional(),
+    emotionalBandLineBlock: z.string().optional(),
+    formatResistanceSubsection: z.string().optional(),
+    canonCorrectionSubsection: z.string().optional(),
+  }).optional(),
+  directorSlimmedBlocks: z.array(z.string()).optional(),
 });
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -295,6 +318,10 @@ export function buildPromptContext(input: {
     .map((t) => String(t).trim())
     .filter(Boolean)
     .join("\n- ");
+  // TG6: Capture exact subsection strings for director-gated slimming
+  const formatResistanceSubsection = subsection("格式抗性", characterDefaults.format_resistance);
+  const canonCorrectionSubsection = subsection("纠正方式", characterDefaults.canon_correction);
+
   const basePersonaParts: string[] = [
     coreTraits
       ? `${characterDefaults.identity}\n\n[核心特征]\n- ${coreTraits}`
@@ -302,8 +329,8 @@ export function buildPromptContext(input: {
     subsection("叙事文笔", characterDefaults.narrative_prose_guidelines),
     subsection("沟通风格", formatSpeechStyle(characterDefaults.speech_style)),
     subsection("角色表达", characterDefaults.in_character_expression),
-    subsection("格式抗性", characterDefaults.format_resistance),
-    subsection("纠正方式", characterDefaults.canon_correction),
+    formatResistanceSubsection,
+    canonCorrectionSubsection,
     subsection("情感内核", characterDefaults.emotional_core),
     subsection("价值观", bulletsBlock(characterDefaults.values, "- ")),
     subsection(
@@ -596,6 +623,23 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     content: t.role === "user" ? relabelReplyDirectionsForHistory(t.content) : t.content,
   }));
 
+  // TG6: Export exact slimmable strings for director-gated prompt slimming.
+  // emotional pair: only when the render block was injected AND not already bands-only
+  // (identity replacement is pointless). Subsection fields: only when non-empty.
+  const evalConfig = getEmotionalAxisEvalConfig();
+  const isBandsOnly = evalConfig.bandsOnly;
+  const slimmable: DirectorSlimmable = {};
+  if (renderEmotionalBlock && !isBandsOnly) {
+    slimmable.emotionalRenderBlock = renderEmotionalBlock;
+    slimmable.emotionalBandLineBlock = `[当前状态下的行为基调]\n${formatBandLine(emotionalAxisBands!)}`;
+  }
+  if (formatResistanceSubsection) {
+    slimmable.formatResistanceSubsection = formatResistanceSubsection;
+  }
+  if (canonCorrectionSubsection) {
+    slimmable.canonCorrectionSubsection = canonCorrectionSubsection;
+  }
+
   return {
     systemPrompt,
     conversationHistory,
@@ -611,6 +655,9 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     emotionalBandLine,
     emotionalRenderRuleTexts,
     emotionalLastTraceEvent,
+    directorSlimmable: slimmable.emotionalRenderBlock || slimmable.formatResistanceSubsection || slimmable.canonCorrectionSubsection
+      ? slimmable
+      : undefined,
   };
 }
 

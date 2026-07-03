@@ -64,6 +64,18 @@ export const DirectorOutputSchema = z.object({
 export type DirectorOutput = z.infer<typeof DirectorOutputSchema>;
 
 // ---------------------------------------------------------------------------
+// TG6: Director run result — note for prompt injection + output for
+// fired-check-driven slimming
+// ---------------------------------------------------------------------------
+
+export interface DirectorRunResult {
+  /** Rendered [DIRECTOR NOTE] body (non-empty). */
+  note: string;
+  /** Parsed schema output (for fired-field checks). */
+  output: DirectorOutput;
+}
+
+// ---------------------------------------------------------------------------
 // Director system prompt — forbids scripted dialogue
 // ---------------------------------------------------------------------------
 
@@ -287,15 +299,18 @@ const tracedDirector = traceLLMStage(
 /**
  * Run the response director stage.
  *
- * Returns a rendered [DIRECTOR NOTE] block string when the director call succeeds
- * and the block is non-empty. Returns null when the director is disabled, the
- * call fails, or the rendered block is empty (fail-open — the turn proceeds
- * without the block).
+ * Returns a `DirectorRunResult` (rendered note + parsed output) when the
+ * director call succeeds and the note is non-empty. Returns null when the
+ * director is disabled, the call fails, or the rendered note is empty
+ * (fail-open — the turn proceeds without the block).
+ *
+ * TG6: The caller uses `output` for fired-field checks to drive prompt
+ * slimming before appending the note.
  */
 export async function runResponseDirector(
   input: ResponseDirectorInput,
   options?: { signal?: AbortSignal },
-): Promise<string | null> {
+): Promise<DirectorRunResult | null> {
   if (!env.RESPONSE_DIRECTOR_ENABLED) {
     return null;
   }
@@ -311,13 +326,13 @@ export async function runResponseDirector(
       return null;
     }
 
-    const rendered = renderDirectorNote(output);
-    if (!rendered.trim()) {
-      console.warn("[runResponseDirector] rendered block is empty — skipping");
+    const note = renderDirectorNote(output);
+    if (!note.trim()) {
+      console.warn("[runResponseDirector] rendered note is empty — skipping");
       return null;
     }
 
-    return rendered;
+    return { note, output };
   } catch (err) {
     console.warn("[runResponseDirector] error:", err);
     return null;

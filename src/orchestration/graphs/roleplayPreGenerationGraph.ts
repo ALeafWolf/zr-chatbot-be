@@ -216,13 +216,102 @@ export function createRoleplayPreGenerationGraph(
           ?? "",
       };
 
-      const block = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });
+      const result = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });
 
-      if (!block) return {};
+      if (!result) return {};
+
+      const { note, output } = result;
+      let systemPrompt = promptCtx.systemPrompt;
+      const slimmedBlocks: string[] = [];
+
+      // TG6: Director-gated prompt slimming — apply BEFORE appending the note.
+      // Each step is individually no-op-safe: missing string, no match, unfired
+      // field, or absent flag ⇒ that unit is left untouched.
+      const slimEnv = env.RESPONSE_DIRECTOR_SLIM_BLOCKS;
+      const slimSet = new Set(
+        slimEnv.split(",").map((t) => t.trim()).filter(Boolean),
+      );
+
+      // Validate tokens: warn + ignore unknown
+      const knownTokens = new Set(["emotional_render", "format_resistance", "canon_correction"]);
+      for (const token of slimSet) {
+        if (!knownTokens.has(token)) {
+          console.warn(`[responseDirector] unknown RESPONSE_DIRECTOR_SLIM_BLOCKS token: "${token}" — ignoring`);
+        }
+      }
+
+      const slimmable = promptCtx.directorSlimmable;
+      if (slimmable) {
+        // 1. emotional_render: full block → band-line-only when mood_directive fired
+        if (
+          slimSet.has("emotional_render") &&
+          output.mood_directive &&
+          slimmable.emotionalRenderBlock &&
+          slimmable.emotionalBandLineBlock
+        ) {
+          const before = systemPrompt;
+          systemPrompt = systemPrompt.replace(slimmable.emotionalRenderBlock, slimmable.emotionalBandLineBlock);
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("emotional_render");
+          } else {
+            console.warn("[responseDirector] emotional_render: exact-substring match failed — prompt unchanged");
+          }
+        }
+
+        // 2. format_resistance: remove subsection only when the field fired
+        if (
+          slimSet.has("format_resistance") &&
+          output.format_resistance &&
+          slimmable.formatResistanceSubsection
+        ) {
+          const sub = slimmable.formatResistanceSubsection;
+          // Try "sub + \n\n" (mid-body), then "\n\n + sub" (last part of body)
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(sub + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("format_resistance");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + sub, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("format_resistance");
+            } else {
+              console.warn("[responseDirector] format_resistance: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+
+        // 3. canon_correction: remove subsection only when the field fired
+        if (
+          slimSet.has("canon_correction") &&
+          output.fact_correction &&
+          slimmable.canonCorrectionSubsection
+        ) {
+          const sub = slimmable.canonCorrectionSubsection;
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(sub + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("canon_correction");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + sub, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("canon_correction");
+            } else {
+              console.warn("[responseDirector] canon_correction: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+      }
 
       // Append the [DIRECTOR NOTE] block as the last block of the system prompt
-      const updatedCtx = { ...promptCtx };
-      updatedCtx.systemPrompt = promptCtx.systemPrompt + "\n\n[DIRECTOR NOTE]\n" + block;
+      const updatedCtx = { ...promptCtx, systemPrompt, directorSlimmedBlocks: slimmedBlocks.length > 0 ? slimmedBlocks : undefined };
+      updatedCtx.systemPrompt = systemPrompt + "\n\n[DIRECTOR NOTE]\n" + note;
+
+      if (slimmedBlocks.length > 0) {
+        console.info(`[responseDirector] slimmed blocks: ${slimmedBlocks.join(", ")}`);
+      }
+
       return { promptContext: updatedCtx };
     } catch (err) {
       console.warn("[roleplayPreGenerationGraph/responseDirector] error:", err);

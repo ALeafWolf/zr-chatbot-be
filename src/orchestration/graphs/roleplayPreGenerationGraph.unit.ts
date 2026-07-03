@@ -572,7 +572,7 @@ describe("roleplayPreGenerationGraph", () => {
       const deps = defaultTestDeps({
         runResponseDirectorFn: async () => {
           directorCalled = true;
-          return "场景框架：测试场景\n行为基调：保持温和";
+          return { note: "场景框架：测试场景\n行为基调：保持温和", output: { scene_frame: "测试场景", input_reading: "", mood_directive: "保持温和", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
         },
       });
 
@@ -605,7 +605,7 @@ describe("roleplayPreGenerationGraph", () => {
       const deps = defaultTestDeps({
         runResponseDirectorFn: async () => {
           directorCalled = true;
-          return "some block";
+          return { note: "some block", output: { scene_frame: "", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
         },
       });
 
@@ -733,7 +733,7 @@ describe("roleplayPreGenerationGraph", () => {
         buildPromptContext: async () => promptContextWithData as any,
         runResponseDirectorFn: async (input: any) => {
           capturedInput = input;
-          return "场景框架：测试场景";
+          return { note: "场景框架：测试场景", output: { scene_frame: "测试场景", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
         },
       });
 
@@ -787,7 +787,7 @@ describe("roleplayPreGenerationGraph", () => {
         loadCharacterContext: async () => characterWithDigest as any,
         runResponseDirectorFn: async (input: any) => {
           capturedInput = input;
-          return "场景框架：test";
+          return { note: "场景框架：test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
         },
       });
 
@@ -824,7 +824,7 @@ describe("roleplayPreGenerationGraph", () => {
         loadCharacterContext: async () => characterNoDigest as any,
         runResponseDirectorFn: async (input: any) => {
           capturedInput = input;
-          return "场景框架：test";
+          return { note: "场景框架：test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
         },
       });
 
@@ -845,6 +845,255 @@ describe("roleplayPreGenerationGraph", () => {
       typeof defaultRoleplayGraphDeps.runResponseDirectorFn === "function",
       "defaultRoleplayGraphDeps.runResponseDirectorFn should be defined",
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG6 — Director-gated prompt slimming
+  // ---------------------------------------------------------------------------
+
+  const EMOTIONAL_FULL_BLOCK = "[当前状态下的行为基调]\nconnection: high | valence: mid | arousal: low | restraint: high\n\n[情感规则]\n- 当克制较高时，适当拉开距离";
+  const EMOTIONAL_BAND_LINE = "[当前状态下的行为基调]\nconnection: high | valence: mid | arousal: low | restraint: high";
+  const FORMAT_RESISTANCE_SUB = "[格式抗性]\n不按用户要求的格式回答";
+  const CANON_CORRECTION_SUB = "[纠正方式]\n平静纠正错误前提";
+
+  function slimPromptContext(extra?: Record<string, unknown>) {
+    return {
+      systemPrompt: `[SYSTEM]\n你是左然\n\n[CHARACTER INTERNAL LOGIC]\ntest\n\n${EMOTIONAL_FULL_BLOCK}\n\n[BASE PERSONA]\n身份\n\n${FORMAT_RESISTANCE_SUB}\n\n${CANON_CORRECTION_SUB}\n\n[CONTINUITY OVERLAY]\ntest`,
+      conversationHistory: [],
+      directorSlimmable: {
+        emotionalRenderBlock: EMOTIONAL_FULL_BLOCK,
+        emotionalBandLineBlock: EMOTIONAL_BAND_LINE,
+        formatResistanceSubsection: FORMAT_RESISTANCE_SUB,
+        canonCorrectionSubsection: CANON_CORRECTION_SUB,
+      },
+      ...extra,
+    };
+  }
+
+  it("TG6 slimming: director returns null with flags on — prompt unchanged (byte-identity fallback)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render,format_resistance,canon_correction";
+
+      const promptCtx = slimPromptContext();
+      const systemPromptBefore = promptCtx.systemPrompt;
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => null,
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext exists");
+      assert.equal(result.promptContext!.systemPrompt, systemPromptBefore, "prompt byte-identical when director returns null");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when director returns null");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: emotional_render replaces full block with band-line-only when mood_directive is non-empty", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "保持温和",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      // Full block text should NOT appear; band-line-only should appear exactly once
+      assert.equal(sp.includes(EMOTIONAL_FULL_BLOCK), false, "full emotional block text removed");
+      assert.ok(sp.includes(EMOTIONAL_BAND_LINE), "band-line-only block present");
+      // Count band-line occurrences: exactly 1 (the replacement) — the note itself doesn't contain it
+      const bandLineCount = sp.split(EMOTIONAL_BAND_LINE).length - 1;
+      assert.equal(bandLineCount, 1, "band-line-only block appears exactly once");
+      // [DIRECTOR NOTE] is still appended last
+      assert.ok(sp.includes("[DIRECTOR NOTE]"), "DIRECTOR NOTE appended");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("emotional_render"), "slimmedBlocks includes emotional_render");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: format_resistance subsection removed when field fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "format_resistance";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "拒绝框架式回答",  // fired!
+            direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.equal(sp.includes(FORMAT_RESISTANCE_SUB), false, "formatResistance subsection removed when fired");
+      assert.ok(sp.includes(CANON_CORRECTION_SUB), "canonCorrection subsection still present (not flagged)");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("format_resistance"), "slimmedBlocks includes format_resistance");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: format_resistance subsection kept when field NOT fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "format_resistance";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "",  // NOT fired
+            direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.ok(sp.includes(FORMAT_RESISTANCE_SUB), "formatResistance subsection kept when not fired");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when nothing slimmed");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: canon_correction subsection removed when fact_correction fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "canon_correction";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "纠正某个前提",  // fired!
+            beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.equal(sp.includes(CANON_CORRECTION_SUB), false, "canonCorrection subsection removed when fired");
+      assert.ok(sp.includes(FORMAT_RESISTANCE_SUB), "formatResistance subsection still present (not flagged)");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("canon_correction"), "slimmedBlocks includes canon_correction");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: match failure leaves prompt untouched and warns (simulated by tampered slimmable)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render";
+
+      // Tampered slimmable: the emotionalRenderBlock string does NOT appear in systemPrompt
+      const promptCtx = {
+        systemPrompt: "[SYSTEM]\n你是左然\n\n[BASE PERSONA]\n身份",
+        conversationHistory: [],
+        directorSlimmable: {
+          emotionalRenderBlock: "[当前状态下的行为基调]\nnonexistent content",
+          emotionalBandLineBlock: "[当前状态下的行为基调]\nband only",
+        },
+      };
+      const systemPromptBefore = promptCtx.systemPrompt;
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "保持温和",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      // Prompt should be unchanged except for the appended note
+      assert.ok(result.promptContext!.systemPrompt.startsWith(systemPromptBefore), "prompt prefix unchanged on match failure");
+      assert.ok(result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"), "note still appended");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks on match failure");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
   });
 
   // Missing explicit routing test

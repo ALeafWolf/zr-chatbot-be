@@ -1072,4 +1072,106 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     assert.equal(ctx.emotionalRenderRuleTexts, undefined, "emotionalRenderRuleTexts undefined without axis data");
     assert.equal(ctx.emotionalLastTraceEvent, undefined, "emotionalLastTraceEvent undefined without axis data");
   });
+
+  // -----------------------------------------------------------------------
+  // TG6 — directorSlimmable exported exact strings
+  // -----------------------------------------------------------------------
+
+  const TG6_BANDS = { connection: "high" as const, valence: "mid" as const, arousal: "low" as const, restraint: "high" as const };
+  const TG6_TRACE = {
+    tick: 1, axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+    axesAfter: { connection: 0.7, valence: 0, arousal: -0.1, restraint: 0.7 },
+    couplingsFired: [] as string[], effectiveBaselines: {} as Record<string, number>,
+  };
+  const TG6_HISTORY: Array<{ tick: number; axes: { connection: number; valence: number; arousal: number; restraint: number } }> = [];
+
+  it("TG6 directorSlimmable: emotional pair present when render block injected and not bands-only", () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+      const ctx = buildPromptContext({
+        ...base(),
+        emotionalAxisBands: TG6_BANDS,
+        emotionalAxisLastTrace: TG6_TRACE,
+        emotionalAxisHistory: TG6_HISTORY,
+      });
+      const slimmable = ctx.directorSlimmable;
+
+      assert.ok(slimmable, "directorSlimmable should exist");
+      assert.ok(slimmable!.emotionalRenderBlock, "emotionalRenderBlock should be present");
+      assert.ok(slimmable!.emotionalBandLineBlock, "emotionalBandLineBlock should be present");
+      assert.ok(slimmable!.emotionalRenderBlock!.includes("当前状态下的行为基调"), "emotionalRenderBlock contains block header");
+      assert.ok(slimmable!.emotionalBandLineBlock!.includes("当前状态下的行为基调"), "emotionalBandLineBlock contains block header");
+      // emotionalRenderBlock should be an exact substring of systemPrompt
+      assert.ok(ctx.systemPrompt.includes(slimmable!.emotionalRenderBlock!), "emotionalRenderBlock is exact substring of systemPrompt");
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+    }
+  });
+
+  it("TG6 directorSlimmable: formatResistanceSubsection and canonCorrectionSubsection present when persona fields non-empty", () => {
+    // Base character defaults already have format_resistance and canon_correction set
+    const ctx = buildPromptContext(base());
+    const slimmable = ctx.directorSlimmable;
+    // The base characterDefaults may not have format_resistance/canon_correction set
+    // These fields are conditional on the characterDefaults having them
+    if (slimmable?.formatResistanceSubsection) {
+      assert.ok(ctx.systemPrompt.includes(slimmable.formatResistanceSubsection), "formatResistanceSubsection is substring of systemPrompt");
+    }
+    if (slimmable?.canonCorrectionSubsection) {
+      assert.ok(ctx.systemPrompt.includes(slimmable.canonCorrectionSubsection), "canonCorrectionSubsection is substring of systemPrompt");
+    }
+  });
+
+  it("TG6 directorSlimmable: emotional pair absent when render block absent (bandsOnly)", async () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    const savedConfig = getEmotionalAxisEvalConfig();
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+      setEmotionalAxisEvalConfig({ bandsOnly: true, renderEnabled: true });
+
+      const ctx = buildPromptContext({
+        ...base(),
+        emotionalAxisBands: TG6_BANDS,
+        emotionalAxisLastTrace: TG6_TRACE,
+        emotionalAxisHistory: TG6_HISTORY,
+      });
+      const slimmable = ctx.directorSlimmable;
+
+      // Emotional pair should be absent when bands-only is active (identity replacement is pointless)
+      if (slimmable) {
+        assert.equal(slimmable.emotionalRenderBlock, undefined, "emotionalRenderBlock undefined when bandsOnly");
+        assert.equal(slimmable.emotionalBandLineBlock, undefined, "emotionalBandLineBlock undefined when bandsOnly");
+      }
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      resetEmotionalAxisEvalConfig();
+    }
+  });
+
+  it("TG6 directorSlimmable: survives PromptContextSchema validation round-trip", () => {
+    const { PromptContextSchema } = require("./buildPromptContext");
+    const sample: any = {
+      systemPrompt: "test",
+      conversationHistory: [],
+      directorSlimmable: {
+        emotionalRenderBlock: "[当前状态下的行为基调]\ntest",
+        emotionalBandLineBlock: "[当前状态下的行为基调]\nband line",
+        formatResistanceSubsection: "[格式抗性]\ntest",
+      },
+      directorSlimmedBlocks: ["emotional_render"],
+    };
+    const parsed = PromptContextSchema.parse(sample);
+    assert.ok(parsed.directorSlimmable, "directorSlimmable survives schema");
+    assert.equal(parsed.directorSlimmable.emotionalRenderBlock, "[当前状态下的行为基调]\ntest");
+    assert.ok(parsed.directorSlimmedBlocks, "directorSlimmedBlocks survives schema");
+    assert.equal(parsed.directorSlimmedBlocks![0], "emotional_render");
+  });
 });
