@@ -220,3 +220,87 @@ describe("buildValidatorContext canonTruthMode propagation", () => {
     assert.equal(ctx.canonTruthMode, undefined, "default undefined");
   });
 });
+
+// ---------------------------------------------------------------------------
+// TG1 — generationUserMessage propagation in message builders
+// ---------------------------------------------------------------------------
+
+describe("TG1 — message builder uses generationUserMessage", () => {
+  const systemPrompt = "[SYSTEM]\n你是左然，一个虚构角色。";
+  const rawMessage = "你好【请温柔】吗？";
+  const strippedMessage = "你好吗？";
+  const rewriteSystemPrompt = "[REWRITE]\n请修正。";
+
+  it("buildToolMessages uses generationUserMessage when present", () => {
+    const promptContext = {
+      systemPrompt,
+      conversationHistory: [],
+      generationUserMessage: strippedMessage,
+    };
+    const result = __testing.buildToolMessages(promptContext as Parameters<typeof __testing.buildToolMessages>[0], rawMessage);
+    const userMsg = result.messages[result.messages.length - 1]!;
+    const content = userMsg.content ?? "";
+    // The user turn should contain the stripped message, not the raw 【】 text
+    assert.ok(content.includes("你好吗？"), "user turn uses stripped message");
+    assert.equal(content.includes("【请温柔】"), false, "no 【】 in user turn");
+  });
+
+  it("buildToolMessages falls back to raw userMessage when generationUserMessage is undefined", () => {
+    const promptContext = { systemPrompt, conversationHistory: [] };
+    const result = __testing.buildToolMessages(promptContext as Parameters<typeof __testing.buildToolMessages>[0], rawMessage);
+    const userMsg = result.messages[result.messages.length - 1]!;
+    const content = userMsg.content ?? "";
+    // Without generationUserMessage, the raw message (with 【】) is used
+    assert.ok(content.includes("【请温柔】"), "raw message used when generationUserMessage absent");
+  });
+
+  it("buildRewriteToolMessages uses generationUserMessage when present", () => {
+    const promptContext = {
+      systemPrompt,
+      conversationHistory: [],
+      generationUserMessage: strippedMessage,
+    };
+    const result = __testing.buildRewriteToolMessages(
+      promptContext as Parameters<typeof __testing.buildToolMessages>[0],
+      rawMessage,
+      rewriteSystemPrompt,
+    );
+    const userMsg = result.messages[result.messages.length - 1]!;
+    const content = userMsg.content ?? "";
+    assert.ok(content.includes("你好吗？"), "rewrite user turn uses stripped message");
+    assert.equal(content.includes("【请温柔】"), false, "no 【】 in rewrite user turn");
+  });
+
+  it("buildRewriteToolMessages falls back to raw userMessage when generationUserMessage is undefined", () => {
+    const promptContext = { systemPrompt, conversationHistory: [] };
+    const result = __testing.buildRewriteToolMessages(
+      promptContext as Parameters<typeof __testing.buildToolMessages>[0],
+      rawMessage,
+      rewriteSystemPrompt,
+    );
+    const userMsg = result.messages[result.messages.length - 1]!;
+    const content = userMsg.content ?? "";
+    assert.ok(content.includes("【请温柔】"), "raw message used in rewrite when generationUserMessage absent");
+  });
+
+  it("thinking-marker decoration order: re-render first, then decorate", () => {
+    // The decorateUserMessageForGeneration should receive the stripped message,
+    // not the raw message, meaning the marker is appended to the stripped text.
+    const promptContext = {
+      systemPrompt,
+      conversationHistory: [],
+      generationUserMessage: strippedMessage,
+    };
+    const result = __testing.buildToolMessages(promptContext as Parameters<typeof __testing.buildToolMessages>[0], rawMessage);
+    const userMsg = result.messages[result.messages.length - 1]!;
+    const content = userMsg.content ?? "";
+
+    // The message should contain the stripped text
+    assert.ok(content.includes("你好吗？"), "stripped text present");
+
+    // If marker was injected, it appears at the end (after the stripped message)
+    if (result.markerInjected) {
+      assert.ok(content.endsWith("】") || content.includes("【角色沉浸要求】"), "marker appended to stripped message");
+    }
+  });
+});

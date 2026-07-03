@@ -6,6 +6,10 @@ export interface StructuralSpan {
   structuralKind: StructuralKind;
   /** Inner slice for delimited spans (without wrapping brackets). Plain spans are verbatim. */
   rawText: string;
+  /** Start offset in the original input (inclusive). Includes delimiters for delimited spans. */
+  start: number;
+  /** End offset in the original input (exclusive). Includes delimiters for delimited spans. */
+  end: number;
 }
 
 export interface StructuralParseResult {
@@ -23,14 +27,18 @@ export function scanDelimitedSpans(input: string): StructuralParseResult {
   let i = 0;
   const n = input.length;
 
-  const push = (kind: StructuralKind, start: number, end: number) => {
-    const rawText = input.slice(start, end);
+  const push = (kind: StructuralKind, rawStart: number, rawEnd: number, outerStart?: number, outerEnd?: number) => {
+    const rawText = input.slice(rawStart, rawEnd);
     const index = spans.length;
+    const spanStart = outerStart ?? rawStart;
+    const spanEnd = outerEnd ?? rawEnd;
     spans.push({
       id: `s${index}`,
       index,
       structuralKind: kind,
       rawText,
+      start: spanStart,
+      end: spanEnd,
     });
   };
 
@@ -45,7 +53,7 @@ export function scanDelimitedSpans(input: string): StructuralParseResult {
       if (input.slice(i + 1, close).includes("【")) {
         return { ok: false, spans: [], error: "nested_square" };
       }
-      push("square_meta", i + 1, close);
+      push("square_meta", i + 1, close, i, close + 1);
       i = close + 1;
       continue;
     }
@@ -59,7 +67,7 @@ export function scanDelimitedSpans(input: string): StructuralParseResult {
           return { ok: false, spans: [], error: "nested_paren" };
         }
         if (cj === closeChar) {
-          push("paren", i + 1, j);
+          push("paren", i + 1, j, i, j + 1);
           i = j + 1;
           j = -1;
           break;

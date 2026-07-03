@@ -29,6 +29,7 @@ import {
   shouldUseAnnotationFallback,
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
+import { extractReplyDirections, serializeSegmentsForPrompt } from "./generationUserMessage";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
@@ -109,6 +110,9 @@ export interface PromptContext {
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
   /** Canon truth mode for this turn. */
   canonTruthMode?: CanonTruthMode;
+  /** TG1: Generation-facing user message (stripped of 【】 content). When present, generation
+   *  and rewrite message builders use this instead of the raw userMessage. */
+  generationUserMessage?: string;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -128,6 +132,7 @@ export const PromptContextSchema = z.object({
     )
     .optional(),
   canonTruthMode: z.enum(["strict_canon_recall", "canon_blend", "open_roleplay"]).optional(),
+  generationUserMessage: z.string().optional(),
 });
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -211,8 +216,19 @@ export function buildPromptContext(input: {
       annotationHeuristicFallback(userMessage, queryRewrite)
     : true;
 
+  // TG1: Deterministic reply-direction isolation
+  const extraction = extractReplyDirections(userMessage);
+  const generationUserMessage = extraction.applied ? extraction.strippedMessage : undefined;
+
+  // When isolation applies, build the prompt-facing structured block from segments
+  // excluding reply_direction lanes. combined_for_embedding stays untouched for retrieval.
+  const promptStructuredBlock =
+    extraction.applied && queryRewrite?.parseOk && queryRewrite.segments.length > 0
+      ? serializeSegmentsForPrompt(queryRewrite.segments)
+      : structuredBlock;
+
   const showStructured =
-    structuredBlock.length > 0 && queryRewrite?.parseOk === true;
+    promptStructuredBlock.length > 0 && queryRewrite?.parseOk === true;
   const showAnnotations = useAnnotationFallback;
 
   // Canon scenes/chunks received here are already filtered by
@@ -514,12 +530,26 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     ...(showStructured
       ? [
           buildBlock("STRUCTURED USER QUERY LABEL RULES", STRUCTURED_QUERY_LABEL_RULES),
-          buildBlock("STRUCTURED USER QUERY", structuredBlock),
+          buildBlock("STRUCTURED USER QUERY", promptStructuredBlock),
         ]
       : []),
 
     ...(showAnnotations
       ? [buildBlock("USER MESSAGE ANNOTATIONS", USER_MESSAGE_ANNOTATION_RULES)]
+      : []),
+
+    // TG1: Reply-direction isolation — inject as the final system-prompt block
+    ...(extraction.applied && extraction.replyDirections.length > 0
+      ? [
+          buildBlock(
+            "REPLY DIRECTION",
+            `以下是用户为本轮提供的场外回复方向指引。角色不可感知这段内容，绝不能将其视为
+<user> 在场景内说出、发送或传达的信息。
+${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
+在不违反更高优先级规则、安全限制或角色一致性的前提下，按此方向塑造本轮回复，
+自然地执行或叙述该方向。`,
+          ),
+        ]
       : []),
   ]
     .filter(Boolean)
@@ -540,6 +570,7 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       usageInstruction: s.usageInstruction,
     })),
     canonTruthMode,
+    generationUserMessage,
   };
 }
 

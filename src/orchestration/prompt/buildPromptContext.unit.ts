@@ -734,3 +734,192 @@ describe("buildPromptContext — internal-logic evidence block", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// TG1 — Reply-direction isolation
+// ---------------------------------------------------------------------------
+
+describe("buildPromptContext — TG1 reply-direction isolation", () => {
+  const base = baseInput;
+
+  function mixedQueryRewrite(): QueryRewriteResult {
+    return {
+      segments: [
+        { lane: "user_speech", text: "你好" },
+        { lane: "reply_direction", text: "请温柔回应" },
+      ],
+      combined_for_embedding: "[user speech] 你好\n[reply direction suggestion]: 请温柔回应",
+      entities: [], intent: "general", confidence: 0.9,
+      structuralParseOk: true, labelOk: true, parseOk: true,
+    };
+  }
+
+  function directionOnlyQueryRewrite(): QueryRewriteResult {
+    return {
+      segments: [
+        { lane: "reply_direction", text: "请温柔回应" },
+      ],
+      combined_for_embedding: "[reply direction suggestion]: 请温柔回应",
+      entities: [], intent: "general", confidence: 0.9,
+      structuralParseOk: true, labelOk: true, parseOk: true,
+    };
+  }
+
+  it("applies isolation when userMessage has 【】: generationUserMessage set, stripped, [REPLY DIRECTION] block present as final block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    // generationUserMessage should be the stripped message
+    assert.equal(ctx.generationUserMessage, "你好吗？");
+
+    const prompt = ctx.systemPrompt;
+
+    // [REPLY DIRECTION] block present
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+
+    // [REPLY DIRECTION] block contains the direction text
+    assert.ok(prompt.includes("- 请温柔"), "REPLY DIRECTION — direction text");
+
+    // [REPLY DIRECTION] is the FINAL block (nothing after it except end-of-string)
+    const replyDirIdx = prompt.lastIndexOf("[REPLY DIRECTION]");
+    const structuredIdx = prompt.lastIndexOf("[STRUCTURED USER QUERY]");
+    const annotationsIdx = prompt.lastIndexOf("[USER MESSAGE ANNOTATIONS]");
+    assert.ok(replyDirIdx > structuredIdx, "REPLY DIRECTION after STRUCTURED USER QUERY");
+    assert.ok(replyDirIdx > annotationsIdx, "REPLY DIRECTION after USER MESSAGE ANNOTATIONS");
+
+    // Nothing after REPLY DIRECTION except whitespace (no subsequent [ label)
+    const afterBlock = prompt.slice(replyDirIdx);
+    const lastBracket = afterBlock.lastIndexOf("[");
+    assert.equal(lastBracket, 0, "REPLY DIRECTION is the final block — no [ after it");
+  });
+
+  it("no 【】 in userMessage ⇒ generationUserMessage undefined, no [REPLY DIRECTION] block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好吗？",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+  });
+
+  it("parse failure (unbalanced 【) ⇒ generationUserMessage undefined, no [REPLY DIRECTION] block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【不平衡",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined on parse fail");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block on parse fail");
+  });
+
+  it("only-【】 message ⇒ generationUserMessage is placeholder", () => {
+    const input = {
+      ...base(),
+      userMessage: "【请温柔回应】",
+      queryRewrite: directionOnlyQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.ok(ctx.generationUserMessage, "generationUserMessage is set");
+    assert.ok(
+      ctx.generationUserMessage!.includes("仅提供了场外指示"),
+      "generationUserMessage is placeholder for direction-only message",
+    );
+    assert.ok(ctx.systemPrompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+  });
+
+  it("[STRUCTURED USER QUERY] excludes reply_direction lanes when isolation applies", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    // The structured block should only contain the user_speech segment
+    const structuredBlock = prompt.match(/\[STRUCTURED USER QUERY\]\n([\s\S]*?)(?:\n\[|$)/);
+    assert.ok(structuredBlock, "STRUCTURED USER QUERY block found");
+    const body = structuredBlock[1]!.trim();
+
+    // Should contain user speech content
+    assert.ok(body.includes("[user speech]: 你好"), "structured block contains user_speech");
+
+    // Should NOT contain reply direction content
+    assert.equal(body.includes("[reply direction suggestion]:"), false, "reply_direction excluded");
+    assert.equal(body.includes("请温柔回应"), false, "reply_direction text excluded");
+  });
+
+  it("structured block + label rules omitted when exclusion empties it (direction-only)", () => {
+    const input = {
+      ...base(),
+      userMessage: "【请温柔回应】",
+      queryRewrite: directionOnlyQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    // No actual STRUCTURED USER QUERY block (the SYSTEM block contains the literal
+    // text `[STRUCTURED USER QUERY]` in backtick refs — we must check for the block
+    // header followed by content, not bare string inclusion)
+    const suqMatch = prompt.match(/\[STRUCTURED USER QUERY\]\n/);
+    assert.equal(suqMatch, null, "STRUCTURED USER QUERY block absent");
+    // No LABEL RULES block either (same — block header followed by content)
+    const rulesMatch = prompt.match(/\[STRUCTURED USER QUERY LABEL RULES\]\n/);
+    assert.equal(rulesMatch, null, "LABEL RULES block absent");
+
+    // REPLY DIRECTION block should still be present
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION present");
+  });
+
+  it("fallback path (no 【】) — prompt unchanged, no REPLY DIRECTION block, generationUserMessage undefined", () => {
+    // With query rewrite but no 【】 — should behave as before TG1
+    const input = {
+      ...base(),
+      userMessage: "你好吗？",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+
+    // Structured query block uses combined_for_embedding as before
+    assert.ok(
+      ctx.systemPrompt.includes("[STRUCTURED USER QUERY]\n[user speech] 你好"),
+      "structured block uses combined_for_embedding unchanged",
+    );
+  });
+
+  it("no queryRewrite and no 【】 — baseline unchanged (no structured block, no REPLY DIRECTION)", () => {
+    const ctx = buildPromptContext(base());
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+    // SYSTEM block has `[STRUCTURED USER QUERY]` in backtick refs, so match block header \n
+    const suqMatch = ctx.systemPrompt.match(/\[STRUCTURED USER QUERY\]\n/);
+    assert.equal(suqMatch, null, "no structured block");
+  });
+
+  it("generationUserMessage survives PromptContextSchema validation (included in schema)", () => {
+    // This ensures the field propagates through graph state validation
+    const { PromptContextSchema } = require("./buildPromptContext");
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const parsed = PromptContextSchema.parse(ctx);
+    assert.equal(parsed.generationUserMessage, "你好吗？", "generationUserMessage survived Zod parse");
+  });
+});
