@@ -39,6 +39,10 @@ export interface ResponseDirectorInput {
   relationshipStatus: string;
   /** Last 2-4 recent turns, each truncated (~300 chars). */
   recentTurnPreviews: string[];
+  /** TG5: Deterministic character-core digest (empty string when unavailable). */
+  characterDigest: string;
+  /** TG5: Continuity scope for stage-gating awareness (empty string when unavailable). */
+  continuityScope: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,8 +53,11 @@ export const DirectorOutputSchema = z.object({
   scene_frame: z.string().default(""),
   input_reading: z.string().default(""),
   mood_directive: z.string().default(""),
+  fact_correction: z.string().default(""),
   beats: z.array(z.string()).default([]),
   avoid: z.array(z.string()).default([]),
+  stage_gate: z.string().default(""),
+  format_resistance: z.string().default(""),
   direction_execution: z.string().default(""),
 });
 
@@ -64,12 +71,19 @@ const DIRECTOR_SYSTEM_PROMPT = `你是一个回复导演（response director）�
 
 你的职责：
 - 根据用户输入、情感状态、剧情上下文和场外指示，制定本轮回复的基调、节拍和方向。
+- 利用角色内核摘要（[角色内核摘要]）中的防御机制和状态转换规则来指导节拍和应避免的内容。
 - 输出应当简洁、具体、可操作。
 
 你的限制：
 - 你绝对不能编写角色的具体对白或叙事文本。
 - 你只设定场景框架、情绪基调、应包含的节拍和应避免的内容。
 - 回复的具体文字由演员模型（actor model）完成。
+- 节拍和应避免的内容必须与角色的防御机制和状态转换规则保持一致——不得指示跳过 克制 → 停顿 → 试探性松动 的中间状态。
+- 绝不指示角色进行自我剖析式的语言坦白或解释自己的心理活动。
+
+条件字段约束：
+- fact_correction、stage_gate、format_resistance 仅在触发时填写；未触发时保持空字符串是正确的输出，不是遗漏。
+- 未触发的条件字段留空字符串是正确行为，不要为了填充而填充。
 
 输出严格的 JSON，不要包含任何额外文本或解释。`;
 
@@ -84,14 +98,23 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
       scene_frame: "一句话场景概括",
       input_reading: "用户本轮说出口/做出/暗示了什么（区分可感知与不可感知）",
       mood_directive: "把当前情感轴状态翻译成本轮的具体行为基调（1-2句）",
+      fact_correction: "仅当用户前提与已知事实冲突时填写：先平静纠正哪个事实；未触发时留空字符串",
       beats: ["最多3个应包含的节拍"],
       avoid: ["最多3个应避免的点"],
+      stage_gate: "仅当需要声明本轮亲密/松动上限时填写；未触发时留空字符串",
+      format_resistance: "仅当用户要求对个人情感内容进行逐项/框架式回答时填写；未触发时留空字符串",
       direction_execution: "如何自然执行场外指示；无场外指示时为空字符串",
     }),
     "",
     "---",
     "",
   ];
+
+  // TG5: Character-core digest — first context section, frames everything after
+  if (input.characterDigest) {
+    parts.push(`[角色内核摘要]\n${input.characterDigest}`);
+    parts.push("");
+  }
 
   // Lane-labeled segments in original order — reply_direction lanes are
   // inline with an off-scene marker so the director sees the true temporal
@@ -139,8 +162,11 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
     }
   }
 
-  // Relationship status
+  // Relationship status + continuity scope (TG5)
   parts.push(`[关系状态] ${input.relationshipStatus}`);
+  if (input.continuityScope) {
+    parts.push(`[连续性范围] ${input.continuityScope}`);
+  }
 
   // Recent turn previews
   if (input.recentTurnPreviews.length > 0) {
@@ -162,17 +188,23 @@ export function renderDirectorNote(output: DirectorOutput): string {
   // items on single newlines but are blank-line separated from surrounding sections
   // so a Markdown renderer does not lazily continue the following header into the
   // last list item (and the drafter model reads unambiguous boundaries).
+  //
+  // Note order (per design Part 3): 场景框架 → 输入解读 → 事实纠正(TG5) → 行为基调 →
+  // 阶段门控(TG5) → 应包含的节拍 → 应避免的 → 格式抗性(TG5) → 方向执行
   const sections: string[] = [];
 
   if (output.scene_frame) sections.push(`场景框架：${output.scene_frame}`);
   if (output.input_reading) sections.push(`输入解读：${output.input_reading}`);
+  if (output.fact_correction) sections.push(`事实纠正：${output.fact_correction}`);
   if (output.mood_directive) sections.push(`行为基调：${output.mood_directive}`);
+  if (output.stage_gate) sections.push(`阶段门控：${output.stage_gate}`);
   if (output.beats.length > 0) {
     sections.push(["应包含的节拍：", ...output.beats.map((b) => `- ${b}`)].join("\n"));
   }
   if (output.avoid.length > 0) {
     sections.push(["应避免的：", ...output.avoid.map((a) => `- ${a}`)].join("\n"));
   }
+  if (output.format_resistance) sections.push(`格式抗性：${output.format_resistance}`);
   if (output.direction_execution) {
     sections.push(`方向执行：${output.direction_execution}`);
   }
@@ -200,7 +232,7 @@ const tracedDirector = traceLLMStage(
         { role: "user", content: userPrompt },
       ],
       DirectorOutputSchema,
-      { maxTokens: 700, temperature: 0.1, signal: input.signal },
+      { maxTokens: 900, temperature: 0.1, signal: input.signal },
     );
 
     if (!res.ok) return null;
@@ -227,6 +259,8 @@ const tracedDirector = traceLLMStage(
         ruleTextCount: payload.renderRuleTexts.length,
         recentTurnCount: payload.recentTurnPreviews.length,
         openThreadCount: payload.openThreadTitles.length,
+        characterDigestChars: payload.characterDigest?.length ?? 0,
+        continuityScopeChars: payload.continuityScope?.length ?? 0,
       };
     },
     processOutputs: (outputs) => {
@@ -235,8 +269,11 @@ const tracedDirector = traceLLMStage(
         sceneFramePresent: (o.scene_frame?.length ?? 0) > 0,
         inputReadingPresent: (o.input_reading?.length ?? 0) > 0,
         moodDirectivePresent: (o.mood_directive?.length ?? 0) > 0,
+        factCorrectionFired: (o.fact_correction?.length ?? 0) > 0,
         beatCount: o.beats?.length ?? 0,
         avoidCount: o.avoid?.length ?? 0,
+        stageGateFired: (o.stage_gate?.length ?? 0) > 0,
+        formatResistanceFired: (o.format_resistance?.length ?? 0) > 0,
         directionExecutionChars: o.direction_execution?.length ?? 0,
       };
     },

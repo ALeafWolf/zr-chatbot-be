@@ -40,6 +40,7 @@ function fakeSession(): ChatSession {
 const fakeCharacterDefaults = {
   character_id: "zuo_ran",
   name: "Zuo Ran",
+  archetype: "wandering_scholar",
   identity: "A wandering scholar.",
   speech_style: {
     language: "Chinese",
@@ -749,6 +750,91 @@ describe("roleplayPreGenerationGraph", () => {
       assert.ok(capturedInput.bandLine, "bandLine");
       assert.ok(capturedInput.openThreadTitles.length > 0, "open threads");
       assert.ok(capturedInput.latestTurnDeltaFacts.length > 0, "turn delta facts");
+      // TG5: characterDigest and continuityScope are populated
+      assert.ok("characterDigest" in capturedInput, "characterDigest present in input");
+      assert.ok("continuityScope" in capturedInput, "continuityScope present in input");
+      // No internal_logic in fakeCharacterDefaults → digest is empty
+      assert.equal(capturedInput.characterDigest, "", "characterDigest empty when no internal_logic");
+      // Session has continuityScope="main"
+      assert.equal(capturedInput.continuityScope, "main", "continuityScope from session");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: characterDigest populated from characterDefaults.internal_logic, continuityScope from session", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Character with internal_logic
+      const characterWithDigest = {
+        ...fakeCharacterContext,
+        characterDefaults: {
+          ...fakeCharacterDefaults,
+          internal_logic: {
+            core_motivation: "守护珍视的人",
+            core_fear: "辜负他人",
+            defense_mechanism: "沉默/转移话题",
+            transition_rule: "克制→停顿→试探性松动",
+            relationship_scope_gate: "与关系阶段匹配",
+          },
+        },
+      };
+
+      const deps = defaultTestDeps({
+        loadCharacterContext: async () => characterWithDigest as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return "场景框架：test";
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.ok(capturedInput.characterDigest, "characterDigest should be non-empty");
+      assert.ok(capturedInput.characterDigest.includes("守护珍视的人"), "digest contains internal_logic content");
+      assert.equal(capturedInput.continuityScope, "main", "continuityScope from session");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: characterDigest is empty when characterContext has no internal_logic", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Character with undefined internal_logic
+      const characterNoDigest = {
+        ...fakeCharacterContext,
+        characterDefaults: {
+          ...fakeCharacterDefaults,
+          internal_logic: undefined,
+        },
+      };
+
+      const deps = defaultTestDeps({
+        loadCharacterContext: async () => characterNoDigest as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return "场景框架：test";
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.equal(capturedInput.characterDigest, "", "characterDigest empty when no internal_logic");
     } finally {
       (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
     }

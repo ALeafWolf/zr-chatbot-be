@@ -10,6 +10,7 @@ import type { ResolvedContext } from "../context/resolveContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
 import { readRerankVariant } from "../../eval/experimentVariants";
 import type { ResponseDirectorInput } from "../director/runResponseDirector";
+import { formatDirectorCharacterDigest } from "../../character/psychology/formatInternalLogic";
 import { env } from "../../config/env";
 
 export type { RoleplayGraphDeps };
@@ -204,6 +205,15 @@ export function createRoleplayPreGenerationGraph(
         ),
         relationshipStatus: characterCtx?.personaOverlay?.relationship_status ?? "unknown",
         recentTurnPreviews,
+        // TG5: Character digest from internal_logic subset
+        characterDigest: characterCtx?.characterDefaults
+          ? formatDirectorCharacterDigest(characterCtx.characterDefaults)
+          : "",
+        // TG5: Continuity scope for stage-gating awareness
+        continuityScope:
+          state.session?.continuityScope
+          ?? characterCtx?.personaOverlay?.continuity_scope
+          ?? "",
       };
 
       const block = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });
