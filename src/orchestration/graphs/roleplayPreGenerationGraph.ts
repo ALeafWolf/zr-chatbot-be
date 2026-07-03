@@ -186,6 +186,37 @@ export function createRoleplayPreGenerationGraph(
       // F1b: latest turn delta facts from resolvedContext.latestTurnDelta.
       const latestTurnDeltaFacts = resolved.latestTurnDelta?.facts ?? [];
 
+      // TG1 (phase2c): Build bounded memory entry previews for fact_correction
+      // Category order: 事件记忆 → 记忆综合 → 互动记忆 → 会话回溯. Cap at 10 lines.
+      const memPreviews: string[] = [];
+      const cap = 10;
+      const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) : s;
+
+      for (const e of resolved.structMemEntries ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (e.text ?? "").trim();
+        if (!body) continue;
+        memPreviews.push(`[事件记忆|${e.entryType}, turn ${e.turnIndex}] ${truncate(body, 160)}`);
+      }
+      for (const c of resolved.structMemConsolidations ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (c.summaryText ?? "").trim();
+        if (!body) continue;
+        memPreviews.push(`[记忆综合|${c.scope}] ${truncate(body, 160)}`);
+      }
+      for (const m of resolved.memories ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (m.summary ?? "").trim();
+        if (!body) continue;
+        memPreviews.push(`[互动记忆|${m.memoryType}] ${truncate(body, 160)}`);
+      }
+      for (const c of resolved.sessionRecall ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (c.chunkText ?? "").trim();
+        if (!body) continue;
+        memPreviews.push(`[会话回溯|${c.chunkType}, turns ${c.turnStart}-${c.turnEnd}] ${truncate(body, 160)}`);
+      }
+
       const directorInput: ResponseDirectorInput = {
         segments,
         replyDirections,
@@ -214,6 +245,8 @@ export function createRoleplayPreGenerationGraph(
           state.session?.continuityScope
           ?? characterCtx?.personaOverlay?.continuity_scope
           ?? "",
+        // TG1 (phase2c): Bounded memory entry previews
+        memoryEntryPreviews: memPreviews,
       };
 
       const result = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });

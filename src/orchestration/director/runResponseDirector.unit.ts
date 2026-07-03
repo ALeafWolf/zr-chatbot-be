@@ -217,6 +217,7 @@ describe("buildDirectorUserPrompt", () => {
     recentTurnPreviews: [],
     characterDigest: "",
     continuityScope: "",
+    memoryEntryPreviews: [],
   };
 
   it("direction-before-speech preserves original order, reply_direction marked as off-scene", () => {
@@ -323,6 +324,38 @@ describe("buildDirectorUserPrompt", () => {
     assert.ok(prompt.includes("stage_gate"), "stage_gate in shape template");
     assert.ok(prompt.includes("format_resistance"), "format_resistance in shape template");
   });
+
+  // -----------------------------------------------------------------------
+  // TG1 (phase2c) — Memory entry previews section
+  // -----------------------------------------------------------------------
+
+  it("includes [记忆要点] section when memoryEntryPreviews is non-empty, placed after selected sources", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      selectedSourceSummaries: ["src1 (usage)"],
+      memoryEntryPreviews: [
+        "[事件记忆|dialogue, turn 3] 左然说他会等",
+        "[互动记忆|observation] 用户今天情绪不高",
+      ],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    assert.ok(prompt.includes("[记忆要点]"), "memory previews section present");
+    assert.ok(prompt.includes("[事件记忆|dialogue, turn 3] 左然说他会等"), "first preview line present");
+    assert.ok(prompt.includes("[互动记忆|observation] 用户今天情绪不高"), "second preview line present");
+    // Section appears after [选中来源]
+    const srcIdx = prompt.lastIndexOf("[选中来源]");
+    const memIdx = prompt.indexOf("[记忆要点]");
+    assert.ok(srcIdx < memIdx, "memory section after selected sources");
+  });
+
+  it("omits [记忆要点] section when memoryEntryPreviews is empty", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      memoryEntryPreviews: [],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    assert.equal(prompt.includes("[记忆要点]"), false, "no memory section when empty");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -351,6 +384,7 @@ describe("runResponseDirector — flag off", () => {
         recentTurnPreviews: [],
         characterDigest: "",
         continuityScope: "",
+        memoryEntryPreviews: [],
       });
       assert.equal(result, null, "disabled flag returns null");
     } finally {

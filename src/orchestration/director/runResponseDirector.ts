@@ -43,6 +43,10 @@ export interface ResponseDirectorInput {
   characterDigest: string;
   /** TG5: Continuity scope for stage-gating awareness (empty string when unavailable). */
   continuityScope: string;
+  /** TG1 (phase2c): Bounded one-line previews of retrieved memory content
+   *  (empty array when none). Lets fact_correction fire on memory-grounded
+   *  false premises. */
+  memoryEntryPreviews: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +99,7 @@ const DIRECTOR_SYSTEM_PROMPT = `你是一个回复导演（response director）�
 
 条件字段约束：
 - fact_correction、stage_gate、format_resistance 仅在触发时填写；未触发时保持空字符串是正确的输出，不是遗漏。
+- fact_correction 的触发依据增加一条：当用户输入的前提与 [记忆要点] 中的既有记忆明确矛盾时填写；仅在明确矛盾时触发，模糊或缺证据时留空。
 - 未触发的条件字段留空字符串是正确行为，不要为了填充而填充。
 
 输出严格的 JSON，不要包含任何额外文本或解释。`;
@@ -171,6 +176,14 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
     parts.push("[选中来源]");
     for (const s of input.selectedSourceSummaries) {
       parts.push(`  - ${s}`);
+    }
+  }
+
+  // TG1 (phase2c): Memory entry previews — for fact_correction on false premises
+  if (input.memoryEntryPreviews.length > 0) {
+    parts.push("[记忆要点]（既有记忆的摘要，用于核对用户前提；不是台词素材，不得转写进任何输出字段）");
+    for (const p of input.memoryEntryPreviews) {
+      parts.push(`- ${p}`);
     }
   }
 
@@ -273,6 +286,7 @@ const tracedDirector = traceLLMStage(
         openThreadCount: payload.openThreadTitles.length,
         characterDigestChars: payload.characterDigest?.length ?? 0,
         continuityScopeChars: payload.continuityScope?.length ?? 0,
+        memoryEntryPreviewCount: payload.memoryEntryPreviews?.length ?? 0,
       };
     },
     processOutputs: (outputs) => {

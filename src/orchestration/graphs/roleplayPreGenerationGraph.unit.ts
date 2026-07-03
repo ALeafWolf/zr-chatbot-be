@@ -840,6 +840,108 @@ describe("roleplayPreGenerationGraph", () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // TG1 (phase2c) — Memory entry previews
+  // ---------------------------------------------------------------------------
+
+  it("responseDirector node: memoryEntryPreviews populated from resolved-context memory arrays in category order", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      const contextWithMemories = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: [
+          { id: "e1", entryType: "dialogue", turnIndex: 3, text: "左然说他会等很久", importanceScore: null, confidenceScore: null, cosineSimilarity: 0.9, finalScore: 0.9 },
+        ],
+        structMemConsolidations: [
+          { id: "c1", scope: "current_session", summaryText: "用户与左然重归于好", turnStart: 1, turnEnd: 10, confidenceScore: null, cosineSimilarity: 0.8, finalScore: 0.8 },
+        ],
+        memories: [
+          { id: "m1", memoryType: "observation", summary: "用户今天情绪不高", importanceScore: 0.5, emotionScore: 0, reuseCount: 0, cosineSimilarity: 0.7 },
+        ],
+        sessionRecall: [
+          { id: "r1", turnStart: 1, turnEnd: 2, chunkText: "用户说想重新开始", chunkType: "session_chunk", cosineSimilarity: 0.6, finalScore: 0.6 },
+        ],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithMemories as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "scene test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.ok(Array.isArray(capturedInput.memoryEntryPreviews), "memoryEntryPreviews is array");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 4, "4 previews from 4 categories");
+
+      // Category order: 事件记忆 → 记忆综合 → 互动记忆 → 会话回溯
+      assert.ok(capturedInput.memoryEntryPreviews[0].startsWith("[事件记忆|"), "first is struct mem entry");
+      assert.ok(capturedInput.memoryEntryPreviews[1].startsWith("[记忆综合|"), "second is consolidation");
+      assert.ok(capturedInput.memoryEntryPreviews[2].startsWith("[互动记忆|"), "third is interactive memory");
+      assert.ok(capturedInput.memoryEntryPreviews[3].startsWith("[会话回溯|"), "fourth is session recall");
+
+      // 160-char truncation: the body text is short, so no truncation
+      assert.ok(capturedInput.memoryEntryPreviews[0].length <= 200, "preview line within reasonable length");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: memoryEntryPreviews capped at 10 lines with empty-body skipping", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Create 15 struct mem entries to test the 10-line cap
+      const manyEntries = Array.from({ length: 15 }, (_, i) => ({
+        id: `e${i}`, entryType: "dialogue", turnIndex: i, text: `记忆条目第${i + 1}条`,
+        importanceScore: null, confidenceScore: null, cosineSimilarity: 0.9, finalScore: 0.9,
+      }));
+
+      const contextWithMany = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: manyEntries,
+        structMemConsolidations: [],
+        memories: [],
+        sessionRecall: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithMany as any,
+        buildPromptContext: async () => ({
+          systemPrompt: "[SYSTEM]\ntest",
+          conversationHistory: [],
+        }) as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 10, "capped at 10 lines");
+      assert.ok(capturedInput.memoryEntryPreviews[0].includes("记忆条目第1条"), "first entry present");
+      assert.ok(capturedInput.memoryEntryPreviews[9].includes("记忆条目第10条"), "tenth entry present");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
   it("defaultRoleplayGraphDeps includes runResponseDirectorFn", () => {
     assert.ok(
       typeof defaultRoleplayGraphDeps.runResponseDirectorFn === "function",
