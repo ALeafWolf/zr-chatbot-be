@@ -15,7 +15,8 @@ export type TraceModelRole =
   | "memoryDedupJudge"
   | "memoryRerank"
   | "consolidation"
-  | "embedding";
+  | "embedding"
+  | "director";
 
 export interface TraceSessionLike {
   sessionId: string;

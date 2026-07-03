@@ -9,6 +9,8 @@ import type { LoadRoleplayCharacterContextOutput } from "../roleplay/roleplayAda
 import type { ResolvedContext } from "../context/resolveContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
 import { readRerankVariant } from "../../eval/experimentVariants";
+import type { ResponseDirectorInput } from "../director/runResponseDirector";
+import { env } from "../../config/env";
 
 export type { RoleplayGraphDeps };
 
@@ -143,6 +145,78 @@ export function createRoleplayPreGenerationGraph(
     } catch (err) {
       console.error("[roleplayPreGenerationGraph/buildPrompt] error:", err);
       return { errors: [{ stage: "buildPrompt", message: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+
+  // TG2: Response director — produces [DIRECTOR NOTE] block, fail-open
+  async function responseDirectorNode(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
+    if (!state.promptContext || !state.resolvedContext) return {};
+    if (!deps.runResponseDirectorFn || !env.RESPONSE_DIRECTOR_ENABLED) return {};
+
+    try {
+      // Build distilled input from available state (fail-open on missing data)
+      const promptCtx = state.promptContext;
+      const resolved = state.resolvedContext;
+      const characterCtx = state.characterContext;
+
+      // F1a: segments come from resolvedContext.queryRewrite (not promptContext, which
+      // has no queryRewrite field). Fall back to raw message on parse failure per design.
+      const queryRewrite = resolved.queryRewrite;
+      const segments = queryRewrite?.segments ?? [];
+
+      // F1a: reply directions come from promptContext (populated by TG1 extraction).
+      const replyDirections = promptCtx.replyDirections ?? [];
+
+      const recentTurnPreviews = (promptCtx.conversationHistory ?? [])
+        .slice(-4)
+        .map((m) => {
+          const preview = m.content.slice(0, 300);
+          return `${m.role}: ${preview}`;
+        });
+
+      // F1b: emotional director fields from promptContext (populated by buildPromptContext).
+      const bandLine = promptCtx.emotionalBandLine ?? "";
+      const renderRuleTexts = promptCtx.emotionalRenderRuleTexts ?? [];
+      const lastTraceEvent = promptCtx.emotionalLastTraceEvent;
+
+      // F1b: open thread titles from resolvedContext.openThreads.
+      const openThreadTitles = (resolved.openThreads ?? []).map((t) => t.text);
+
+      // F1b: latest turn delta facts from resolvedContext.latestTurnDelta.
+      const latestTurnDeltaFacts = resolved.latestTurnDelta?.facts ?? [];
+
+      const directorInput: ResponseDirectorInput = {
+        segments,
+        replyDirections,
+        bandLine,
+        renderRuleTexts,
+        lastTraceEvent,
+        derivedState: {
+          inferredMood: resolved.derivedState?.inferredMood ?? "unknown",
+          inferredActivity: resolved.derivedState?.inferredActivity ?? "unknown",
+          conversationalStance: resolved.derivedState?.conversationalStance ?? "unknown",
+        },
+        openThreadTitles,
+        latestTurnDeltaFacts,
+        canonTruthMode: promptCtx.canonTruthMode ?? "open_roleplay",
+        selectedSourceSummaries: (promptCtx.selectedMemorySources ?? []).map(
+          (s: { source: string; usageInstruction: string }) => `${s.source} (${s.usageInstruction})`,
+        ),
+        relationshipStatus: characterCtx?.personaOverlay?.relationship_status ?? "unknown",
+        recentTurnPreviews,
+      };
+
+      const block = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });
+
+      if (!block) return {};
+
+      // Append the [DIRECTOR NOTE] block as the last block of the system prompt
+      const updatedCtx = { ...promptCtx };
+      updatedCtx.systemPrompt = promptCtx.systemPrompt + "\n\n[DIRECTOR NOTE]\n" + block;
+      return { promptContext: updatedCtx };
+    } catch (err) {
+      console.warn("[roleplayPreGenerationGraph/responseDirector] error:", err);
+      return {};
     }
   }
 
@@ -309,6 +383,7 @@ export function createRoleplayPreGenerationGraph(
     .addNode("hybridScoreRerank", hybridScoreRerankNode)
     .addNode("assembleResolvedContext", assembleResolvedContextNode)
     .addNode("buildPrompt", buildPromptNode)
+    .addNode("responseDirector", responseDirectorNode)
     .addNode("errorSink", errorSinkNode)
     .addConditionalEdges(START, hasErrors, { __error__: END, __next__: "loadSession" })
     .addConditionalEdges("loadSession", hasErrors, { __error__: END, __next__: "loadCharacterContext" })
@@ -318,7 +393,8 @@ export function createRoleplayPreGenerationGraph(
     .addConditionalEdges("deterministicContextSelector", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
     .addConditionalEdges("hybridScoreRerank", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
     .addConditionalEdges("assembleResolvedContext", hasErrors, { __error__: END, __next__: "buildPrompt" })
-    .addEdge("buildPrompt", END)
+    .addConditionalEdges("buildPrompt", hasErrors, { __error__: END, __next__: "responseDirector" })
+    .addEdge("responseDirector", END)
     .addEdge("errorSink", END)
     .compile({ name: "orchestration.roleplay_pre_generation_graph" });
 }

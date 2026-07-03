@@ -494,6 +494,18 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => parseEnabledFlag(v)),
 
+  // Response Director
+  // Per-turn LLM stage that produces a compact brief (scene frame, input reading,
+  // mood directive, beats, avoid-list, direction execution) rendered as a
+  // [DIRECTOR NOTE] block appended as the last system-prompt block.
+  // Defaults to the extractor (flash) model; can be overridden to pro via env only.
+  RESPONSE_DIRECTOR_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
+  RESPONSE_DIRECTOR_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  RESPONSE_DIRECTOR_FALLBACK_MODEL: z.string().default(""),
+
   // LangSmith
   // Optional tracing, project metadata, and eval dataset name.
   TRACE_ENVIRONMENT: z.string().default(process.env.NODE_ENV ?? "development"),

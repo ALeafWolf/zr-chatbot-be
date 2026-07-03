@@ -8,6 +8,7 @@ import type { RoleplayGraphDeps } from "./roleplayGraph";
 import { defaultRoleplayGraphDeps } from "./roleplayGraph";
 import { runHybridScoreRerank } from "../context/hybridScoreRerank";
 import type { ChatSession } from "../../db/schema/chat";
+import { env } from "../../config/env";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -557,6 +558,209 @@ describe("roleplayPreGenerationGraph", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // TG2 — Response director node
+  // ---------------------------------------------------------------------------
+
+  it("responseDirector node: when enabled and successful, [DIRECTOR NOTE] block is appended to systemPrompt", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      let directorCalled = false;
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          directorCalled = true;
+          return "场景框架：测试场景\n行为基调：保持温和";
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(directorCalled, "responseDirectorFn should be called when enabled");
+      assert.ok(result.promptContext, "promptContext should exist");
+      assert.ok(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        "systemPrompt should contain [DIRECTOR NOTE] block",
+      );
+      assert.ok(
+        result.promptContext!.systemPrompt.includes("场景框架：测试场景"),
+        "director note content should be in systemPrompt",
+      );
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: disabled flag is a no-op (no LLM call, promptContext unchanged)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = false;
+
+      let directorCalled = false;
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          directorCalled = true;
+          return "some block";
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(!directorCalled, "responseDirectorFn should NOT be called when disabled");
+      assert.ok(result.promptContext, "promptContext should exist");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "systemPrompt should NOT contain [DIRECTOR NOTE] when disabled",
+      );
+      assert.strictEqual(result.errors, undefined, "no errors when disabled");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: error in directorFn is fail-open (promptContext unchanged, no errors)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          throw new Error("director failure");
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext should exist even after director error");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "systemPrompt should NOT contain [DIRECTOR NOTE] on error",
+      );
+      assert.strictEqual(result.errors, undefined, "errors should be undefined (fail-open, not errorSink)");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: returns null is fail-open (no block appended)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => null,
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext exists");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "no block when director returns null",
+      );
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: spy captures actual ResponseDirectorInput (F2)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      let capturedInput: any = null;
+
+      // Build a resolved context with real segments
+      const contextWithSegments = {
+        ...fakeResolvedContextPrebuilt,
+        queryRewrite: {
+          intent: "general" as const,
+          confidence: 0.9,
+          segments: [
+            { lane: "user_speech" as const, text: "你好" },
+            { lane: "reply_direction" as const, text: "请温柔回应" },
+          ],
+          combined_for_embedding: "[user speech] 你好\n[reply direction suggestion]: 请温柔回应",
+          entities: [],
+          parseOk: true,
+          structuralParseOk: true,
+          labelOk: true,
+        },
+        openThreads: [
+          { id: "t1", source: "session_summary" as const, text: "answer the pending question", status: "open" as const, sourceTurnIndex: 2, score: 0.9 },
+        ],
+        latestTurnDelta: {
+          kind: "latest_turn_delta" as const,
+          sourceTurnStart: 2,
+          sourceTurnEnd: 3,
+          expiresAfterTurn: 7,
+          facts: ["the user asked to resume the scene"],
+          pendingActions: [],
+          relationshipSignals: [],
+        },
+      };
+
+      // Build a prompt context with reply directions and emotional data
+      const promptContextWithData = {
+        ...fakePromptContext,
+        replyDirections: ["请温柔回应"],
+        emotionalBandLine: "亲近：中 情绪：中 唤起：低 克制：高",
+        emotionalRenderRuleTexts: ["R1: 放松改变的是温度"],
+        emotionalLastTraceEvent: "user_shows_warmth",
+        canonTruthMode: "open_roleplay" as const,
+        selectedMemorySources: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithSegments as any,
+        buildPromptContext: async () => promptContextWithData as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return "场景框架：测试场景";
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好【请温柔】吗？" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "spy should have received the director input");
+      assert.ok(capturedInput.segments, "segments present");
+      assert.equal(capturedInput.segments.length, 2, "segments count");
+      assert.ok(capturedInput.replyDirections, "replyDirections present");
+      assert.equal(capturedInput.replyDirections[0], "请温柔回应", "reply direction");
+      assert.ok(capturedInput.bandLine, "bandLine");
+      assert.ok(capturedInput.openThreadTitles.length > 0, "open threads");
+      assert.ok(capturedInput.latestTurnDeltaFacts.length > 0, "turn delta facts");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("defaultRoleplayGraphDeps includes runResponseDirectorFn", () => {
+    assert.ok(
+      typeof defaultRoleplayGraphDeps.runResponseDirectorFn === "function",
+      "defaultRoleplayGraphDeps.runResponseDirectorFn should be defined",
+    );
+  });
+
   // Missing explicit routing test
   // ---------------------------------------------------------------------------
 

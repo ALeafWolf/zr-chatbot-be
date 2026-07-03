@@ -837,7 +837,7 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     assert.ok(ctx.systemPrompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
   });
 
-  it("[STRUCTURED USER QUERY] excludes reply_direction lanes when isolation applies", () => {
+  it("[STRUCTURED USER QUERY] preserves order — includes reply_direction in original position (TG3)", () => {
     const input = {
       ...base(),
       userMessage: "你好【请温柔】吗？",
@@ -846,20 +846,25 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     const ctx = buildPromptContext(input);
     const prompt = ctx.systemPrompt;
 
-    // The structured block should only contain the user_speech segment
-    const structuredBlock = prompt.match(/\[STRUCTURED USER QUERY\]\n([\s\S]*?)(?:\n\[|$)/);
-    assert.ok(structuredBlock, "STRUCTURED USER QUERY block found");
-    const body = structuredBlock[1]!.trim();
+    // Structured block must be present (TG3 enables it for direction-only too)
+    assert.ok(prompt.includes("[STRUCTURED USER QUERY]"), "STRUCTURED USER QUERY block present");
 
     // Should contain user speech content
-    assert.ok(body.includes("[user speech]: 你好"), "structured block contains user_speech");
+    assert.ok(prompt.includes("[user speech]: 你好"), "structured block contains user_speech");
 
-    // Should NOT contain reply direction content
-    assert.equal(body.includes("[reply direction suggestion]:"), false, "reply_direction excluded");
-    assert.equal(body.includes("请温柔回应"), false, "reply_direction text excluded");
+    // Should NOW contain reply direction content (TG3 order preservation)
+    assert.ok(prompt.includes("[reply direction suggestion]:"), "reply_direction included (TG3)");
+    assert.ok(prompt.includes("请温柔回应"), "reply_direction text included");
+
+    // Verify order: speech before direction (use lastIndexOf to find block header, not SYSTEM-block backtick refs)
+    const suqHeader = prompt.indexOf("[STRUCTURED USER QUERY]\n");
+    const bodyAfterHeader = prompt.slice(suqHeader);
+    const speechIdx = bodyAfterHeader.indexOf("[user speech]: 你好");
+    const dirIdx = bodyAfterHeader.indexOf("[reply direction suggestion]: 请温柔回应");
+    assert.ok(speechIdx < dirIdx, "original order preserved — speech before direction");
   });
 
-  it("structured block + label rules omitted when exclusion empties it (direction-only)", () => {
+  it("direction-only message: structured block now includes reply_direction (TG3 order preservation)", () => {
     const input = {
       ...base(),
       userMessage: "【请温柔回应】",
@@ -868,16 +873,17 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     const ctx = buildPromptContext(input);
     const prompt = ctx.systemPrompt;
 
-    // No actual STRUCTURED USER QUERY block (the SYSTEM block contains the literal
-    // text `[STRUCTURED USER QUERY]` in backtick refs — we must check for the block
-    // header followed by content, not bare string inclusion)
+    // TG3: structured block is now present because reply_direction lanes are
+    // included in the serialized output (order preservation).
     const suqMatch = prompt.match(/\[STRUCTURED USER QUERY\]\n/);
-    assert.equal(suqMatch, null, "STRUCTURED USER QUERY block absent");
-    // No LABEL RULES block either (same — block header followed by content)
-    const rulesMatch = prompt.match(/\[STRUCTURED USER QUERY LABEL RULES\]\n/);
-    assert.equal(rulesMatch, null, "LABEL RULES block absent");
+    assert.ok(suqMatch, "STRUCTURED USER QUERY block present (TG3)");
+    assert.ok(prompt.includes("[reply direction suggestion]: 请温柔回应"), "direction content in structured block");
 
-    // REPLY DIRECTION block should still be present
+    // LABEL RULES block also present
+    const rulesMatch = prompt.match(/\[STRUCTURED USER QUERY LABEL RULES\]\n/);
+    assert.ok(rulesMatch, "LABEL RULES block present (TG3)");
+
+    // REPLY DIRECTION block should still be present (reinforcement)
     assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION present");
   });
 
@@ -908,6 +914,49 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     // SYSTEM block has `[STRUCTURED USER QUERY]` in backtick refs, so match block header \n
     const suqMatch = ctx.systemPrompt.match(/\[STRUCTURED USER QUERY\]\n/);
     assert.equal(suqMatch, null, "no structured block");
+  });
+
+  it("direction-before-speech preserves order in structured block (TG3 live-sequencing fix)", () => {
+    const input = {
+      ...base(),
+      userMessage: "【处理好葱姜后做菜】谢谢老公~（亲了口左然回去继续认真做菜）",
+      queryRewrite: {
+        segments: [
+          { lane: "reply_direction" as const, text: "处理好葱姜后做菜" },
+          { lane: "user_speech" as const, text: "谢谢老公~" },
+          { lane: "user_action" as const, text: "亲了口左然回去继续认真做菜" },
+        ],
+        combined_for_embedding: "[reply direction suggestion]: 处理好葱姜后做菜\n[user speech]: 谢谢老公~\n[user action]: 亲了口左然回去继续认真做菜",
+        entities: [], intent: "general" as const, confidence: 0.9,
+        structuralParseOk: true, labelOk: true, parseOk: true,
+      },
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    const suqHeader = prompt.indexOf("[STRUCTURED USER QUERY]\n");
+    assert.ok(suqHeader >= 0, "STRUCTURED USER QUERY block found");
+    const bodyAfterHeader = prompt.slice(suqHeader);
+
+    const lines = bodyAfterHeader.split("\n");
+    // lines[0] is "[STRUCTURED USER QUERY]", lines[1] onwards is content
+    assert.ok(lines[1]!.includes("[reply direction suggestion]:"), "direction first");
+    assert.ok(lines[2]!.includes("[user speech]:"), "speech second");
+    assert.ok(lines[3]!.includes("[user action]:"), "action third");
+
+    // Generation-facing user turn still has 【】 stripped
+    assert.equal(ctx.generationUserMessage, "谢谢老公~（亲了口左然回去继续认真做菜）");
+
+    // combined_for_embedding is separate from the structured block — verify
+    // the structured block uses segment data, not the combined string verbatim
+    assert.ok(
+      bodyAfterHeader.includes("[reply direction suggestion]: 处理好葱姜后做菜"),
+      "structured block content from segments, not combined_for_embedding",
+    );
+
+    // REPLY DIRECTION block still present for reinforcement
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+    assert.ok(prompt.includes("- 处理好葱姜后做菜"), "direction text in REPLY DIRECTION block");
   });
 
   it("generationUserMessage survives PromptContextSchema validation (included in schema)", () => {

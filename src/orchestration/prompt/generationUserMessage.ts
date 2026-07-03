@@ -57,21 +57,24 @@ export function extractReplyDirections(userMessage: string): ReplyDirectionExtra
 
 /**
  * Serialize segments for the prompt-facing `[STRUCTURED USER QUERY]` block,
- * excluding `reply_direction` lanes. Returns empty string when no segments
- * remain after filtering.
+ * preserving original segment order. ALL lanes are rendered in order,
+ * including `reply_direction` — the actor model sees the true temporal
+ * composition (e.g. direction before speech).
+ *
+ * Returns empty string only when segments array is empty.
  */
 export function serializeSegmentsForPrompt(segments: QuerySegment[]): string {
   const header: Record<string, string> = {
     user_thought: "[user thought]:",
     user_action: "[user action]:",
     user_speech: "[user speech]:",
+    reply_direction: "[reply direction suggestion]:",
   };
 
-  const filtered = segments.filter((s) => s.lane !== "reply_direction");
-  if (filtered.length === 0) return "";
+  if (segments.length === 0) return "";
 
   const lines: string[] = [];
-  for (const s of filtered) {
+  for (const s of segments) {
     const h = header[s.lane] ?? "[raw]:";
     lines.push(`${h} ${s.text}`.trimEnd());
   }

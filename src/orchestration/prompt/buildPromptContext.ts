@@ -113,6 +113,14 @@ export interface PromptContext {
   /** TG1: Generation-facing user message (stripped of 【】 content). When present, generation
    *  and rewrite message builders use this instead of the raw userMessage. */
   generationUserMessage?: string;
+  /** TG1: Reply direction texts extracted from 【】 spans. Present when isolation applies. */
+  replyDirections?: string[];
+  /** TG2: Emotional band line text for director input (e.g. "亲近：中 情绪：中 唤起：低 克制：高"). */
+  emotionalBandLine?: string;
+  /** TG2: Render rule texts selected for this turn (≤2 typical). */
+  emotionalRenderRuleTexts?: string[];
+  /** TG2: Last emotional trace event type (e.g. "user_discloses_vulnerability"). */
+  emotionalLastTraceEvent?: string;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -133,6 +141,10 @@ export const PromptContextSchema = z.object({
     .optional(),
   canonTruthMode: z.enum(["strict_canon_recall", "canon_blend", "open_roleplay"]).optional(),
   generationUserMessage: z.string().optional(),
+  replyDirections: z.array(z.string()).optional(),
+  emotionalBandLine: z.string().optional(),
+  emotionalRenderRuleTexts: z.array(z.string()).optional(),
+  emotionalLastTraceEvent: z.string().optional(),
 });
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -307,6 +319,24 @@ export function buildPromptContext(input: {
     emotionalAxisLastTrace,
     emotionalAxisHistory,
   });
+
+  // TG2: Compute emotional director input fields when axis state is present.
+  let emotionalBandLine: string | undefined;
+  let emotionalRenderRuleTexts: string[] | undefined;
+  let emotionalLastTraceEvent: string | undefined;
+  if (emotionalAxisBands && renderEmotionalBlock !== null) {
+    emotionalBandLine = formatBandLine(emotionalAxisBands);
+    const evalConfig = getEmotionalAxisEvalConfig();
+    const isBandsOnly = evalConfig.bandsOnly;
+    const matches = isBandsOnly ? [] : selectRenderRuleMatches(
+      emotionalAxisBands,
+      emotionalAxisLastTrace!,
+      emotionalAxisHistory ?? [],
+      "C",
+    );
+    emotionalRenderRuleTexts = matches.map((m) => m.text);
+    emotionalLastTraceEvent = emotionalAxisLastTrace?.event?.type;
+  }
 
   // TG1: Capture render snapshot for eval (no-op when not in an eval context).
   // Only record when the resolver actually produced emotional axis inputs AND the
@@ -545,7 +575,9 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
             "REPLY DIRECTION",
             `以下是用户为本轮提供的场外回复方向指引。角色不可感知这段内容，绝不能将其视为
 <user> 在场景内说出、发送或传达的信息。
+
 ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
+
 在不违反更高优先级规则、安全限制或角色一致性的前提下，按此方向塑造本轮回复，
 自然地执行或叙述该方向。`,
           ),
@@ -571,6 +603,10 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     })),
     canonTruthMode,
     generationUserMessage,
+    replyDirections: extraction.applied ? extraction.replyDirections : undefined,
+    emotionalBandLine,
+    emotionalRenderRuleTexts,
+    emotionalLastTraceEvent,
   };
 }
 

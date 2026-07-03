@@ -45,6 +45,7 @@ import {
 import { filterDrafterFacingIssues } from "../generation/validationFlowHelpers";
 import { runDeterministicSelector, runLlmRerank } from "../context/rerankContext";
 import { runHybridScoreRerank } from "../context/hybridScoreRerank";
+import { runResponseDirector } from "../director/runResponseDirector";
 
 // ---------------------------------------------------------------------------
 // Dependency injection shape
@@ -80,6 +81,8 @@ export interface RoleplayGraphDeps {
   validateDraftFn?: typeof validateDraft;
   rewriteDraftFn?: typeof rewriteDraft;
   safeDeflectionFn?: typeof safeDeflection;
+  /** TG2: Response director stage — produces a [DIRECTOR NOTE] block appended to the system prompt. */
+  runResponseDirectorFn?: typeof import("../director/runResponseDirector").runResponseDirector;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +119,7 @@ export const defaultRoleplayGraphDeps: RoleplayGraphDeps = {
   validateDraftFn: validateDraft,
   rewriteDraftFn: rewriteDraft,
   safeDeflectionFn: safeDeflection,
+  runResponseDirectorFn: runResponseDirector,
 };
 
 // ---------------------------------------------------------------------------

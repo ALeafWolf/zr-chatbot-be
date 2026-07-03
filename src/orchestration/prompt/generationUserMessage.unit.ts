@@ -120,41 +120,51 @@ describe("extractReplyDirections", () => {
 // ---------------------------------------------------------------------------
 
 describe("serializeSegmentsForPrompt", () => {
-  it("excludes reply_direction lanes", () => {
+  it("includes reply_direction lanes in original order", () => {
     const segments: QuerySegment[] = [
       { lane: "user_speech", text: "你好" },
       { lane: "reply_direction", text: "请温柔" },
     ];
     const result = serializeSegmentsForPrompt(segments);
-    assert.equal(result.includes("[reply direction suggestion]:"), false);
-    assert.equal(result.includes("[user speech]: 你好"), true);
+    // reply_direction is now included (TG3 order preservation)
+    assert.ok(result.includes("[reply direction suggestion]:"), "reply_direction included");
+    assert.ok(result.includes("[user speech]: 你好"), "user_speech included");
+    // Verify order: speech first, then direction
+    const speechIdx = result.indexOf("[user speech]");
+    const dirIdx = result.indexOf("[reply direction suggestion]");
+    assert.ok(speechIdx < dirIdx, "preserves original order");
   });
 
-  it("returns empty string when only reply_direction segments exist", () => {
+  it("direction-only input produces non-empty block", () => {
     const segments: QuerySegment[] = [
       { lane: "reply_direction", text: "请温柔" },
       { lane: "reply_direction", text: "再热情点" },
     ];
-    assert.equal(serializeSegmentsForPrompt(segments), "");
+    const result = serializeSegmentsForPrompt(segments);
+    assert.ok(result.length > 0, "non-empty for direction-only");
+    assert.ok(result.includes("[reply direction suggestion]: 请温柔"), "first direction");
+    assert.ok(result.includes("[reply direction suggestion]: 再热情点"), "second direction");
   });
 
   it("returns empty string for empty input", () => {
     assert.equal(serializeSegmentsForPrompt([]), "");
   });
 
-  it("renders user_speech, user_action, user_thought with correct headers", () => {
+  it("renders all lane types with correct headers", () => {
     const segments: QuerySegment[] = [
       { lane: "user_action", text: "点头" },
+      { lane: "reply_direction", text: "请温柔" },
       { lane: "user_speech", text: "你好" },
       { lane: "user_thought", text: "他今天看起来不错" },
     ];
     const result = serializeSegmentsForPrompt(segments);
     assert.ok(result.includes("[user action]: 点头"));
+    assert.ok(result.includes("[reply direction suggestion]: 请温柔"));
     assert.ok(result.includes("[user speech]: 你好"));
     assert.ok(result.includes("[user thought]: 他今天看起来不错"));
   });
 
-  it("ignores reply_direction in mixed segments, preserves order", () => {
+  it("preserves original segment order with direction in middle", () => {
     const segments: QuerySegment[] = [
       { lane: "user_speech", text: "早上好" },
       { lane: "reply_direction", text: "冷淡回应" },
@@ -162,8 +172,22 @@ describe("serializeSegmentsForPrompt", () => {
     ];
     const result = serializeSegmentsForPrompt(segments);
     const lines = result.split("\n");
-    assert.equal(lines.length, 2, "two lines after filtering");
-    assert.ok(lines[0]!.includes("早上好"));
-    assert.ok(lines[1]!.includes("今天天气不错"));
+    assert.equal(lines.length, 3, "three lines — all segments included");
+    assert.ok(lines[0]!.includes("早上好"), "first: speech");
+    assert.ok(lines[1]!.includes("[reply direction suggestion]:"), "second: direction");
+    assert.ok(lines[2]!.includes("今天天气不错"), "third: speech");
+  });
+
+  it("direction-before-speech ordering preserved", () => {
+    const segments: QuerySegment[] = [
+      { lane: "reply_direction", text: "处理好葱姜后做菜" },
+      { lane: "user_speech", text: "谢谢老公~" },
+      { lane: "user_action", text: "亲了口左然回去继续认真做菜" },
+    ];
+    const result = serializeSegmentsForPrompt(segments);
+    const lines = result.split("\n");
+    assert.ok(lines[0]!.includes("[reply direction suggestion]:"), "direction first");
+    assert.ok(lines[1]!.includes("[user speech]:"), "speech second");
+    assert.ok(lines[2]!.includes("[user action]:"), "action third");
   });
 });
