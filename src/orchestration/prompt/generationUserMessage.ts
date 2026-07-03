@@ -56,6 +56,43 @@ export function extractReplyDirections(userMessage: string): ReplyDirectionExtra
 }
 
 /**
+ * Relabel 【】 spans in a prior user turn to `（场外指示：inner）` so the
+ * generation model does not interpret historical brackets as spoken dialogue.
+ *
+ * This is a generation-facing transform only — the original text is preserved
+ * everywhere else (persistence, retrieval, validator context).
+ *
+ * Uses phase A structural parsing (deterministic). Returns the input verbatim
+ * on parse failure or when no 【】 spans are found.
+ */
+export function relabelReplyDirectionsForHistory(text: string): string {
+  const structural = parseStructuralSpans(text);
+  if (!structural.ok) return text;
+
+  const squareSpans = structural.spans.filter((s) => s.structuralKind === "square_meta");
+  if (squareSpans.length === 0) return text;
+
+  const sorted = [...structural.spans].sort((a, b) => a.index - b.index);
+  const parts: string[] = [];
+  let lastEnd = 0;
+
+  for (const span of sorted) {
+    if (span.structuralKind === "square_meta") {
+      // Keep text before this span
+      parts.push(text.slice(lastEnd, span.start));
+      // Replace 【inner】 with （场外指示：inner）
+      parts.push(`（场外指示：${span.rawText}）`);
+      lastEnd = span.end;
+    }
+    // Non-square spans: preserve verbatim (handled by the slice after the loop)
+  }
+  // Append remaining non-square content
+  parts.push(text.slice(lastEnd));
+
+  return parts.join("");
+}
+
+/**
  * Serialize segments for the prompt-facing `[STRUCTURED USER QUERY]` block,
  * preserving original segment order. ALL lanes are rendered in order,
  * including `reply_direction` — the actor model sees the true temporal

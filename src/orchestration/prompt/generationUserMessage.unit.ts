@@ -116,6 +116,49 @@ describe("extractReplyDirections", () => {
 });
 
 // ---------------------------------------------------------------------------
+// relabelReplyDirectionsForHistory — prior turn 【】 → （场外指示：…）
+// ---------------------------------------------------------------------------
+
+import { relabelReplyDirectionsForHistory } from "./generationUserMessage";
+
+describe("relabelReplyDirectionsForHistory", () => {
+  it("relabels 【】 to （场外指示：…） in a mixed turn", () => {
+    const result = relabelReplyDirectionsForHistory("你好【请温柔】吗？");
+    assert.equal(result, "你好（场外指示：请温柔）吗？");
+  });
+
+  it("relabels each 【】 span in order for multiple directions", () => {
+    const result = relabelReplyDirectionsForHistory("【A】text【B】");
+    assert.equal(result, "（场外指示：A）text（场外指示：B）");
+  });
+
+  it("direction-only turn becomes non-empty （场外指示：…）", () => {
+    const result = relabelReplyDirectionsForHistory("【请温柔回应】");
+    assert.equal(result, "（场外指示：请温柔回应）");
+  });
+
+  it("no 【】 spans returns input unchanged", () => {
+    const result = relabelReplyDirectionsForHistory("你好吗？");
+    assert.equal(result, "你好吗？");
+  });
+
+  it("parse failure (unbalanced 【) returns input unchanged", () => {
+    const result = relabelReplyDirectionsForHistory("你好【不平衡");
+    assert.equal(result, "你好【不平衡");
+  });
+
+  it("empty string returns empty string", () => {
+    const result = relabelReplyDirectionsForHistory("");
+    assert.equal(result, "");
+  });
+
+  it("fullwidth/halfwidth paren content in non-square spans preserved verbatim", () => {
+    const result = relabelReplyDirectionsForHistory("（心想）你好【方向】吗？(hello)");
+    assert.equal(result, "（心想）你好（场外指示：方向）吗？(hello)");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // serializeSegmentsForPrompt — segments to structured query block
 // ---------------------------------------------------------------------------
 

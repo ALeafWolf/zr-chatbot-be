@@ -768,7 +768,7 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
   it("applies isolation when userMessage has 【】: generationUserMessage set, stripped, [REPLY DIRECTION] block present as final block", () => {
     const input = {
       ...base(),
-      userMessage: "你好【请温柔】吗？",
+      userMessage: "你好【请温柔回应】吗？",
       queryRewrite: mixedQueryRewrite(),
     };
     const ctx = buildPromptContext(input);
@@ -840,7 +840,7 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
   it("[STRUCTURED USER QUERY] preserves order — includes reply_direction in original position (TG3)", () => {
     const input = {
       ...base(),
-      userMessage: "你好【请温柔】吗？",
+      userMessage: "你好【请温柔回应】吗？",
       queryRewrite: mixedQueryRewrite(),
     };
     const ctx = buildPromptContext(input);
@@ -964,11 +964,112 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     const { PromptContextSchema } = require("./buildPromptContext");
     const input = {
       ...base(),
-      userMessage: "你好【请温柔】吗？",
+      userMessage: "你好【请温柔回应】吗？",
       queryRewrite: mixedQueryRewrite(),
     };
     const ctx = buildPromptContext(input);
     const parsed = PromptContextSchema.parse(ctx);
     assert.equal(parsed.generationUserMessage, "你好吗？", "generationUserMessage survived Zod parse");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG4 4.1 — History reply-direction relabel in conversationHistory
+  // ---------------------------------------------------------------------------
+
+  it("relabels 【】 in prior user turns in conversationHistory", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "之前的消息【请温柔】哦", turnIndex: 0 },
+        { role: "assistant" as const, content: "好的", turnIndex: 1 },
+        { role: "user" as const, content: "【只有方向】", turnIndex: 2 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    const hist = ctx.conversationHistory;
+
+    // User turns: 【】 relabeled
+    assert.equal(hist[0]!.role, "user");
+    assert.equal(hist[0]!.content, "之前的消息（场外指示：请温柔）哦");
+
+    // Assistant turn: untouched
+    assert.equal(hist[1]!.role, "assistant");
+    assert.equal(hist[1]!.content, "好的");
+
+    // Direction-only user turn: becomes （场外指示：…）
+    assert.equal(hist[2]!.role, "user");
+    assert.equal(hist[2]!.content, "（场外指示：只有方向）");
+  });
+
+  it("user turn without 【】 unchanged in conversationHistory", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "普通消息", turnIndex: 0 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    assert.equal(ctx.conversationHistory[0]!.content, "普通消息");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG4 4.2 — TG2 PromptContext fields are populated (review-004 note)
+  // ---------------------------------------------------------------------------
+
+  it("TG2 PromptContext fields populate when emotional axis inputs present", () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+      const input = {
+        ...base(),
+        userMessage: "你好【请温柔回应】吗？",
+        queryRewrite: mixedQueryRewrite(),
+        emotionalAxisBands: { connection: "mid" as const, valence: "mid" as const, arousal: "low" as const, restraint: "high" as const },
+        emotionalAxisLastTrace: {
+          tick: 1,
+          axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+          axesAfter: { connection: 0, valence: 0, arousal: -0.1, restraint: 0.7 },
+          couplingsFired: [],
+          effectiveBaselines: {},
+          event: { type: "user_shows_warmth" as const, intensity: 0.6, reason: "用户表达了感谢" },
+        },
+        emotionalAxisHistory: [],
+      };
+      const ctx = buildPromptContext(input as any);
+
+      assert.ok(Array.isArray(ctx.replyDirections), "replyDirections is array");
+      assert.equal(ctx.replyDirections!.length, 1, "replyDirections has 1 entry");
+      assert.equal(ctx.replyDirections![0], "请温柔回应", "replyDirections content");
+
+      assert.ok(typeof ctx.emotionalBandLine === "string", "emotionalBandLine is string");
+      assert.ok(ctx.emotionalBandLine!.length > 0, "emotionalBandLine non-empty");
+
+      assert.ok(Array.isArray(ctx.emotionalRenderRuleTexts), "emotionalRenderRuleTexts is array");
+
+      assert.equal(ctx.emotionalLastTraceEvent, "user_shows_warmth", "emotionalLastTraceEvent set");
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+    }
+  });
+
+  it("TG2 PromptContext fields are undefined when no emotional axis data", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔回应】吗？",
+      queryRewrite: mixedQueryRewrite(),
+      // No emotionalAxisBands, emotionalAxisLastTrace, emotionalAxisHistory
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.ok(Array.isArray(ctx.replyDirections), "replyDirections still array (from extraction)");
+    assert.equal(ctx.emotionalBandLine, undefined, "emotionalBandLine undefined without axis data");
+    assert.equal(ctx.emotionalRenderRuleTexts, undefined, "emotionalRenderRuleTexts undefined without axis data");
+    assert.equal(ctx.emotionalLastTraceEvent, undefined, "emotionalLastTraceEvent undefined without axis data");
   });
 });

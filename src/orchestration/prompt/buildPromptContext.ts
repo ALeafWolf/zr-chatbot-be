@@ -29,7 +29,7 @@ import {
   shouldUseAnnotationFallback,
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
-import { extractReplyDirections, serializeSegmentsForPrompt } from "./generationUserMessage";
+import { extractReplyDirections, serializeSegmentsForPrompt, relabelReplyDirectionsForHistory } from "./generationUserMessage";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
@@ -587,10 +587,14 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     .filter(Boolean)
     .join("\n\n");
 
+  // TG4: Relabel 【】 in prior user turns for generation-facing history
   const conversationHistory: Array<{
     role: "user" | "assistant";
     content: string;
-  }> = recentTurns.map((t) => ({ role: t.role, content: t.content }));
+  }> = recentTurns.map((t) => ({
+    role: t.role,
+    content: t.role === "user" ? relabelReplyDirectionsForHistory(t.content) : t.content,
+  }));
 
   return {
     systemPrompt,
