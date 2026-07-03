@@ -137,6 +137,9 @@ export interface DirectorSlimmable {
   formatResistanceSubsection?: string;
   /** Exact subsection text inside [BASE PERSONA] for [纠正方式], or undefined when absent. */
   canonCorrectionSubsection?: string;
+  /** TG2 (phase2c): Exact top-level block text of [TEMPORAL PREMISE HANDLING],
+   *  or undefined when canon narrative is absent. */
+  temporalPremiseBlock?: string;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -166,6 +169,7 @@ export const PromptContextSchema = z.object({
     emotionalBandLineBlock: z.string().optional(),
     formatResistanceSubsection: z.string().optional(),
     canonCorrectionSubsection: z.string().optional(),
+    temporalPremiseBlock: z.string().optional(),
   }).optional(),
   directorSlimmedBlocks: z.array(z.string()).optional(),
 });
@@ -397,6 +401,17 @@ export function buildPromptContext(input: {
     characterDefaults.relationship_expression,
   );
 
+  // TG2: Capture the temporal premise block for exact-string slimming export
+  const temporalPremiseBlock = hasCanonNarrative ? buildBlock(
+    "TEMPORAL PREMISE HANDLING",
+    "时序前提处理规则（仅当上方 [CANON NARRATIVE] 存在时适用）：\n"
+    + "- 将用户消息中的时序/地点表述与 canon 的开场背景、章节背景、摘要、关键事实进行对比。\n"
+    + "- 如果用户消息包含「第一次」「首次」等首次访问表述，而已注入的 canon 中明确显示该事件/地点是再次访问（包含「再次」「又」「上回」「前次」「第二次」等线索），则用户的前提与 canon 直接矛盾。\n"
+    + "- 当 canon 直接矛盾时：回复的第一句话必须进行平静的纠正（例如「我记得不太一样，那应该是我们第二次去枫河了……」），然后再继续回应记忆内容。\n"
+    + "- 例外：当前对话（RECENT CHAT）中的明确信息优先于 canon；不要在没有直接矛盾的情况下强行纠正。\n"
+    + "- 不要因为不同章节的 canon 片段而合并时间线或过度推断。",
+  ) : undefined;
+
   const systemPrompt = [
     buildBlock(
       "SYSTEM",
@@ -558,15 +573,7 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
           // TEMPORAL PREMISE HANDLING — immediately after CANON NARRATIVE to
           // instruct the model on resolving temporal/sequence false premises
           // (e.g. user says "第一次去枫河" but canon proves it's a return visit).
-          buildBlock(
-            "TEMPORAL PREMISE HANDLING",
-            "时序前提处理规则（仅当上方 [CANON NARRATIVE] 存在时适用）：\n"
-            + "- 将用户消息中的时序/地点表述与 canon 的开场背景、章节背景、摘要、关键事实进行对比。\n"
-            + "- 如果用户消息包含「第一次」「首次」等首次访问表述，而已注入的 canon 中明确显示该事件/地点是再次访问（包含「再次」「又」「上回」「前次」「第二次」等线索），则用户的前提与 canon 直接矛盾。\n"
-            + "- 当 canon 直接矛盾时：回复的第一句话必须进行平静的纠正（例如「我记得不太一样，那应该是我们第二次去枫河了……」），然后再继续回应记忆内容。\n"
-            + "- 例外：当前对话（RECENT CHAT）中的明确信息优先于 canon；不要在没有直接矛盾的情况下强行纠正。\n"
-            + "- 不要因为不同章节的 canon 片段而合并时间线或过度推断。",
-          ),
+          temporalPremiseBlock,
           ...(canonTruthMode === "strict_canon_recall"
             ? [
                 buildBlock(
@@ -639,6 +646,9 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
   if (canonCorrectionSubsection) {
     slimmable.canonCorrectionSubsection = canonCorrectionSubsection;
   }
+  if (temporalPremiseBlock) {
+    slimmable.temporalPremiseBlock = temporalPremiseBlock;
+  }
 
   return {
     systemPrompt,
@@ -655,7 +665,7 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     emotionalBandLine,
     emotionalRenderRuleTexts,
     emotionalLastTraceEvent,
-    directorSlimmable: slimmable.emotionalRenderBlock || slimmable.formatResistanceSubsection || slimmable.canonCorrectionSubsection
+    directorSlimmable: slimmable.emotionalRenderBlock || slimmable.formatResistanceSubsection || slimmable.canonCorrectionSubsection || slimmable.temporalPremiseBlock
       ? slimmable
       : undefined,
   };

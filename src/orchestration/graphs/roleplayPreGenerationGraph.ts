@@ -188,33 +188,38 @@ export function createRoleplayPreGenerationGraph(
 
       // TG1 (phase2c): Build bounded memory entry previews for fact_correction
       // Category order: 事件记忆 → 记忆综合 → 互动记忆 → 会话回溯. Cap at 10 lines.
+      // Each FULL preview line (prefix + body) is truncated to 160 chars so the
+      // spec requirement "every line is at most 160 characters" is enforced.
       const memPreviews: string[] = [];
       const cap = 10;
-      const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) : s;
 
       for (const e of resolved.structMemEntries ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (e.text ?? "").trim();
         if (!body) continue;
-        memPreviews.push(`[事件记忆|${e.entryType}, turn ${e.turnIndex}] ${truncate(body, 160)}`);
+        const line = `[事件记忆|${e.entryType}, turn ${e.turnIndex}] ${body}`;
+        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
       }
       for (const c of resolved.structMemConsolidations ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (c.summaryText ?? "").trim();
         if (!body) continue;
-        memPreviews.push(`[记忆综合|${c.scope}] ${truncate(body, 160)}`);
+        const line = `[记忆综合|${c.scope}] ${body}`;
+        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
       }
       for (const m of resolved.memories ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (m.summary ?? "").trim();
         if (!body) continue;
-        memPreviews.push(`[互动记忆|${m.memoryType}] ${truncate(body, 160)}`);
+        const line = `[互动记忆|${m.memoryType}] ${body}`;
+        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
       }
       for (const c of resolved.sessionRecall ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (c.chunkText ?? "").trim();
         if (!body) continue;
-        memPreviews.push(`[会话回溯|${c.chunkType}, turns ${c.turnStart}-${c.turnEnd}] ${truncate(body, 160)}`);
+        const line = `[会话回溯|${c.chunkType}, turns ${c.turnStart}-${c.turnEnd}] ${body}`;
+        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
       }
 
       const directorInput: ResponseDirectorInput = {
@@ -266,7 +271,7 @@ export function createRoleplayPreGenerationGraph(
       );
 
       // Validate tokens: warn + ignore unknown
-      const knownTokens = new Set(["emotional_render", "format_resistance", "canon_correction"]);
+      const knownTokens = new Set(["emotional_render", "format_resistance", "canon_correction", "temporal_premise"]);
       for (const token of slimSet) {
         if (!knownTokens.has(token)) {
           console.warn(`[responseDirector] unknown RESPONSE_DIRECTOR_SLIM_BLOCKS token: "${token}" — ignoring`);
@@ -332,6 +337,28 @@ export function createRoleplayPreGenerationGraph(
               slimmedBlocks.push("canon_correction");
             } else {
               console.warn("[responseDirector] canon_correction: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+        // TG2 (phase2c): temporal_premise — remove top-level block only when
+        // fact_correction fired (exact-substring, block + "\n\n" then "\n\n" + block)
+        if (
+          slimSet.has("temporal_premise") &&
+          output.fact_correction &&
+          slimmable.temporalPremiseBlock
+        ) {
+          const block = slimmable.temporalPremiseBlock;
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(block + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("temporal_premise");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + block, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("temporal_premise");
+            } else {
+              console.warn("[responseDirector] temporal_premise: exact-substring match failed — prompt unchanged");
             }
           }
         }

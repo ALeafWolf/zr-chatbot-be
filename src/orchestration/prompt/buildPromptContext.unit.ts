@@ -1165,6 +1165,25 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
     }
   });
 
+  it("TG2 directorSlimmable: temporalPremiseBlock present when canon narrative injected, absent when no canon", () => {
+    // Positive: explicitly set canon data so hasCanonNarrative is true
+    const inputWithCanon = {
+      ...base(),
+      canonChunks: [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any,
+    };
+    const ctx = buildPromptContext(inputWithCanon);
+    const slimmable = ctx.directorSlimmable;
+    assert.ok(slimmable, "directorSlimmable should exist with canon");
+    assert.ok(slimmable!.temporalPremiseBlock, "temporalPremiseBlock should be present with canon");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.temporalPremiseBlock!), "temporalPremiseBlock is exact substring of systemPrompt");
+    assert.ok(slimmable!.temporalPremiseBlock!.startsWith("[TEMPORAL PREMISE HANDLING]"), "block header is TEMPORAL PREMISE HANDLING");
+
+    // Negative: no canon → no temporalPremiseBlock
+    const ctxNoCanon = buildPromptContext({ ...base(), canonChunks: [], canonScenes: [] });
+    const slimmableNoCanon = ctxNoCanon.directorSlimmable;
+    assert.equal(slimmableNoCanon?.temporalPremiseBlock, undefined, "temporalPremiseBlock undefined when no canon");
+  });
+
   it("TG6 directorSlimmable: survives PromptContextSchema validation round-trip", () => {
     const sample: any = {
       systemPrompt: "test",
