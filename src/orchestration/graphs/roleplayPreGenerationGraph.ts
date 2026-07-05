@@ -9,6 +9,9 @@ import type { LoadRoleplayCharacterContextOutput } from "../roleplay/roleplayAda
 import type { ResolvedContext } from "../context/resolveContext";
 import type { PromptContext } from "../prompt/buildPromptContext";
 import { readRerankVariant } from "../../eval/experimentVariants";
+import type { ResponseDirectorInput } from "../director/runResponseDirector";
+import { formatDirectorCharacterDigest } from "../../character/psychology/formatInternalLogic";
+import { env } from "../../config/env";
 
 export type { RoleplayGraphDeps };
 
@@ -143,6 +146,244 @@ export function createRoleplayPreGenerationGraph(
     } catch (err) {
       console.error("[roleplayPreGenerationGraph/buildPrompt] error:", err);
       return { errors: [{ stage: "buildPrompt", message: err instanceof Error ? err.message : String(err) }] };
+    }
+  }
+
+  // TG2: Response director — produces [DIRECTOR NOTE] block, fail-open
+  async function responseDirectorNode(state: RoleplayGraphState): Promise<Partial<RoleplayGraphState>> {
+    if (!state.promptContext || !state.resolvedContext) return {};
+    if (!deps.runResponseDirectorFn || !env.RESPONSE_DIRECTOR_ENABLED) return {};
+
+    try {
+      // Build distilled input from available state (fail-open on missing data)
+      const promptCtx = state.promptContext;
+      const resolved = state.resolvedContext;
+      const characterCtx = state.characterContext;
+
+      // F1a: segments come from resolvedContext.queryRewrite (not promptContext, which
+      // has no queryRewrite field). Fall back to raw message on parse failure per design.
+      const queryRewrite = resolved.queryRewrite;
+      const segments = queryRewrite?.segments ?? [];
+
+      // F1a: reply directions come from promptContext (populated by TG1 extraction).
+      const replyDirections = promptCtx.replyDirections ?? [];
+
+      const recentTurnPreviews = (promptCtx.conversationHistory ?? [])
+        .slice(-4)
+        .map((m) => {
+          const preview = m.content.slice(0, 300);
+          return `${m.role}: ${preview}`;
+        });
+
+      // F1b: emotional director fields from promptContext (populated by buildPromptContext).
+      const bandLine = promptCtx.emotionalBandLine ?? "";
+      const renderRuleTexts = promptCtx.emotionalRenderRuleTexts ?? [];
+      const lastTraceEvent = promptCtx.emotionalLastTraceEvent;
+
+      // F1b: open thread titles from resolvedContext.openThreads.
+      const openThreadTitles = (resolved.openThreads ?? []).map((t) => t.text);
+
+      // F1b: latest turn delta facts from resolvedContext.latestTurnDelta.
+      const latestTurnDeltaFacts = resolved.latestTurnDelta?.facts ?? [];
+
+      // TG1 (phase2c): Build bounded memory entry previews for fact_correction
+      // Category order: 事件记忆 → 记忆综合 → 互动记忆 → 会话回溯. Cap at 10 lines.
+      // Each FULL preview line (prefix + body) is truncated to 160 chars so the
+      // spec requirement "every line is at most 160 characters" is enforced.
+      const memPreviews: string[] = [];
+      const cap = 10;
+
+      for (const e of resolved.structMemEntries ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (e.text ?? "").trim();
+        if (!body) continue;
+        const line = `[事件记忆|${e.entryType}, turn ${e.turnIndex}] ${body}`;
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
+      }
+      for (const c of resolved.structMemConsolidations ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (c.summaryText ?? "").trim();
+        if (!body) continue;
+        const line = `[记忆综合|${c.scope}] ${body}`;
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
+      }
+      for (const m of resolved.memories ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (m.summary ?? "").trim();
+        if (!body) continue;
+        const line = `[互动记忆|${m.memoryType}] ${body}`;
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
+      }
+      for (const c of resolved.sessionRecall ?? []) {
+        if (memPreviews.length >= cap) break;
+        const body = (c.chunkText ?? "").trim();
+        if (!body) continue;
+        const line = `[会话回溯|${c.chunkType}, turns ${c.turnStart}-${c.turnEnd}] ${body}`;
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
+      }
+
+      const directorInput: ResponseDirectorInput = {
+        segments,
+        replyDirections,
+        bandLine,
+        renderRuleTexts,
+        lastTraceEvent,
+        derivedState: {
+          inferredMood: resolved.derivedState?.inferredMood ?? "unknown",
+          inferredActivity: resolved.derivedState?.inferredActivity ?? "unknown",
+          conversationalStance: resolved.derivedState?.conversationalStance ?? "unknown",
+        },
+        openThreadTitles,
+        latestTurnDeltaFacts,
+        canonTruthMode: promptCtx.canonTruthMode ?? "open_roleplay",
+        selectedSourceSummaries: (promptCtx.selectedMemorySources ?? []).map(
+          (s: { source: string; usageInstruction: string }) => `${s.source} (${s.usageInstruction})`,
+        ),
+        relationshipStatus: characterCtx?.personaOverlay?.relationship_status ?? "unknown",
+        recentTurnPreviews,
+        // TG5: Character digest from internal_logic subset
+        characterDigest: characterCtx?.characterDefaults
+          ? formatDirectorCharacterDigest(characterCtx.characterDefaults)
+          : "",
+        // TG5: Continuity scope for stage-gating awareness
+        continuityScope:
+          state.session?.continuityScope
+          ?? characterCtx?.personaOverlay?.continuity_scope
+          ?? "",
+        // TG1 (phase2c): Bounded memory entry previews
+        memoryEntryPreviews: memPreviews,
+      };
+
+      const result = await deps.runResponseDirectorFn(directorInput, { signal: state._signal });
+
+      if (!result) return {};
+
+      const { note, output } = result;
+      let systemPrompt = promptCtx.systemPrompt;
+      const slimmedBlocks: string[] = [];
+
+      // TG6: Director-gated prompt slimming — apply BEFORE appending the note.
+      // Each step is individually no-op-safe: missing string, no match, unfired
+      // field, or absent flag ⇒ that unit is left untouched.
+      const slimEnv = env.RESPONSE_DIRECTOR_SLIM_BLOCKS;
+      const slimSet = new Set(
+        slimEnv.split(",").map((t) => t.trim()).filter(Boolean),
+      );
+
+      // Validate tokens: warn + ignore unknown
+      const knownTokens = new Set(["emotional_render", "format_resistance", "canon_correction", "temporal_premise"]);
+      for (const token of slimSet) {
+        if (!knownTokens.has(token)) {
+          console.warn(`[responseDirector] unknown RESPONSE_DIRECTOR_SLIM_BLOCKS token: "${token}" — ignoring`);
+        }
+      }
+
+      const slimmable = promptCtx.directorSlimmable;
+      if (slimmable) {
+        // 1. emotional_render: full block → band-line-only when mood_directive fired
+        if (
+          slimSet.has("emotional_render") &&
+          output.mood_directive &&
+          slimmable.emotionalRenderBlock &&
+          slimmable.emotionalBandLineBlock
+        ) {
+          const before = systemPrompt;
+          // Function replacer avoids interpreting $&, $', $`, $n in the
+          // band-line block as substitution patterns (PR review TG1.3).
+          // Assign to a local so TypeScript narrows past the guard condition
+          // through the arrow-function boundary.
+          const bandLineBlock = slimmable.emotionalBandLineBlock;
+          systemPrompt = systemPrompt.replace(slimmable.emotionalRenderBlock, () => bandLineBlock);
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("emotional_render");
+          } else {
+            console.warn("[responseDirector] emotional_render: exact-substring match failed — prompt unchanged");
+          }
+        }
+
+        // 2. format_resistance: remove subsection only when the field fired
+        if (
+          slimSet.has("format_resistance") &&
+          output.format_resistance &&
+          slimmable.formatResistanceSubsection
+        ) {
+          const sub = slimmable.formatResistanceSubsection;
+          // Try "sub + \n\n" (mid-body), then "\n\n + sub" (last part of body)
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(sub + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("format_resistance");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + sub, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("format_resistance");
+            } else {
+              console.warn("[responseDirector] format_resistance: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+
+        // 3. canon_correction: remove subsection only when the field fired
+        if (
+          slimSet.has("canon_correction") &&
+          output.fact_correction &&
+          slimmable.canonCorrectionSubsection
+        ) {
+          const sub = slimmable.canonCorrectionSubsection;
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(sub + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("canon_correction");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + sub, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("canon_correction");
+            } else {
+              console.warn("[responseDirector] canon_correction: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+        // TG2 (phase2c): temporal_premise — remove top-level block only when
+        // fact_correction fired (exact-substring, block + "\n\n" then "\n\n" + block)
+        if (
+          slimSet.has("temporal_premise") &&
+          output.fact_correction &&
+          slimmable.temporalPremiseBlock
+        ) {
+          const block = slimmable.temporalPremiseBlock;
+          let before = systemPrompt;
+          systemPrompt = systemPrompt.replace(block + "\n\n", "");
+          if (systemPrompt !== before) {
+            slimmedBlocks.push("temporal_premise");
+          } else {
+            before = systemPrompt;
+            systemPrompt = systemPrompt.replace("\n\n" + block, "");
+            if (systemPrompt !== before) {
+              slimmedBlocks.push("temporal_premise");
+            } else {
+              console.warn("[responseDirector] temporal_premise: exact-substring match failed — prompt unchanged");
+            }
+          }
+        }
+      }
+
+      // Append the [DIRECTOR NOTE] block as the last block of the system prompt
+      const updatedCtx = {
+        ...promptCtx,
+        systemPrompt: systemPrompt + "\n\n[DIRECTOR NOTE]\n" + note,
+        directorSlimmedBlocks: slimmedBlocks.length > 0 ? slimmedBlocks : undefined,
+      };
+
+      if (slimmedBlocks.length > 0) {
+        console.info(`[responseDirector] slimmed blocks: ${slimmedBlocks.join(", ")}`);
+      }
+
+      return { promptContext: updatedCtx };
+    } catch (err) {
+      console.warn("[roleplayPreGenerationGraph/responseDirector] error:", err);
+      return {};
     }
   }
 
@@ -309,6 +550,7 @@ export function createRoleplayPreGenerationGraph(
     .addNode("hybridScoreRerank", hybridScoreRerankNode)
     .addNode("assembleResolvedContext", assembleResolvedContextNode)
     .addNode("buildPrompt", buildPromptNode)
+    .addNode("responseDirector", responseDirectorNode)
     .addNode("errorSink", errorSinkNode)
     .addConditionalEdges(START, hasErrors, { __error__: END, __next__: "loadSession" })
     .addConditionalEdges("loadSession", hasErrors, { __error__: END, __next__: "loadCharacterContext" })
@@ -318,7 +560,8 @@ export function createRoleplayPreGenerationGraph(
     .addConditionalEdges("deterministicContextSelector", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
     .addConditionalEdges("hybridScoreRerank", hasErrors, { __error__: END, __next__: "assembleResolvedContext" })
     .addConditionalEdges("assembleResolvedContext", hasErrors, { __error__: END, __next__: "buildPrompt" })
-    .addEdge("buildPrompt", END)
+    .addConditionalEdges("buildPrompt", hasErrors, { __error__: END, __next__: "responseDirector" })
+    .addEdge("responseDirector", END)
     .addEdge("errorSink", END)
     .compile({ name: "orchestration.roleplay_pre_generation_graph" });
 }

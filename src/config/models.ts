@@ -88,6 +88,10 @@ export const models = {
     env.MEMORY_RERANK_MODEL,
     extractor,
   ),
+  director: resolveMemoryRerankModelBinding(
+    env.RESPONSE_DIRECTOR_MODEL,
+    extractor,
+  ),
   fallbacks: {
     classifyTurnRoute: parseFallbackModelBindings(
       env.CLASSIFY_TURN_ROUTE_FALLBACK_MODEL,
@@ -136,6 +140,10 @@ export const models = {
     structMemCrossSessionDistillation: parseFallbackModelBindings(
       env.STRUCTMEM_CROSS_SESSION_DISTILLATION_FALLBACK_MODEL,
       resolveConsolidationModelBinding(env.STRUCTMEM_CONSOLIDATION_MODEL, extractor),
+    ),
+    responseDirector: parseFallbackModelBindings(
+      env.RESPONSE_DIRECTOR_FALLBACK_MODEL,
+      resolveMemoryRerankModelBinding(env.RESPONSE_DIRECTOR_MODEL, extractor),
     ),
   },
 } as const;

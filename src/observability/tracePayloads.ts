@@ -68,6 +68,8 @@ const INJECTED_SOURCE_LABELS = [
   "STRUCTURED MEMORY SYNTHESIS",
   "INTERACTIVE MEMORY",
   "CANON NARRATIVE",
+  "REPLY DIRECTION",
+  "DIRECTOR NOTE",
 ];
 
 export function estimateInjectedTokensBySource(

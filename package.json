@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch --include \"./src/**/*.yaml\" src/server.ts",
+    "dev:watch": "cross-env CHOKIDAR_USEPOLLING=true CHOKIDAR_INTERVAL=300 tsx watch --include \"./src/**/*.yaml\" src/server.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsup src/server.ts --format cjs --dts --out-dir dist",
     "postbuild": "node scripts/copy-runtime-assets.mjs",

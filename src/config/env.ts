@@ -494,6 +494,40 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => parseEnabledFlag(v)),
 
+  // Response Director
+  // Per-turn LLM stage that produces a compact brief (scene frame, input reading,
+  // mood directive, beats, avoid-list, direction execution) rendered as a
+  // [DIRECTOR NOTE] block appended as the last system-prompt block.
+  // Defaults to the extractor (flash) model; can be overridden to pro via env only.
+  //
+  // ⚠️  Requires ROLEPLAY_GRAPH_STREAM_ENABLED=true to take effect. The director
+  // node lives only in the pre-generation graph (roleplayPreGenerationGraph.ts);
+  // the direct stream path has no director stage. When
+  // RESPONSE_DIRECTOR_ENABLED=true but ROLEPLAY_GRAPH_STREAM_ENABLED=false the
+  // director silently no-ops — see the startup guard below.
+  RESPONSE_DIRECTOR_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
+  RESPONSE_DIRECTOR_MODEL: z.string().default("EXTRACTOR_MODEL"),
+  RESPONSE_DIRECTOR_FALLBACK_MODEL: z.string().default(""),
+  // TG6: CSV of blocks to slim when the director provides a concrete directive.
+  // Valid tokens: emotional_render, format_resistance, canon_correction, temporal_premise.
+  // Default empty string = no slimming. Unknown tokens are warned + ignored.
+  RESPONSE_DIRECTOR_SLIM_BLOCKS: z.string().default(""),
+  // TG3: Per-step deadline in ms. When exceeded, the director is aborted and the
+  // turn proceeds without a [DIRECTOR NOTE] block (fail-open via the existing null
+  // path). Set this well above typical director latency so it only trims pathological
+  // tails. Bounded to [1000, 60000]; values outside the range are clamped.
+  RESPONSE_DIRECTOR_DEADLINE_MS: z
+    .string()
+    .default("15000")
+    .transform((v) => {
+      const n = parseInt(v.trim(), 10);
+      if (Number.isNaN(n) || n < 1000) return 15000;
+      return Math.min(60000, n);
+    }),
+
   // LangSmith
   // Optional tracing, project metadata, and eval dataset name.
   TRACE_ENVIRONMENT: z.string().default(process.env.NODE_ENV ?? "development"),
@@ -531,6 +565,18 @@ if (!parsed.success) {
 const frontendOrigins = parsed.data.FRONTEND_ORIGIN.split(",")
   .map((o) => o.trim())
   .filter((o) => o.length > 0);
+
+// Startup guard: RESPONSE_DIRECTOR_ENABLED requires ROLEPLAY_GRAPH_STREAM_ENABLED=true.
+// The director node lives only in the pre-generation graph; the direct stream path has
+// no director stage. Rather than silently no-oping, warn on the coupling gap so the
+// operator is aware the flag has no effect.
+if (parsed.data.RESPONSE_DIRECTOR_ENABLED && !parsed.data.ROLEPLAY_GRAPH_STREAM_ENABLED) {
+  console.warn(
+    "[env] RESPONSE_DIRECTOR_ENABLED=true has no effect when ROLEPLAY_GRAPH_STREAM_ENABLED=false — " +
+    "the director stage only runs on the graph stream path. Set ROLEPLAY_GRAPH_STREAM_ENABLED=true " +
+    "or leave RESPONSE_DIRECTOR_ENABLED=false.",
+  );
+}
 
 export const env = { ...parsed.data, frontendOrigins };
 export type Env = typeof env;

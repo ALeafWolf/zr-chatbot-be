@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import assert from "node:assert";
 import {
   createRoleplayPreGenerationGraph,
@@ -8,6 +8,7 @@ import type { RoleplayGraphDeps } from "./roleplayGraph";
 import { defaultRoleplayGraphDeps } from "./roleplayGraph";
 import { runHybridScoreRerank } from "../context/hybridScoreRerank";
 import type { ChatSession } from "../../db/schema/chat";
+import { env } from "../../config/env";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -39,6 +40,7 @@ function fakeSession(): ChatSession {
 const fakeCharacterDefaults = {
   character_id: "zuo_ran",
   name: "Zuo Ran",
+  archetype: "wandering_scholar",
   identity: "A wandering scholar.",
   speech_style: {
     language: "Chinese",
@@ -557,6 +559,889 @@ describe("roleplayPreGenerationGraph", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // TG2 — Response director node
+  // ---------------------------------------------------------------------------
+
+  it("responseDirector node: when enabled and successful, [DIRECTOR NOTE] block is appended to systemPrompt", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      let directorCalled = false;
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          directorCalled = true;
+          return { note: "场景框架：测试场景\n行为基调：保持温和", output: { scene_frame: "测试场景", input_reading: "", mood_directive: "保持温和", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(directorCalled, "responseDirectorFn should be called when enabled");
+      assert.ok(result.promptContext, "promptContext should exist");
+      assert.ok(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        "systemPrompt should contain [DIRECTOR NOTE] block",
+      );
+      assert.ok(
+        result.promptContext!.systemPrompt.includes("场景框架：测试场景"),
+        "director note content should be in systemPrompt",
+      );
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: disabled flag is a no-op (no LLM call, promptContext unchanged)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = false;
+
+      let directorCalled = false;
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          directorCalled = true;
+          return { note: "some block", output: { scene_frame: "", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(!directorCalled, "responseDirectorFn should NOT be called when disabled");
+      assert.ok(result.promptContext, "promptContext should exist");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "systemPrompt should NOT contain [DIRECTOR NOTE] when disabled",
+      );
+      assert.strictEqual(result.errors, undefined, "no errors when disabled");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: error in directorFn is fail-open (promptContext unchanged, no errors)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => {
+          throw new Error("director failure");
+        },
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext should exist even after director error");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "systemPrompt should NOT contain [DIRECTOR NOTE] on error",
+      );
+      assert.strictEqual(result.errors, undefined, "errors should be undefined (fail-open, not errorSink)");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: returns null is fail-open (no block appended)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      const deps = defaultTestDeps({
+        runResponseDirectorFn: async () => null,
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext exists");
+      assert.equal(
+        result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"),
+        false,
+        "no block when director returns null",
+      );
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: spy captures actual ResponseDirectorInput (F2)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+
+      let capturedInput: any = null;
+
+      // Build a resolved context with real segments
+      const contextWithSegments = {
+        ...fakeResolvedContextPrebuilt,
+        queryRewrite: {
+          intent: "general" as const,
+          confidence: 0.9,
+          segments: [
+            { lane: "user_speech" as const, text: "你好" },
+            { lane: "reply_direction" as const, text: "请温柔回应" },
+          ],
+          combined_for_embedding: "[user speech] 你好\n[reply direction suggestion]: 请温柔回应",
+          entities: [],
+          parseOk: true,
+          structuralParseOk: true,
+          labelOk: true,
+        },
+        openThreads: [
+          { id: "t1", source: "session_summary" as const, text: "answer the pending question", status: "open" as const, sourceTurnIndex: 2, score: 0.9 },
+        ],
+        latestTurnDelta: {
+          kind: "latest_turn_delta" as const,
+          sourceTurnStart: 2,
+          sourceTurnEnd: 3,
+          expiresAfterTurn: 7,
+          facts: ["the user asked to resume the scene"],
+          pendingActions: [],
+          relationshipSignals: [],
+        },
+      };
+
+      // Build a prompt context with reply directions and emotional data
+      const promptContextWithData = {
+        ...fakePromptContext,
+        replyDirections: ["请温柔回应"],
+        emotionalBandLine: "亲近：中 情绪：中 唤起：低 克制：高",
+        emotionalRenderRuleTexts: ["R1: 放松改变的是温度"],
+        emotionalLastTraceEvent: "user_shows_warmth",
+        canonTruthMode: "open_roleplay" as const,
+        selectedMemorySources: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithSegments as any,
+        buildPromptContext: async () => promptContextWithData as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "场景框架：测试场景", output: { scene_frame: "测试场景", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好【请温柔】吗？" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "spy should have received the director input");
+      assert.ok(capturedInput.segments, "segments present");
+      assert.equal(capturedInput.segments.length, 2, "segments count");
+      assert.ok(capturedInput.replyDirections, "replyDirections present");
+      assert.equal(capturedInput.replyDirections[0], "请温柔回应", "reply direction");
+      assert.ok(capturedInput.bandLine, "bandLine");
+      assert.ok(capturedInput.openThreadTitles.length > 0, "open threads");
+      assert.ok(capturedInput.latestTurnDeltaFacts.length > 0, "turn delta facts");
+      // TG5: characterDigest and continuityScope are populated
+      assert.ok("characterDigest" in capturedInput, "characterDigest present in input");
+      assert.ok("continuityScope" in capturedInput, "continuityScope present in input");
+      // No internal_logic in fakeCharacterDefaults → digest is empty
+      assert.equal(capturedInput.characterDigest, "", "characterDigest empty when no internal_logic");
+      // Session has continuityScope="main"
+      assert.equal(capturedInput.continuityScope, "main", "continuityScope from session");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: characterDigest populated from characterDefaults.internal_logic, continuityScope from session", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Character with internal_logic
+      const characterWithDigest = {
+        ...fakeCharacterContext,
+        characterDefaults: {
+          ...fakeCharacterDefaults,
+          internal_logic: {
+            core_motivation: "守护珍视的人",
+            core_fear: "辜负他人",
+            defense_mechanism: "沉默/转移话题",
+            transition_rule: "克制→停顿→试探性松动",
+            relationship_scope_gate: "与关系阶段匹配",
+          },
+        },
+      };
+
+      const deps = defaultTestDeps({
+        loadCharacterContext: async () => characterWithDigest as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "场景框架：test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.ok(capturedInput.characterDigest, "characterDigest should be non-empty");
+      assert.ok(capturedInput.characterDigest.includes("守护珍视的人"), "digest contains internal_logic content");
+      assert.equal(capturedInput.continuityScope, "main", "continuityScope from session");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: characterDigest is empty when characterContext has no internal_logic", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Character with undefined internal_logic
+      const characterNoDigest = {
+        ...fakeCharacterContext,
+        characterDefaults: {
+          ...fakeCharacterDefaults,
+          internal_logic: undefined,
+        },
+      };
+
+      const deps = defaultTestDeps({
+        loadCharacterContext: async () => characterNoDigest as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "场景框架：test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.equal(capturedInput.characterDigest, "", "characterDigest empty when no internal_logic");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG1 (phase2c) — Memory entry previews
+  // ---------------------------------------------------------------------------
+
+  it("responseDirector node: memoryEntryPreviews populated from resolved-context memory arrays in category order", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      const contextWithMemories = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: [
+          { id: "e1", entryType: "dialogue", turnIndex: 3, text: "左然说他会等很久", importanceScore: null, confidenceScore: null, cosineSimilarity: 0.9, finalScore: 0.9 },
+        ],
+        structMemConsolidations: [
+          { id: "c1", scope: "current_session", summaryText: "用户与左然重归于好", turnStart: 1, turnEnd: 10, confidenceScore: null, cosineSimilarity: 0.8, finalScore: 0.8 },
+        ],
+        memories: [
+          { id: "m1", memoryType: "observation", summary: "用户今天情绪不高", importanceScore: 0.5, emotionScore: 0, reuseCount: 0, cosineSimilarity: 0.7 },
+        ],
+        sessionRecall: [
+          { id: "r1", turnStart: 1, turnEnd: 2, chunkText: "用户说想重新开始", chunkType: "session_chunk", cosineSimilarity: 0.6, finalScore: 0.6 },
+        ],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithMemories as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "scene test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.ok(Array.isArray(capturedInput.memoryEntryPreviews), "memoryEntryPreviews is array");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 4, "4 previews from 4 categories");
+
+      // Category order: 事件记忆 → 记忆综合 → 互动记忆 → 会话回溯
+      assert.ok(capturedInput.memoryEntryPreviews[0].startsWith("[事件记忆|"), "first is struct mem entry");
+      assert.ok(capturedInput.memoryEntryPreviews[1].startsWith("[记忆综合|"), "second is consolidation");
+      assert.ok(capturedInput.memoryEntryPreviews[2].startsWith("[互动记忆|"), "third is interactive memory");
+      assert.ok(capturedInput.memoryEntryPreviews[3].startsWith("[会话回溯|"), "fourth is session recall");
+
+      // Every line must be at most 160 characters (spec requirement)
+      for (const line of capturedInput.memoryEntryPreviews) {
+        assert.ok(line.length <= 160, `preview line length ${line.length} ≤ 160: "${line.slice(0, 40)}..."`);
+      }
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: memoryEntryPreviews capped at 10 lines with empty-body skipping", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // Create 15 struct mem entries to test the 10-line cap
+      const manyEntries = Array.from({ length: 15 }, (_, i) => ({
+        id: `e${i}`, entryType: "dialogue", turnIndex: i, text: `记忆条目第${i + 1}条`,
+        importanceScore: null, confidenceScore: null, cosineSimilarity: 0.9, finalScore: 0.9,
+      }));
+
+      const contextWithMany = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: manyEntries,
+        structMemConsolidations: [],
+        memories: [],
+        sessionRecall: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithMany as any,
+        buildPromptContext: async () => ({
+          systemPrompt: "[SYSTEM]\ntest",
+          conversationHistory: [],
+        }) as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 10, "capped at 10 lines");
+      assert.ok(capturedInput.memoryEntryPreviews[0].includes("记忆条目第1条"), "first entry present");
+      assert.ok(capturedInput.memoryEntryPreviews[9].includes("记忆条目第10条"), "tenth entry present");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: long memory body produces full preview line truncated to ≤160 chars", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      // A body long enough that the full formatted line exceeds 160 chars
+      const longBody = "A".repeat(300);
+      const contextWithLong = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: [
+          { id: "e1", entryType: "dialogue", turnIndex: 3, text: longBody, importanceScore: null, confidenceScore: null, cosineSimilarity: 0.9, finalScore: 0.9 },
+        ],
+        structMemConsolidations: [],
+        memories: [],
+        sessionRecall: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextWithLong as any,
+        buildPromptContext: async () => ({ systemPrompt: "[SYSTEM]\ntest", conversationHistory: [] }) as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 1, "one preview line");
+      const line = capturedInput.memoryEntryPreviews[0];
+      assert.ok(line.length <= 160, `full preview line length ${line.length} ≤ 160`);
+      assert.ok(line.startsWith("[事件记忆|dialogue, turn 3] "), "prefix preserved");
+      // The body should be truncated such that the entire line is exactly or up to 160 chars
+      assert.equal(line.length, 160, "truncated to exactly 160 when body is long enough");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  it("responseDirector node: all-empty memory arrays produce empty memoryEntryPreviews", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      let capturedInput: any = null;
+
+      const contextEmpty = {
+        ...fakeResolvedContextPrebuilt,
+        structMemEntries: [],
+        structMemConsolidations: [],
+        memories: [],
+        sessionRecall: [],
+      };
+
+      const deps = defaultTestDeps({
+        assembleResolvedContext: async () => contextEmpty as any,
+        buildPromptContext: async () => ({ systemPrompt: "[SYSTEM]\ntest", conversationHistory: [] }) as any,
+        runResponseDirectorFn: async (input: any) => {
+          capturedInput = input;
+          return { note: "test", output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" } };
+        },
+      });
+
+      await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "你好" },
+        deps,
+      );
+
+      assert.ok(capturedInput, "captured input");
+      assert.ok(Array.isArray(capturedInput.memoryEntryPreviews), "memoryEntryPreviews is array");
+      assert.equal(capturedInput.memoryEntryPreviews.length, 0, "empty when no memory arrays");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG2 (phase2c) — temporal_premise slimming
+  // ---------------------------------------------------------------------------
+
+  const TP_BLOCK = "[TEMPORAL PREMISE HANDLING]\n测试时序处理规则内容";
+
+  function tpPromptContext(extra?: Record<string, unknown>) {
+    return {
+      systemPrompt: `[SYSTEM]\ntest\n\n[CANON NARRATIVE]\ntest\n\n${TP_BLOCK}\n\n[STYLE SALIENCE REMINDER]\ntest`,
+      conversationHistory: [],
+      directorSlimmable: {
+        temporalPremiseBlock: TP_BLOCK,
+      },
+      ...extra,
+    };
+  }
+
+  it("TG2 slimming: temporal_premise block removed when fact_correction fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "temporal_premise";
+
+      const promptCtx = tpPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "test",
+          output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "纠正时序矛盾", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.equal(sp.includes(TP_BLOCK), false, "temporal_premise block removed when fact_correction fired");
+      assert.ok(sp.includes("[DIRECTOR NOTE]"), "DIRECTOR NOTE still appended");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("temporal_premise"), "slimmedBlocks includes temporal_premise");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG2 slimming: temporal_premise block kept when fact_correction NOT fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "temporal_premise";
+
+      const promptCtx = tpPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "test",
+          output: { scene_frame: "test", input_reading: "", mood_directive: "", fact_correction: "", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.ok(sp.includes(TP_BLOCK), "temporal_premise block kept when fact_correction not fired");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when nothing slimmed");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG2 slimming: no temporalPremiseBlock export when no canon — no-op (note still appended)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "temporal_premise";
+
+      // No directorSlimmable at all — no canon in this turn
+      const promptCtx = {
+        systemPrompt: "[SYSTEM]\ntest",
+        conversationHistory: [],
+      };
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: { scene_frame: "测试", input_reading: "", mood_directive: "", fact_correction: "纠正", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.ok(sp.includes("[DIRECTOR NOTE]"), "note still appended");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when no export");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG2 slimming: tampered temporalPremiseBlock leaves prompt untouched and warns", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    const warnMock = mock.method(console, "warn");
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "temporal_premise";
+
+      // Tampered: the exported block string does NOT appear in systemPrompt
+      const promptCtx = {
+        systemPrompt: "[SYSTEM]\ntest\n\n[STYLE SALIENCE REMINDER]\ntest",
+        conversationHistory: [],
+        directorSlimmable: {
+          temporalPremiseBlock: "[TEMPORAL PREMISE HANDLING]\nnonexistent",
+        },
+      };
+      const systemPromptBefore = promptCtx.systemPrompt;
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: { scene_frame: "测试", input_reading: "", mood_directive: "", fact_correction: "纠正", beats: [], avoid: [], stage_gate: "", format_resistance: "", direction_execution: "" },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext!.systemPrompt.startsWith(systemPromptBefore), "prompt prefix unchanged on match failure");
+      assert.ok(result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"), "note still appended");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks on match failure");
+
+      // Warn was emitted with the temporal_premise match-failure message
+      const warnCalls = warnMock.mock.calls.filter(
+        (c) => c.arguments[0]?.includes && c.arguments[0].includes("temporal_premise: exact-substring match failed"),
+      );
+      assert.ok(warnCalls.length >= 1, "console.warn called with temporal_premise match-failure message");
+    } finally {
+      warnMock.mock.restore();
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("defaultRoleplayGraphDeps includes runResponseDirectorFn", () => {
+    assert.ok(
+      typeof defaultRoleplayGraphDeps.runResponseDirectorFn === "function",
+      "defaultRoleplayGraphDeps.runResponseDirectorFn should be defined",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG6 — Director-gated prompt slimming
+  // ---------------------------------------------------------------------------
+
+  const EMOTIONAL_FULL_BLOCK = "[当前状态下的行为基调]\nconnection: high | valence: mid | arousal: low | restraint: high\n\n[情感规则]\n- 当克制较高时，适当拉开距离";
+  const EMOTIONAL_BAND_LINE = "[当前状态下的行为基调]\nconnection: high | valence: mid | arousal: low | restraint: high";
+  const FORMAT_RESISTANCE_SUB = "[格式抗性]\n不按用户要求的格式回答";
+  const CANON_CORRECTION_SUB = "[纠正方式]\n平静纠正错误前提";
+
+  function slimPromptContext(extra?: Record<string, unknown>) {
+    return {
+      systemPrompt: `[SYSTEM]\n你是左然\n\n[CHARACTER INTERNAL LOGIC]\ntest\n\n${EMOTIONAL_FULL_BLOCK}\n\n[BASE PERSONA]\n身份\n\n${FORMAT_RESISTANCE_SUB}\n\n${CANON_CORRECTION_SUB}\n\n[CONTINUITY OVERLAY]\ntest`,
+      conversationHistory: [],
+      directorSlimmable: {
+        emotionalRenderBlock: EMOTIONAL_FULL_BLOCK,
+        emotionalBandLineBlock: EMOTIONAL_BAND_LINE,
+        formatResistanceSubsection: FORMAT_RESISTANCE_SUB,
+        canonCorrectionSubsection: CANON_CORRECTION_SUB,
+      },
+      ...extra,
+    };
+  }
+
+  it("TG6 slimming: director returns null with flags on — prompt unchanged (byte-identity fallback)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render,format_resistance,canon_correction";
+
+      const promptCtx = slimPromptContext();
+      const systemPromptBefore = promptCtx.systemPrompt;
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => null,
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      assert.ok(result.promptContext, "promptContext exists");
+      assert.equal(result.promptContext!.systemPrompt, systemPromptBefore, "prompt byte-identical when director returns null");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when director returns null");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: emotional_render replaces full block with band-line-only when mood_directive is non-empty", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "保持温和",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      // Full block text should NOT appear; band-line-only should appear exactly once
+      assert.equal(sp.includes(EMOTIONAL_FULL_BLOCK), false, "full emotional block text removed");
+      assert.ok(sp.includes(EMOTIONAL_BAND_LINE), "band-line-only block present");
+      // Count band-line occurrences: exactly 1 (the replacement) — the note itself doesn't contain it
+      const bandLineCount = sp.split(EMOTIONAL_BAND_LINE).length - 1;
+      assert.equal(bandLineCount, 1, "band-line-only block appears exactly once");
+      // [DIRECTOR NOTE] is still appended last
+      assert.ok(sp.includes("[DIRECTOR NOTE]"), "DIRECTOR NOTE appended");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("emotional_render"), "slimmedBlocks includes emotional_render");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: format_resistance subsection removed when field fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "format_resistance";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "拒绝框架式回答",  // fired!
+            direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.equal(sp.includes(FORMAT_RESISTANCE_SUB), false, "formatResistance subsection removed when fired");
+      assert.ok(sp.includes(CANON_CORRECTION_SUB), "canonCorrection subsection still present (not flagged)");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("format_resistance"), "slimmedBlocks includes format_resistance");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: format_resistance subsection kept when field NOT fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "format_resistance";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "",  // NOT fired
+            direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.ok(sp.includes(FORMAT_RESISTANCE_SUB), "formatResistance subsection kept when not fired");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks when nothing slimmed");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: canon_correction subsection removed when fact_correction fired", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "canon_correction";
+
+      const promptCtx = slimPromptContext();
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "",
+            fact_correction: "纠正某个前提",  // fired!
+            beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      const sp = result.promptContext!.systemPrompt;
+      assert.equal(sp.includes(CANON_CORRECTION_SUB), false, "canonCorrection subsection removed when fired");
+      assert.ok(sp.includes(FORMAT_RESISTANCE_SUB), "formatResistance subsection still present (not flagged)");
+      assert.ok(result.promptContext!.directorSlimmedBlocks?.includes("canon_correction"), "slimmedBlocks includes canon_correction");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
+  it("TG6 slimming: match failure leaves prompt untouched and warns (simulated by tampered slimmable)", async () => {
+    const savedEnabled = (env as any).RESPONSE_DIRECTOR_ENABLED;
+    const savedSlim = (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS;
+    try {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = true;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = "emotional_render";
+
+      // Tampered slimmable: the emotionalRenderBlock string does NOT appear in systemPrompt
+      const promptCtx = {
+        systemPrompt: "[SYSTEM]\n你是左然\n\n[BASE PERSONA]\n身份",
+        conversationHistory: [],
+        directorSlimmable: {
+          emotionalRenderBlock: "[当前状态下的行为基调]\nnonexistent content",
+          emotionalBandLineBlock: "[当前状态下的行为基调]\nband only",
+        },
+      };
+      const systemPromptBefore = promptCtx.systemPrompt;
+
+      const deps = defaultTestDeps({
+        buildPromptContext: async () => promptCtx as any,
+        runResponseDirectorFn: async () => ({
+          note: "场景框架：测试",
+          output: {
+            scene_frame: "测试", input_reading: "", mood_directive: "保持温和",
+            fact_correction: "", beats: [], avoid: [], stage_gate: "",
+            format_resistance: "", direction_execution: "",
+          },
+        }),
+      });
+
+      const result = await runRoleplayPreGenerationGraph(
+        { sessionId: "sess_rp_test", userMessage: "test" },
+        deps,
+      );
+
+      // Prompt should be unchanged except for the appended note
+      assert.ok(result.promptContext!.systemPrompt.startsWith(systemPromptBefore), "prompt prefix unchanged on match failure");
+      assert.ok(result.promptContext!.systemPrompt.includes("[DIRECTOR NOTE]"), "note still appended");
+      assert.equal(result.promptContext!.directorSlimmedBlocks, undefined, "no slimmedBlocks on match failure");
+    } finally {
+      (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+      (env as any).RESPONSE_DIRECTOR_SLIM_BLOCKS = savedSlim;
+    }
+  });
+
   // Missing explicit routing test
   // ---------------------------------------------------------------------------
 

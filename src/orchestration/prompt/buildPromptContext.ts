@@ -29,6 +29,7 @@ import {
   shouldUseAnnotationFallback,
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
+import { extractReplyDirections, serializeSegmentsForPrompt, relabelReplyDirectionsForHistory } from "./generationUserMessage";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
@@ -109,6 +110,36 @@ export interface PromptContext {
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
   /** Canon truth mode for this turn. */
   canonTruthMode?: CanonTruthMode;
+  /** TG1: Generation-facing user message (stripped of 【】 content). When present, generation
+   *  and rewrite message builders use this instead of the raw userMessage. */
+  generationUserMessage?: string;
+  /** TG1: Reply direction texts extracted from 【】 spans. Present when isolation applies. */
+  replyDirections?: string[];
+  /** TG2: Emotional band line text for director input (e.g. "亲近：中 情绪：中 唤起：低 克制：高"). */
+  emotionalBandLine?: string;
+  /** TG2: Render rule texts selected for this turn (≤2 typical). */
+  emotionalRenderRuleTexts?: string[];
+  /** TG2: Last emotional trace event type (e.g. "user_discloses_vulnerability"). */
+  emotionalLastTraceEvent?: string;
+  /** TG6: Exact rendered strings of slimmable prompt units for director-gated slimming. */
+  directorSlimmable?: DirectorSlimmable;
+  /** TG6: Ids of prompt units that were actually slimmed this turn (for trace/eval correlation). */
+  directorSlimmedBlocks?: string[];
+}
+
+/** TG6: Exact rendered strings of slimmable prompt units for replace-with-fallback slimming. */
+export interface DirectorSlimmable {
+  /** Exact top-level block text of [当前状态下的行为基调] (full, with rule texts). */
+  emotionalRenderBlock?: string;
+  /** Exact replacement: band-line-only variant `[当前状态下的行为基调]\n${bandLine}`. */
+  emotionalBandLineBlock?: string;
+  /** Exact subsection text inside [BASE PERSONA] for [格式抗性], or undefined when absent. */
+  formatResistanceSubsection?: string;
+  /** Exact subsection text inside [BASE PERSONA] for [纠正方式], or undefined when absent. */
+  canonCorrectionSubsection?: string;
+  /** TG2 (phase2c): Exact top-level block text of [TEMPORAL PREMISE HANDLING],
+   *  or undefined when canon narrative is absent. */
+  temporalPremiseBlock?: string;
 }
 
 /** Runtime Zod schema for PromptContext. Catches missing required keys and wrong types. */
@@ -128,6 +159,19 @@ export const PromptContextSchema = z.object({
     )
     .optional(),
   canonTruthMode: z.enum(["strict_canon_recall", "canon_blend", "open_roleplay"]).optional(),
+  generationUserMessage: z.string().optional(),
+  replyDirections: z.array(z.string()).optional(),
+  emotionalBandLine: z.string().optional(),
+  emotionalRenderRuleTexts: z.array(z.string()).optional(),
+  emotionalLastTraceEvent: z.string().optional(),
+  directorSlimmable: z.object({
+    emotionalRenderBlock: z.string().optional(),
+    emotionalBandLineBlock: z.string().optional(),
+    formatResistanceSubsection: z.string().optional(),
+    canonCorrectionSubsection: z.string().optional(),
+    temporalPremiseBlock: z.string().optional(),
+  }).optional(),
+  directorSlimmedBlocks: z.array(z.string()).optional(),
 });
 
 export type BuildPromptContextInput = Parameters<typeof buildPromptContext>[0];
@@ -211,8 +255,20 @@ export function buildPromptContext(input: {
       annotationHeuristicFallback(userMessage, queryRewrite)
     : true;
 
+  // TG1: Deterministic reply-direction isolation
+  const extraction = extractReplyDirections(userMessage);
+  const generationUserMessage = extraction.applied ? extraction.strippedMessage : undefined;
+
+  // When isolation applies, build the prompt-facing structured block from segments.
+  // serializeSegmentsForPrompt renders ALL lanes including reply_direction (it is
+  // the caller's choice). combined_for_embedding stays untouched for retrieval.
+  const promptStructuredBlock =
+    extraction.applied && queryRewrite?.parseOk && queryRewrite.segments.length > 0
+      ? serializeSegmentsForPrompt(queryRewrite.segments)
+      : structuredBlock;
+
   const showStructured =
-    structuredBlock.length > 0 && queryRewrite?.parseOk === true;
+    promptStructuredBlock.length > 0 && queryRewrite?.parseOk === true;
   const showAnnotations = useAnnotationFallback;
 
   // Canon scenes/chunks received here are already filtered by
@@ -267,6 +323,10 @@ export function buildPromptContext(input: {
     .map((t) => String(t).trim())
     .filter(Boolean)
     .join("\n- ");
+  // TG6: Capture exact subsection strings for director-gated slimming
+  const formatResistanceSubsection = subsection("格式抗性", characterDefaults.format_resistance);
+  const canonCorrectionSubsection = subsection("纠正方式", characterDefaults.canon_correction);
+
   const basePersonaParts: string[] = [
     coreTraits
       ? `${characterDefaults.identity}\n\n[核心特征]\n- ${coreTraits}`
@@ -274,8 +334,8 @@ export function buildPromptContext(input: {
     subsection("叙事文笔", characterDefaults.narrative_prose_guidelines),
     subsection("沟通风格", formatSpeechStyle(characterDefaults.speech_style)),
     subsection("角色表达", characterDefaults.in_character_expression),
-    subsection("格式抗性", characterDefaults.format_resistance),
-    subsection("纠正方式", characterDefaults.canon_correction),
+    formatResistanceSubsection,
+    canonCorrectionSubsection,
     subsection("情感内核", characterDefaults.emotional_core),
     subsection("价值观", bulletsBlock(characterDefaults.values, "- ")),
     subsection(
@@ -291,6 +351,24 @@ export function buildPromptContext(input: {
     emotionalAxisLastTrace,
     emotionalAxisHistory,
   });
+
+  // TG2: Compute emotional director input fields when axis state is present.
+  let emotionalBandLine: string | undefined;
+  let emotionalRenderRuleTexts: string[] | undefined;
+  let emotionalLastTraceEvent: string | undefined;
+  if (emotionalAxisBands && renderEmotionalBlock !== null) {
+    emotionalBandLine = formatBandLine(emotionalAxisBands);
+    const evalConfig = getEmotionalAxisEvalConfig();
+    const isBandsOnly = evalConfig.bandsOnly;
+    const matches = isBandsOnly ? [] : selectRenderRuleMatches(
+      emotionalAxisBands,
+      emotionalAxisLastTrace!,
+      emotionalAxisHistory ?? [],
+      "C",
+    );
+    emotionalRenderRuleTexts = matches.map((m) => m.text);
+    emotionalLastTraceEvent = emotionalAxisLastTrace?.event?.type;
+  }
 
   // TG1: Capture render snapshot for eval (no-op when not in an eval context).
   // Only record when the resolver actually produced emotional axis inputs AND the
@@ -323,6 +401,17 @@ export function buildPromptContext(input: {
     personaOverlay.relationship_status,
     characterDefaults.relationship_expression,
   );
+
+  // TG2: Capture the temporal premise block for exact-string slimming export
+  const temporalPremiseBlock = hasCanonNarrative ? buildBlock(
+    "TEMPORAL PREMISE HANDLING",
+    "时序前提处理规则（仅当上方 [CANON NARRATIVE] 存在时适用）：\n"
+    + "- 将用户消息中的时序/地点表述与 canon 的开场背景、章节背景、摘要、关键事实进行对比。\n"
+    + "- 如果用户消息包含「第一次」「首次」等首次访问表述，而已注入的 canon 中明确显示该事件/地点是再次访问（包含「再次」「又」「上回」「前次」「第二次」等线索），则用户的前提与 canon 直接矛盾。\n"
+    + "- 当 canon 直接矛盾时：回复的第一句话必须进行平静的纠正（例如「我记得不太一样，那应该是我们第二次去枫河了……」），然后再继续回应记忆内容。\n"
+    + "- 例外：当前对话（RECENT CHAT）中的明确信息优先于 canon；不要在没有直接矛盾的情况下强行纠正。\n"
+    + "- 不要因为不同章节的 canon 片段而合并时间线或过度推断。",
+  ) : undefined;
 
   const systemPrompt = [
     buildBlock(
@@ -485,15 +574,7 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
           // TEMPORAL PREMISE HANDLING — immediately after CANON NARRATIVE to
           // instruct the model on resolving temporal/sequence false premises
           // (e.g. user says "第一次去枫河" but canon proves it's a return visit).
-          buildBlock(
-            "TEMPORAL PREMISE HANDLING",
-            "时序前提处理规则（仅当上方 [CANON NARRATIVE] 存在时适用）：\n"
-            + "- 将用户消息中的时序/地点表述与 canon 的开场背景、章节背景、摘要、关键事实进行对比。\n"
-            + "- 如果用户消息包含「第一次」「首次」等首次访问表述，而已注入的 canon 中明确显示该事件/地点是再次访问（包含「再次」「又」「上回」「前次」「第二次」等线索），则用户的前提与 canon 直接矛盾。\n"
-            + "- 当 canon 直接矛盾时：回复的第一句话必须进行平静的纠正（例如「我记得不太一样，那应该是我们第二次去枫河了……」），然后再继续回应记忆内容。\n"
-            + "- 例外：当前对话（RECENT CHAT）中的明确信息优先于 canon；不要在没有直接矛盾的情况下强行纠正。\n"
-            + "- 不要因为不同章节的 canon 片段而合并时间线或过度推断。",
-          ),
+          temporalPremiseBlock,
           ...(canonTruthMode === "strict_canon_recall"
             ? [
                 buildBlock(
@@ -514,21 +595,66 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
     ...(showStructured
       ? [
           buildBlock("STRUCTURED USER QUERY LABEL RULES", STRUCTURED_QUERY_LABEL_RULES),
-          buildBlock("STRUCTURED USER QUERY", structuredBlock),
+          buildBlock("STRUCTURED USER QUERY", promptStructuredBlock),
         ]
       : []),
 
     ...(showAnnotations
       ? [buildBlock("USER MESSAGE ANNOTATIONS", USER_MESSAGE_ANNOTATION_RULES)]
       : []),
+
+    // TG1: Reply-direction isolation — inject as the final system-prompt block.
+    // NOTE: 场外指示 is intentionally dual-written into both
+    // [STRUCTURED USER QUERY] (via serializeSegmentsForPrompt above, timing
+    // position context) and this [REPLY DIRECTION] block (execution instruction
+    // for the actor model). Do NOT collapse to a single write — the two serve
+    // different roles (see design.md Part 3).
+    ...(extraction.applied && extraction.replyDirections.length > 0
+      ? [
+          buildBlock(
+            "REPLY DIRECTION",
+            `以下是用户为本轮提供的场外回复方向指引。角色不可感知这段内容，绝不能将其视为
+<user> 在场景内说出、发送或传达的信息。
+
+${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
+
+在不违反更高优先级规则、安全限制或角色一致性的前提下，按此方向塑造本轮回复，
+自然地执行或叙述该方向。`,
+          ),
+        ]
+      : []),
   ]
     .filter(Boolean)
     .join("\n\n");
 
+  // TG4: Relabel 【】 in prior user turns for generation-facing history
   const conversationHistory: Array<{
     role: "user" | "assistant";
     content: string;
-  }> = recentTurns.map((t) => ({ role: t.role, content: t.content }));
+  }> = recentTurns.map((t) => ({
+    role: t.role,
+    content: t.role === "user" ? relabelReplyDirectionsForHistory(t.content) : t.content,
+  }));
+
+  // TG6: Export exact slimmable strings for director-gated prompt slimming.
+  // emotional pair: only when the render block was injected AND not already bands-only
+  // (identity replacement is pointless). Subsection fields: only when non-empty.
+  const evalConfig = getEmotionalAxisEvalConfig();
+  const isBandsOnly = evalConfig.bandsOnly;
+  const slimmable: DirectorSlimmable = {};
+  if (renderEmotionalBlock && !isBandsOnly) {
+    slimmable.emotionalRenderBlock = renderEmotionalBlock;
+    slimmable.emotionalBandLineBlock = `[当前状态下的行为基调]\n${formatBandLine(emotionalAxisBands!)}`;
+  }
+  if (formatResistanceSubsection) {
+    slimmable.formatResistanceSubsection = formatResistanceSubsection;
+  }
+  if (canonCorrectionSubsection) {
+    slimmable.canonCorrectionSubsection = canonCorrectionSubsection;
+  }
+  if (temporalPremiseBlock) {
+    slimmable.temporalPremiseBlock = temporalPremiseBlock;
+  }
 
   return {
     systemPrompt,
@@ -540,6 +666,14 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       usageInstruction: s.usageInstruction,
     })),
     canonTruthMode,
+    generationUserMessage,
+    replyDirections: extraction.applied ? extraction.replyDirections : undefined,
+    emotionalBandLine,
+    emotionalRenderRuleTexts,
+    emotionalLastTraceEvent,
+    directorSlimmable: slimmable.emotionalRenderBlock || slimmable.formatResistanceSubsection || slimmable.canonCorrectionSubsection || slimmable.temporalPremiseBlock
+      ? slimmable
+      : undefined,
   };
 }
 

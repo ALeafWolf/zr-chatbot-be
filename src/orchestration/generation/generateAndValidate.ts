@@ -177,8 +177,11 @@ function buildToolMessages(
   markerInjected: boolean;
   markerReason: string;
 } {
+  // TG1: When isolation applies, use the stripped generation-facing message
+  // instead of the raw user message. The generator must not see 【】 content.
+  const generationMessage = promptContext.generationUserMessage ?? userMessage;
   const decorated = decorateUserMessageForGeneration({
-    userMessage,
+    userMessage: generationMessage,
     isFirstUserTurn: options?.isFirstUserTurn ?? false,
   });
 
@@ -208,8 +211,12 @@ function buildRewriteToolMessages(
   markerInjected: boolean;
   markerReason: string;
 } {
+  // TG1: When isolation applies, use the stripped generation-facing message
+  // for rewrites too — the rewrite path inherits the [REPLY DIRECTION] block
+  // automatically from promptContext.systemPrompt.
+  const generationMessage = promptContext.generationUserMessage ?? userMessage;
   const decorated = decorateUserMessageForGeneration({
-    userMessage,
+    userMessage: generationMessage,
     isFirstUserTurn: options?.isFirstUserTurn ?? false,
   });
 

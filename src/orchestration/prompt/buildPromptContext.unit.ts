@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPromptContext, deriveCanonTruthMode } from "./buildPromptContext";
+import { buildPromptContext, deriveCanonTruthMode, PromptContextSchema } from "./buildPromptContext";
 import type { ChatSession } from "../../db/schema/chat";
 import { buildPromptTracePayload } from "../../observability/tracePayloads";
 import type { CharacterDefaults, PersonaOverlayDefaults } from "../../character/characterDefaults";
@@ -732,5 +732,473 @@ describe("buildPromptContext — internal-logic evidence block", () => {
         setEmotionalAxisEvalConfig({ renderEnabled: savedRenderEnabled });
       }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TG1 — Reply-direction isolation
+// ---------------------------------------------------------------------------
+
+describe("buildPromptContext — TG1 reply-direction isolation", () => {
+  const base = baseInput;
+
+  function mixedQueryRewrite(): QueryRewriteResult {
+    return {
+      segments: [
+        { lane: "user_speech", text: "你好" },
+        { lane: "reply_direction", text: "请温柔回应" },
+      ],
+      combined_for_embedding: "[user speech] 你好\n[reply direction suggestion]: 请温柔回应",
+      entities: [], intent: "general", confidence: 0.9,
+      structuralParseOk: true, labelOk: true, parseOk: true,
+    };
+  }
+
+  function directionOnlyQueryRewrite(): QueryRewriteResult {
+    return {
+      segments: [
+        { lane: "reply_direction", text: "请温柔回应" },
+      ],
+      combined_for_embedding: "[reply direction suggestion]: 请温柔回应",
+      entities: [], intent: "general", confidence: 0.9,
+      structuralParseOk: true, labelOk: true, parseOk: true,
+    };
+  }
+
+  it("applies isolation when userMessage has 【】: generationUserMessage set, stripped, [REPLY DIRECTION] block present as final block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔回应】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    // generationUserMessage should be the stripped message
+    assert.equal(ctx.generationUserMessage, "你好吗？");
+
+    const prompt = ctx.systemPrompt;
+
+    // [REPLY DIRECTION] block present
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+
+    // [REPLY DIRECTION] block contains the direction text
+    assert.ok(prompt.includes("- 请温柔"), "REPLY DIRECTION — direction text");
+
+    // [REPLY DIRECTION] is the FINAL block (nothing after it except end-of-string)
+    const replyDirIdx = prompt.lastIndexOf("[REPLY DIRECTION]");
+    const structuredIdx = prompt.lastIndexOf("[STRUCTURED USER QUERY]");
+    const annotationsIdx = prompt.lastIndexOf("[USER MESSAGE ANNOTATIONS]");
+    assert.ok(replyDirIdx > structuredIdx, "REPLY DIRECTION after STRUCTURED USER QUERY");
+    assert.ok(replyDirIdx > annotationsIdx, "REPLY DIRECTION after USER MESSAGE ANNOTATIONS");
+
+    // Nothing after REPLY DIRECTION except whitespace (no subsequent [ label)
+    const afterBlock = prompt.slice(replyDirIdx);
+    const lastBracket = afterBlock.lastIndexOf("[");
+    assert.equal(lastBracket, 0, "REPLY DIRECTION is the final block — no [ after it");
+  });
+
+  it("no 【】 in userMessage ⇒ generationUserMessage undefined, no [REPLY DIRECTION] block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好吗？",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+  });
+
+  it("parse failure (unbalanced 【) ⇒ generationUserMessage undefined, no [REPLY DIRECTION] block", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【不平衡",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined on parse fail");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block on parse fail");
+  });
+
+  it("only-【】 message ⇒ generationUserMessage is placeholder", () => {
+    const input = {
+      ...base(),
+      userMessage: "【请温柔回应】",
+      queryRewrite: directionOnlyQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.ok(ctx.generationUserMessage, "generationUserMessage is set");
+    assert.ok(
+      ctx.generationUserMessage!.includes("仅提供了场外指示"),
+      "generationUserMessage is placeholder for direction-only message",
+    );
+    assert.ok(ctx.systemPrompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+  });
+
+  it("[STRUCTURED USER QUERY] preserves order — includes reply_direction in original position (TG3)", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔回应】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    // Structured block must be present (TG3 enables it for direction-only too)
+    assert.ok(prompt.includes("[STRUCTURED USER QUERY]"), "STRUCTURED USER QUERY block present");
+
+    // Should contain user speech content
+    assert.ok(prompt.includes("[user speech]: 你好"), "structured block contains user_speech");
+
+    // Should NOW contain reply direction content (TG3 order preservation)
+    assert.ok(prompt.includes("[reply direction suggestion]:"), "reply_direction included (TG3)");
+    assert.ok(prompt.includes("请温柔回应"), "reply_direction text included");
+
+    // Verify order: speech before direction (use lastIndexOf to find block header, not SYSTEM-block backtick refs)
+    const suqHeader = prompt.indexOf("[STRUCTURED USER QUERY]\n");
+    const bodyAfterHeader = prompt.slice(suqHeader);
+    const speechIdx = bodyAfterHeader.indexOf("[user speech]: 你好");
+    const dirIdx = bodyAfterHeader.indexOf("[reply direction suggestion]: 请温柔回应");
+    assert.ok(speechIdx < dirIdx, "original order preserved — speech before direction");
+  });
+
+  it("direction-only message: structured block now includes reply_direction (TG3 order preservation)", () => {
+    const input = {
+      ...base(),
+      userMessage: "【请温柔回应】",
+      queryRewrite: directionOnlyQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    // TG3: structured block is now present because reply_direction lanes are
+    // included in the serialized output (order preservation).
+    const suqMatch = prompt.match(/\[STRUCTURED USER QUERY\]\n/);
+    assert.ok(suqMatch, "STRUCTURED USER QUERY block present (TG3)");
+    assert.ok(prompt.includes("[reply direction suggestion]: 请温柔回应"), "direction content in structured block");
+
+    // LABEL RULES block also present
+    const rulesMatch = prompt.match(/\[STRUCTURED USER QUERY LABEL RULES\]\n/);
+    assert.ok(rulesMatch, "LABEL RULES block present (TG3)");
+
+    // REPLY DIRECTION block should still be present (reinforcement)
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION present");
+  });
+
+  it("fallback path (no 【】) — prompt unchanged, no REPLY DIRECTION block, generationUserMessage undefined", () => {
+    // With query rewrite but no 【】 — should behave as before TG1
+    const input = {
+      ...base(),
+      userMessage: "你好吗？",
+      queryRewrite: structuredQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+
+    // Structured query block uses combined_for_embedding as before
+    assert.ok(
+      ctx.systemPrompt.includes("[STRUCTURED USER QUERY]\n[user speech] 你好"),
+      "structured block uses combined_for_embedding unchanged",
+    );
+  });
+
+  it("no queryRewrite and no 【】 — baseline unchanged (no structured block, no REPLY DIRECTION)", () => {
+    const ctx = buildPromptContext(base());
+
+    assert.equal(ctx.generationUserMessage, undefined, "generationUserMessage undefined");
+    assert.equal(ctx.systemPrompt.includes("[REPLY DIRECTION]"), false, "no REPLY DIRECTION block");
+    // SYSTEM block has `[STRUCTURED USER QUERY]` in backtick refs, so match block header \n
+    const suqMatch = ctx.systemPrompt.match(/\[STRUCTURED USER QUERY\]\n/);
+    assert.equal(suqMatch, null, "no structured block");
+  });
+
+  it("direction-before-speech preserves order in structured block (TG3 live-sequencing fix)", () => {
+    const input = {
+      ...base(),
+      userMessage: "【处理好葱姜后做菜】谢谢老公~（亲了口左然回去继续认真做菜）",
+      queryRewrite: {
+        segments: [
+          { lane: "reply_direction" as const, text: "处理好葱姜后做菜" },
+          { lane: "user_speech" as const, text: "谢谢老公~" },
+          { lane: "user_action" as const, text: "亲了口左然回去继续认真做菜" },
+        ],
+        combined_for_embedding: "[reply direction suggestion]: 处理好葱姜后做菜\n[user speech]: 谢谢老公~\n[user action]: 亲了口左然回去继续认真做菜",
+        entities: [], intent: "general" as const, confidence: 0.9,
+        structuralParseOk: true, labelOk: true, parseOk: true,
+      },
+    };
+    const ctx = buildPromptContext(input);
+    const prompt = ctx.systemPrompt;
+
+    const suqHeader = prompt.indexOf("[STRUCTURED USER QUERY]\n");
+    assert.ok(suqHeader >= 0, "STRUCTURED USER QUERY block found");
+    const bodyAfterHeader = prompt.slice(suqHeader);
+
+    const lines = bodyAfterHeader.split("\n");
+    // lines[0] is "[STRUCTURED USER QUERY]", lines[1] onwards is content
+    assert.ok(lines[1]!.includes("[reply direction suggestion]:"), "direction first");
+    assert.ok(lines[2]!.includes("[user speech]:"), "speech second");
+    assert.ok(lines[3]!.includes("[user action]:"), "action third");
+
+    // Generation-facing user turn still has 【】 stripped
+    assert.equal(ctx.generationUserMessage, "谢谢老公~（亲了口左然回去继续认真做菜）");
+
+    // combined_for_embedding is separate from the structured block — verify
+    // the structured block uses segment data, not the combined string verbatim
+    assert.ok(
+      bodyAfterHeader.includes("[reply direction suggestion]: 处理好葱姜后做菜"),
+      "structured block content from segments, not combined_for_embedding",
+    );
+
+    // REPLY DIRECTION block still present for reinforcement
+    assert.ok(prompt.includes("[REPLY DIRECTION]"), "REPLY DIRECTION block present");
+    assert.ok(prompt.includes("- 处理好葱姜后做菜"), "direction text in REPLY DIRECTION block");
+  });
+
+  it("generationUserMessage survives PromptContextSchema validation (included in schema)", () => {
+    // This ensures the field propagates through graph state validation
+    const { PromptContextSchema } = require("./buildPromptContext");
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔回应】吗？",
+      queryRewrite: mixedQueryRewrite(),
+    };
+    const ctx = buildPromptContext(input);
+    const parsed = PromptContextSchema.parse(ctx);
+    assert.equal(parsed.generationUserMessage, "你好吗？", "generationUserMessage survived Zod parse");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG4 4.1 — History reply-direction relabel in conversationHistory
+  // ---------------------------------------------------------------------------
+
+  it("relabels 【】 in prior user turns in conversationHistory", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "之前的消息【请温柔】哦", turnIndex: 0 },
+        { role: "assistant" as const, content: "好的", turnIndex: 1 },
+        { role: "user" as const, content: "【只有方向】", turnIndex: 2 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    const hist = ctx.conversationHistory;
+
+    // User turns: 【】 relabeled
+    assert.equal(hist[0]!.role, "user");
+    assert.equal(hist[0]!.content, "之前的消息（场外指示：请温柔）哦");
+
+    // Assistant turn: untouched
+    assert.equal(hist[1]!.role, "assistant");
+    assert.equal(hist[1]!.content, "好的");
+
+    // Direction-only user turn: becomes （场外指示：…）
+    assert.equal(hist[2]!.role, "user");
+    assert.equal(hist[2]!.content, "（场外指示：只有方向）");
+  });
+
+  it("user turn without 【】 unchanged in conversationHistory", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "普通消息", turnIndex: 0 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    assert.equal(ctx.conversationHistory[0]!.content, "普通消息");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG4 4.2 — TG2 PromptContext fields are populated (review-004 note)
+  // ---------------------------------------------------------------------------
+
+  it("TG2 PromptContext fields populate when emotional axis inputs present", () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+      const input = {
+        ...base(),
+        userMessage: "你好【请温柔回应】吗？",
+        queryRewrite: mixedQueryRewrite(),
+        emotionalAxisBands: { connection: "mid" as const, valence: "mid" as const, arousal: "low" as const, restraint: "high" as const },
+        emotionalAxisLastTrace: {
+          tick: 1,
+          axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+          axesAfter: { connection: 0, valence: 0, arousal: -0.1, restraint: 0.7 },
+          couplingsFired: [],
+          effectiveBaselines: {},
+          event: { type: "user_shows_warmth" as const, intensity: 0.6, reason: "用户表达了感谢" },
+        },
+        emotionalAxisHistory: [],
+      };
+      const ctx = buildPromptContext(input as any);
+
+      assert.ok(Array.isArray(ctx.replyDirections), "replyDirections is array");
+      assert.equal(ctx.replyDirections!.length, 1, "replyDirections has 1 entry");
+      assert.equal(ctx.replyDirections![0], "请温柔回应", "replyDirections content");
+
+      assert.ok(typeof ctx.emotionalBandLine === "string", "emotionalBandLine is string");
+      assert.ok(ctx.emotionalBandLine!.length > 0, "emotionalBandLine non-empty");
+
+      assert.ok(Array.isArray(ctx.emotionalRenderRuleTexts), "emotionalRenderRuleTexts is array");
+
+      assert.equal(ctx.emotionalLastTraceEvent, "user_shows_warmth", "emotionalLastTraceEvent set");
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+    }
+  });
+
+  it("TG2 PromptContext fields are undefined when no emotional axis data", () => {
+    const input = {
+      ...base(),
+      userMessage: "你好【请温柔回应】吗？",
+      queryRewrite: mixedQueryRewrite(),
+      // No emotionalAxisBands, emotionalAxisLastTrace, emotionalAxisHistory
+    };
+    const ctx = buildPromptContext(input);
+
+    assert.ok(Array.isArray(ctx.replyDirections), "replyDirections still array (from extraction)");
+    assert.equal(ctx.emotionalBandLine, undefined, "emotionalBandLine undefined without axis data");
+    assert.equal(ctx.emotionalRenderRuleTexts, undefined, "emotionalRenderRuleTexts undefined without axis data");
+    assert.equal(ctx.emotionalLastTraceEvent, undefined, "emotionalLastTraceEvent undefined without axis data");
+  });
+
+  // -----------------------------------------------------------------------
+  // TG6 — directorSlimmable exported exact strings
+  // -----------------------------------------------------------------------
+
+  const TG6_BANDS = { connection: "high" as const, valence: "mid" as const, arousal: "low" as const, restraint: "high" as const };
+  const TG6_TRACE = {
+    tick: 1, axesBefore: { connection: 0, valence: 0, arousal: 0, restraint: 0.7 },
+    axesAfter: { connection: 0.7, valence: 0, arousal: -0.1, restraint: 0.7 },
+    couplingsFired: [] as string[], effectiveBaselines: {} as Record<string, number>,
+  };
+  const TG6_HISTORY: Array<{ tick: number; axes: { connection: number; valence: number; arousal: number; restraint: number } }> = [];
+
+  it("TG6 directorSlimmable: emotional pair present when render block injected and not bands-only", () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+
+      const ctx = buildPromptContext({
+        ...base(),
+        emotionalAxisBands: TG6_BANDS,
+        emotionalAxisLastTrace: TG6_TRACE,
+        emotionalAxisHistory: TG6_HISTORY,
+      });
+      const slimmable = ctx.directorSlimmable;
+
+      assert.ok(slimmable, "directorSlimmable should exist");
+      assert.ok(slimmable!.emotionalRenderBlock, "emotionalRenderBlock should be present");
+      assert.ok(slimmable!.emotionalBandLineBlock, "emotionalBandLineBlock should be present");
+      assert.ok(slimmable!.emotionalRenderBlock!.includes("当前状态下的行为基调"), "emotionalRenderBlock contains block header");
+      assert.ok(slimmable!.emotionalBandLineBlock!.includes("当前状态下的行为基调"), "emotionalBandLineBlock contains block header");
+      // emotionalRenderBlock should be an exact substring of systemPrompt
+      assert.ok(ctx.systemPrompt.includes(slimmable!.emotionalRenderBlock!), "emotionalRenderBlock is exact substring of systemPrompt");
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+    }
+  });
+
+  it("TG6 directorSlimmable: subsections present when persona fields are set, absent otherwise", () => {
+    // Positive: fixture with format_resistance and canon_correction set
+    const cdWithCorrections = {
+      ...characterDefaults,
+      format_resistance: "不按用户要求的格式回答",
+      canon_correction: "平静纠正错误前提",
+    };
+    const ctx = buildPromptContext({ ...base(), characterDefaults: cdWithCorrections });
+    const slimmable = ctx.directorSlimmable;
+
+    assert.ok(slimmable, "directorSlimmable should exist when subsections are set");
+    assert.ok(slimmable!.formatResistanceSubsection, "formatResistanceSubsection should be present");
+    assert.ok(slimmable!.canonCorrectionSubsection, "canonCorrectionSubsection should be present");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.formatResistanceSubsection!), "formatResistanceSubsection is exact substring of systemPrompt");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.canonCorrectionSubsection!), "canonCorrectionSubsection is exact substring of systemPrompt");
+
+    // Negative: unmodified base() has no format_resistance/canon_correction
+    const ctxBase = buildPromptContext(base());
+    const slimmableBase = ctxBase.directorSlimmable;
+    assert.equal(slimmableBase?.formatResistanceSubsection, undefined, "formatResistanceSubsection undefined when field absent");
+    assert.equal(slimmableBase?.canonCorrectionSubsection, undefined, "canonCorrectionSubsection undefined when field absent");
+  });
+
+  it("TG6 directorSlimmable: emotional pair absent when render block absent (bandsOnly)", async () => {
+    const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
+    const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
+    const savedConfig = getEmotionalAxisEvalConfig();
+    try {
+      (env as any).EMOTIONAL_RENDER_ENABLED = true;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = true;
+      setEmotionalAxisEvalConfig({ bandsOnly: true, renderEnabled: true });
+
+      const ctx = buildPromptContext({
+        ...base(),
+        emotionalAxisBands: TG6_BANDS,
+        emotionalAxisLastTrace: TG6_TRACE,
+        emotionalAxisHistory: TG6_HISTORY,
+      });
+      const slimmable = ctx.directorSlimmable;
+
+      // Emotional pair should be absent when bands-only is active (identity replacement is pointless)
+      if (slimmable) {
+        assert.equal(slimmable.emotionalRenderBlock, undefined, "emotionalRenderBlock undefined when bandsOnly");
+        assert.equal(slimmable.emotionalBandLineBlock, undefined, "emotionalBandLineBlock undefined when bandsOnly");
+      }
+    } finally {
+      (env as any).EMOTIONAL_RENDER_ENABLED = savedRender;
+      (env as any).EMOTIONAL_ENGINE_ENABLED = savedEngine;
+      resetEmotionalAxisEvalConfig();
+    }
+  });
+
+  it("TG2 directorSlimmable: temporalPremiseBlock present when canon narrative injected, absent when no canon", () => {
+    // Positive: explicitly set canon data so hasCanonNarrative is true
+    const inputWithCanon = {
+      ...base(),
+      canonChunks: [{ id: "c1", textContent: "Some canon text.", sceneId: "s1", canonPriority: 1 }] as any,
+    };
+    const ctx = buildPromptContext(inputWithCanon);
+    const slimmable = ctx.directorSlimmable;
+    assert.ok(slimmable, "directorSlimmable should exist with canon");
+    assert.ok(slimmable!.temporalPremiseBlock, "temporalPremiseBlock should be present with canon");
+    assert.ok(ctx.systemPrompt.includes(slimmable!.temporalPremiseBlock!), "temporalPremiseBlock is exact substring of systemPrompt");
+    assert.ok(slimmable!.temporalPremiseBlock!.startsWith("[TEMPORAL PREMISE HANDLING]"), "block header is TEMPORAL PREMISE HANDLING");
+
+    // Negative: no canon → no temporalPremiseBlock
+    const ctxNoCanon = buildPromptContext({ ...base(), canonChunks: [], canonScenes: [] });
+    const slimmableNoCanon = ctxNoCanon.directorSlimmable;
+    assert.equal(slimmableNoCanon?.temporalPremiseBlock, undefined, "temporalPremiseBlock undefined when no canon");
+  });
+
+  it("TG6 directorSlimmable: survives PromptContextSchema validation round-trip", () => {
+    const sample: any = {
+      systemPrompt: "test",
+      conversationHistory: [],
+      directorSlimmable: {
+        emotionalRenderBlock: "[当前状态下的行为基调]\ntest",
+        emotionalBandLineBlock: "[当前状态下的行为基调]\nband line",
+        formatResistanceSubsection: "[格式抗性]\ntest",
+      },
+      directorSlimmedBlocks: ["emotional_render"],
+    };
+    const parsed = PromptContextSchema.parse(sample);
+    assert.ok(parsed.directorSlimmable, "directorSlimmable survives schema");
+    assert.equal(parsed.directorSlimmable.emotionalRenderBlock, "[当前状态下的行为基调]\ntest");
+    assert.ok(parsed.directorSlimmedBlocks, "directorSlimmedBlocks survives schema");
+    assert.equal(parsed.directorSlimmedBlocks![0], "emotional_render");
   });
 });
