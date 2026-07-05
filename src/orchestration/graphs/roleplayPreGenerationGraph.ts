@@ -198,28 +198,28 @@ export function createRoleplayPreGenerationGraph(
         const body = (e.text ?? "").trim();
         if (!body) continue;
         const line = `[事件记忆|${e.entryType}, turn ${e.turnIndex}] ${body}`;
-        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
       }
       for (const c of resolved.structMemConsolidations ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (c.summaryText ?? "").trim();
         if (!body) continue;
         const line = `[记忆综合|${c.scope}] ${body}`;
-        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
       }
       for (const m of resolved.memories ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (m.summary ?? "").trim();
         if (!body) continue;
         const line = `[互动记忆|${m.memoryType}] ${body}`;
-        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
       }
       for (const c of resolved.sessionRecall ?? []) {
         if (memPreviews.length >= cap) break;
         const body = (c.chunkText ?? "").trim();
         if (!body) continue;
         const line = `[会话回溯|${c.chunkType}, turns ${c.turnStart}-${c.turnEnd}] ${body}`;
-        memPreviews.push(line.length > 160 ? line.slice(0, 160) : line);
+        memPreviews.push(line.length > 160 ? [...line].slice(0, 160).join("") : line);
       }
 
       const directorInput: ResponseDirectorInput = {
@@ -288,7 +288,12 @@ export function createRoleplayPreGenerationGraph(
           slimmable.emotionalBandLineBlock
         ) {
           const before = systemPrompt;
-          systemPrompt = systemPrompt.replace(slimmable.emotionalRenderBlock, slimmable.emotionalBandLineBlock);
+          // Function replacer avoids interpreting $&, $', $`, $n in the
+          // band-line block as substitution patterns (PR review TG1.3).
+          // Assign to a local so TypeScript narrows past the guard condition
+          // through the arrow-function boundary.
+          const bandLineBlock = slimmable.emotionalBandLineBlock;
+          systemPrompt = systemPrompt.replace(slimmable.emotionalRenderBlock, () => bandLineBlock);
           if (systemPrompt !== before) {
             slimmedBlocks.push("emotional_render");
           } else {
@@ -365,8 +370,11 @@ export function createRoleplayPreGenerationGraph(
       }
 
       // Append the [DIRECTOR NOTE] block as the last block of the system prompt
-      const updatedCtx = { ...promptCtx, systemPrompt, directorSlimmedBlocks: slimmedBlocks.length > 0 ? slimmedBlocks : undefined };
-      updatedCtx.systemPrompt = systemPrompt + "\n\n[DIRECTOR NOTE]\n" + note;
+      const updatedCtx = {
+        ...promptCtx,
+        systemPrompt: systemPrompt + "\n\n[DIRECTOR NOTE]\n" + note,
+        directorSlimmedBlocks: slimmedBlocks.length > 0 ? slimmedBlocks : undefined,
+      };
 
       if (slimmedBlocks.length > 0) {
         console.info(`[responseDirector] slimmed blocks: ${slimmedBlocks.join(", ")}`);

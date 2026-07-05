@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { renderDirectorNote, buildDirectorUserPrompt, DirectorOutputSchema, type DirectorOutput, type ResponseDirectorInput } from "./runResponseDirector";
+import { describe, it, mock } from "node:test";
+import { renderDirectorNote, buildDirectorUserPrompt, DirectorOutputSchema, createDirectorDeadlineSignal, type DirectorOutput, type ResponseDirectorInput } from "./runResponseDirector";
 import { env } from "../../config/env";
 import { formatDirectorCharacterDigest } from "../../character/psychology/formatInternalLogic";
 import type { CharacterDefaults } from "../../character/characterDefaults";
@@ -158,6 +158,18 @@ describe("DirectorOutputSchema", () => {
     assert.deepEqual(parsed.avoid, []);
   });
 
+  it("accepts more than 3 beats without error (clamping happens post-parse per TG1.5)", () => {
+    // The schema has .default([]) but NO .max(3) — an over-length list must
+    // parse successfully so the director output is preserved; clamping is
+    // applied by runResponseDirector after parse.
+    const parsed = DirectorOutputSchema.parse({
+      beats: ["a", "b", "c", "d", "e"],
+      avoid: ["x", "y", "z", "w"],
+    });
+    assert.equal(parsed.beats.length, 5, "schema accepts >3 beats");
+    assert.equal(parsed.avoid.length, 4, "schema accepts >3 avoid");
+  });
+
   it("throws on non-array beats", () => {
     assert.throws(() => DirectorOutputSchema.parse({ beats: "not_array" }), "non-array beats should throw");
   });
@@ -255,6 +267,53 @@ describe("buildDirectorUserPrompt", () => {
     // Direction content appears only once, inside [用户输入分段 — 原始顺序]
     const directionCount = (prompt.match(/请温柔/g) || []).length;
     assert.equal(directionCount, 1, "direction text appears exactly once");
+  });
+
+  // -----------------------------------------------------------------------
+  // TG1 (PR review) — Reply-direction fallback when no reply_direction segment
+  // -----------------------------------------------------------------------
+
+  it("renders [场外指示] fallback when replyDirections is non-empty but no reply_direction segment exists", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      replyDirections: ["请温柔些", "保持距离"],
+      segments: [
+        { lane: "user_speech", text: "你好" },
+      ],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    assert.ok(prompt.includes("[场外指示]"), "fallback section present");
+    assert.ok(prompt.includes("- 请温柔些"), "first direction listed");
+    assert.ok(prompt.includes("- 保持距离"), "second direction listed");
+    // Direction text appears exactly once each (not also in segment section)
+    assert.equal((prompt.match(/请温柔些/g) || []).length, 1, "first direction appears once");
+    assert.equal((prompt.match(/保持距离/g) || []).length, 1, "second direction appears once");
+  });
+
+  it("omits [场外指示] fallback when replyDirections is empty", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      replyDirections: [],
+      segments: [{ lane: "user_speech", text: "你好" }],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    assert.equal(prompt.includes("[场外指示]"), false, "no fallback when replyDirections empty");
+  });
+
+  it("omits [场外指示] fallback when reply_direction segment IS present (no double-render)", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      replyDirections: ["请温柔些"],
+      segments: [
+        { lane: "reply_direction", text: "请温柔些" },
+        { lane: "user_speech", text: "你好" },
+      ],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    // Fallback section must NOT be added when segment exists
+    assert.equal(prompt.includes("[场外指示]"), false, "no fallback when reply_direction segment present");
+    // Direction text appears only once, inline in the segment section
+    assert.equal((prompt.match(/请温柔些/g) || []).length, 1, "direction appears once via segment");
   });
 
   it("renders [用户输入分段 — 原始顺序] header when segments exist", () => {
@@ -389,6 +448,63 @@ describe("runResponseDirector — flag off", () => {
       assert.equal(result, null, "disabled flag returns null");
     } finally {
       (env as any).RESPONSE_DIRECTOR_ENABLED = savedEnabled;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TG3 — Director latency deadline (createDirectorDeadlineSignal)
+// ---------------------------------------------------------------------------
+//
+// The deadline composition is unit-tested directly and hermetically (no LLM
+// call, no module mock, deterministic via node:test mock timers). Each
+// assertion fails if the corresponding TG3 logic is removed — see review-003
+// for why the earlier end-to-end "1ms deadline ⇒ null" test was non-specific.
+
+describe("createDirectorDeadlineSignal", () => {
+  it("passes the inbound signal through unchanged when deadlineMs <= 0", () => {
+    const inbound = new AbortController().signal;
+    const { signal, clear } = createDirectorDeadlineSignal(inbound, 0);
+    assert.equal(signal, inbound, "no wrapping when the deadline is disabled");
+    clear(); // must be a safe no-op (no timer was scheduled)
+  });
+
+  it("returns an undefined signal when there is no inbound signal and no deadline", () => {
+    const { signal } = createDirectorDeadlineSignal(undefined, 0);
+    assert.equal(signal, undefined);
+  });
+
+  it("aborts the composed signal when the deadline elapses", () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const { signal, clear } = createDirectorDeadlineSignal(undefined, 1000);
+      assert.equal(signal?.aborted, false, "not aborted before the deadline");
+      mock.timers.tick(1000);
+      assert.equal(signal?.aborted, true, "aborted once the deadline elapses");
+      clear();
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("aborts when the inbound signal aborts (composed, not replaced)", () => {
+    const inbound = new AbortController();
+    const { signal, clear } = createDirectorDeadlineSignal(inbound.signal, 60000);
+    assert.equal(signal?.aborted, false, "not aborted initially");
+    inbound.abort();
+    assert.equal(signal?.aborted, true, "inbound abort propagates to the composed signal");
+    clear();
+  });
+
+  it("clear() cancels the deadline so it never aborts on a fast success", () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const { signal, clear } = createDirectorDeadlineSignal(undefined, 1000);
+      clear();
+      mock.timers.tick(5000);
+      assert.equal(signal?.aborted, false, "a cleared deadline never fires");
+    } finally {
+      mock.timers.reset();
     }
   });
 });

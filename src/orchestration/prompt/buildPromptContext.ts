@@ -259,8 +259,9 @@ export function buildPromptContext(input: {
   const extraction = extractReplyDirections(userMessage);
   const generationUserMessage = extraction.applied ? extraction.strippedMessage : undefined;
 
-  // When isolation applies, build the prompt-facing structured block from segments
-  // excluding reply_direction lanes. combined_for_embedding stays untouched for retrieval.
+  // When isolation applies, build the prompt-facing structured block from segments.
+  // serializeSegmentsForPrompt renders ALL lanes including reply_direction (it is
+  // the caller's choice). combined_for_embedding stays untouched for retrieval.
   const promptStructuredBlock =
     extraction.applied && queryRewrite?.parseOk && queryRewrite.segments.length > 0
       ? serializeSegmentsForPrompt(queryRewrite.segments)
@@ -602,7 +603,12 @@ ${session.pinnedLocation ? `固定地点：${session.pinnedLocation}` : ""}
       ? [buildBlock("USER MESSAGE ANNOTATIONS", USER_MESSAGE_ANNOTATION_RULES)]
       : []),
 
-    // TG1: Reply-direction isolation — inject as the final system-prompt block
+    // TG1: Reply-direction isolation — inject as the final system-prompt block.
+    // NOTE: 场外指示 is intentionally dual-written into both
+    // [STRUCTURED USER QUERY] (via serializeSegmentsForPrompt above, timing
+    // position context) and this [REPLY DIRECTION] block (execution instruction
+    // for the actor model). Do NOT collapse to a single write — the two serve
+    // different roles (see design.md Part 3).
     ...(extraction.applied && extraction.replyDirections.length > 0
       ? [
           buildBlock(

@@ -145,6 +145,19 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
     parts.push("");
   }
 
+  // TG1 (PR review): Fallback [场外指示] section when reply directions exist but
+  // queryRewrite produced no reply_direction segment. This closes the blind-spot
+  // gap where the director sees no directions yet is asked for direction_execution.
+  // When a reply_direction segment IS present, directions render inline above and
+  // this fallback MUST NOT duplicate them.
+  if (input.replyDirections.length > 0 && !input.segments.some((s) => s.lane === "reply_direction")) {
+    parts.push("[场外指示]");
+    for (const dir of input.replyDirections) {
+      parts.push(`- ${dir}`);
+    }
+    parts.push("");
+  }
+
   // Emotional state
   parts.push(`[情感基调] ${input.bandLine || "(无)"}`);
   if (input.renderRuleTexts.length > 0) {
@@ -290,7 +303,10 @@ const tracedDirector = traceLLMStage(
       };
     },
     processOutputs: (outputs) => {
-      const o = outputs as unknown as DirectorOutput;
+      // tracedDirector returns DirectorOutput | null — guard null to avoid
+      // throwing under LangSmith tracing (PR review TG1.4).
+      const o = outputs as unknown as DirectorOutput | null | undefined;
+      if (!o) return {};
       return {
         sceneFramePresent: (o.scene_frame?.length ?? 0) > 0,
         inputReadingPresent: (o.input_reading?.length ?? 0) > 0,
@@ -305,6 +321,30 @@ const tracedDirector = traceLLMStage(
     },
   },
 );
+
+// ---------------------------------------------------------------------------
+// Deadline composition (TG3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compose a per-step deadline signal with any inbound signal so either source
+ * can abort the director call. Returns the composed signal plus a `clear()`
+ * that cancels the deadline timer — call it in a `finally` so a fast success
+ * never leaves a dangling timeout or fires a post-resolution abort. When
+ * `deadlineMs <= 0` the inbound signal is passed through unchanged.
+ */
+export function createDirectorDeadlineSignal(
+  inbound: AbortSignal | undefined,
+  deadlineMs: number,
+): { signal: AbortSignal | undefined; clear: () => void } {
+  if (deadlineMs <= 0) return { signal: inbound, clear: () => {} };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
+  const signals: AbortSignal[] = [controller.signal];
+  if (inbound) signals.push(inbound);
+  return { signal: AbortSignal.any(signals), clear: () => clearTimeout(timer) };
+}
 
 // ---------------------------------------------------------------------------
 // Public API — fail-open wrapper
@@ -329,16 +369,27 @@ export async function runResponseDirector(
     return null;
   }
 
+  // TG3: Per-step deadline abort composed with any inbound signal. On timeout
+  // the director is aborted and the turn proceeds via the null path (fail-open).
+  const { signal: directorSignal, clear: clearDeadline } =
+    createDirectorDeadlineSignal(options?.signal, env.RESPONSE_DIRECTOR_DEADLINE_MS);
+
   try {
     const output = await tracedDirector({
       payload: input,
-      signal: options?.signal,
+      signal: directorSignal,
     });
 
     if (!output) {
       console.warn("[runResponseDirector] director returned null — skipping DIRECTOR NOTE block");
       return null;
     }
+
+    // PR review TG1.5: Clamp beats/avoid to ≤3 after parse so an over-length
+    // list degrades gracefully instead of failing the whole director output.
+    // Uses slice(0,3) rather than .max(3) to avoid breaking the parse.
+    output.beats = output.beats.slice(0, 3);
+    output.avoid = output.avoid.slice(0, 3);
 
     const note = renderDirectorNote(output);
     if (!note.trim()) {
@@ -350,5 +401,9 @@ export async function runResponseDirector(
   } catch (err) {
     console.warn("[runResponseDirector] error:", err);
     return null;
+  } finally {
+    // Cancel the deadline timer so a fast success never leaves a dangling
+    // timeout (no post-resolution abort, no leaked handle).
+    clearDeadline();
   }
 }
