@@ -37,6 +37,13 @@ interface TranscriptFile {
   messages: TranscriptMessage[];
 }
 
+interface ReplayMemoryExportFile {
+  sessionSummary?: unknown;
+  durableMemories?: unknown;
+  structMemEntries?: unknown;
+  sessionChunks?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -99,6 +106,42 @@ function turnIndex(turn1Based: number): number {
   return turn1Based - 1;
 }
 
+function resolveMemoryExportPath(transcriptPath: string): string | undefined {
+  const resolved = transcriptPath.replace(/-transcript\.json$/, "-memory.json");
+  return resolved === transcriptPath ? undefined : resolved;
+}
+
+function loadReplayMemoryExport(transcriptPath: string): {
+  sessionSummary?: string;
+  durableMemories?: Array<Record<string, unknown>>;
+  structMemEntries?: Array<Record<string, unknown>>;
+  sessionChunks?: Array<Record<string, unknown>>;
+} {
+  const memoryPath = resolveMemoryExportPath(transcriptPath);
+  if (!memoryPath || !fs.existsSync(memoryPath)) {
+    return {};
+  }
+
+  const raw = fs.readFileSync(memoryPath, "utf-8");
+  const parsed = JSON.parse(raw) as ReplayMemoryExportFile;
+
+  return {
+    sessionSummary:
+      typeof parsed.sessionSummary === "string"
+        ? parsed.sessionSummary
+        : undefined,
+    durableMemories: Array.isArray(parsed.durableMemories)
+      ? (parsed.durableMemories as Array<Record<string, unknown>>)
+      : undefined,
+    structMemEntries: Array.isArray(parsed.structMemEntries)
+      ? (parsed.structMemEntries as Array<Record<string, unknown>>)
+      : undefined,
+    sessionChunks: Array.isArray(parsed.sessionChunks)
+      ? (parsed.sessionChunks as Array<Record<string, unknown>>)
+      : undefined,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Seed axis state conversion
 // ---------------------------------------------------------------------------
@@ -109,7 +152,7 @@ function turnIndex(turn1Based: number): number {
  * mergeAxisStateIntoDelta (no throw).
  *
  * The transcript's `emotional_axis` is a per-turn export snapshot with
- * `{version, tick, scope, axes, bands}` but NO `history` or `lastTrace`.
+ * `{version, tick, scope, axes, bands}` but NO history/lastTrace/couplingsFired.
  * We synthesize a minimal valid lastTrace and empty history so the engine
  * can boot from it without crashing.
  */
@@ -154,7 +197,8 @@ export function buildSeedAxisState(
 export function loadOocReplayScenario(
   transcriptPath?: string,
 ): ReplayScenario {
-  const transcript = loadTranscript(transcriptPath);
+  const resolvedTranscriptPath = transcriptPath ?? DEFAULT_TRANSCRIPT_PATH;
+  const transcript = loadTranscript(resolvedTranscriptPath);
   const messages = transcript.messages;
 
   // Extract seed messages: turns 1–259 (0-indexed turnIndex 0–258)
@@ -208,6 +252,7 @@ export function loadOocReplayScenario(
   // TG0.7b-fix: Convert the transcript's reduced axis to a valid PersistedAxisState
   // (synthesizes lastTrace + history so the engine doesn't crash on read-back).
   const seedAxisState = buildSeedAxisState(lastAxisState);
+  const memoryExport = loadReplayMemoryExport(resolvedTranscriptPath);
 
   return {
     sessionId: transcript.session_id,
@@ -215,10 +260,9 @@ export function loadOocReplayScenario(
     seedMessages,
     replayTurns,
     seedAxisState: seedAxisState as Record<string, unknown> | undefined,
-    // TG0.7c: The evidence transcript does not include session summary,
-    // durable memories, or StructMem entries. These fields are left
-    // undefined — seedEvalSession accepts them as optional and will use
-    // empty defaults. Future transcript sources may populate them.
+    // TG0.7c/TG0.8: populated from the sibling `*-memory.json` export when
+    // present; undefined otherwise.
+    ...memoryExport,
   };
 }
 

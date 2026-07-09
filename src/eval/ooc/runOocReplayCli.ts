@@ -337,6 +337,7 @@ async function runReplay(
       sessionSummary: scenario.sessionSummary,
       durableMemories: scenario.durableMemories as import("../langsmith/evalTypes").AgentEvalInput["durableMemories"],
       structMemEntries: scenario.structMemEntries as import("../langsmith/evalTypes").AgentEvalInput["structMemEntries"],
+      sessionChunks: scenario.sessionChunks as import("../langsmith/evalTypes").AgentEvalInput["sessionChunks"],
     };
 
     // Seed the session

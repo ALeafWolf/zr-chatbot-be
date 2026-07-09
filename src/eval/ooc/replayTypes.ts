@@ -103,6 +103,7 @@ export interface ReplayScenario {
   sessionSummary?: string;
   durableMemories?: Array<Record<string, unknown>>;
   structMemEntries?: Array<Record<string, unknown>>;
+  sessionChunks?: Array<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
