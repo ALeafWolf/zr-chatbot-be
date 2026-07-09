@@ -5,6 +5,7 @@ import {
   runTemporalPremiseGuard,
   runUnsupportedAutobiographicalClaimGuard,
   runSelfAnalysisLeakageGuard,
+  runIntimateMonologueGuard,
   __testing,
 } from "./runResponseValidator";
 
@@ -354,6 +355,98 @@ describe("runDeterministicValidatorGuards new guard integration", () => {
       const failures = runDeterministicValidatorGuards(c.input);
       c.check(failures);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TG2.3 — Intimate-scene monologue intrusion guard
+// ---------------------------------------------------------------------------
+
+describe("runIntimateMonologueGuard", () => {
+  // Helper: create a draft with OOC clinical content
+  function oocDraft(): string {
+    return "（心想：从胚胎学的数据来看，对称性结构定义了反应阈值）" +
+      "他沉默了片刻。" +
+      "（内心：这个分析模式需要重新定义）";
+  }
+
+  function cleanDraft(): string {
+    return "他沉默了片刻。\n（停顿）\n“……好。”";
+  }
+
+  it("fires on arousal=high with clinical density", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: "从胚胎学和解剖学的数据来看，大量的分析内容……",
+      emotionalAxisBands: { arousal: "high", restraint: "low" },
+    });
+    assert.ok(failures.length > 0, "guard fires on high arousal + clinical words");
+    assert.equal(failures[0]!.kind, "intimate_monologue_intrusion");
+  });
+
+  it("fires on intimate_moment event with long monologue", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: oocDraft(),
+      emotionalLastTraceEvent: "intimate_moment",
+    });
+    assert.ok(failures.length > 0, "guard fires on intimate_moment + monologue");
+  });
+
+  it("fires on reply length > 1200 chars in intimate mode", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: "x".repeat(1300),
+      emotionalAxisBands: { arousal: "high" },
+    });
+    assert.ok(failures.length > 0, "guard fires on length exceed");
+    assert.ok(failures.some((f) => f.matched.includes("reply length")), "length check");
+  });
+
+  it("does NOT fire on ≤2 monologue spans (threshold is ≥3)", () => {
+    // Two short parentheticals should be below the ≥3 threshold
+    const failures = runIntimateMonologueGuard({
+      draft: "（停了一下）正文（想了想）继续",
+      emotionalAxisBands: { arousal: "high" },
+    });
+    assert.equal(failures.length, 0, "≤2 short parens pass");
+  });
+
+  it("does NOT fire on clean draft in intimate mode", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: cleanDraft(),
+      emotionalAxisBands: { arousal: "high" },
+    });
+    assert.equal(failures.length, 0, "clean draft passes");
+  });
+
+  it("does NOT fire on clinical draft in non-intimate mode", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: oocDraft(),
+      // No emotional band/event/bands — defaults false
+    });
+    assert.equal(failures.length, 0, "non-intimate turn skipped");
+  });
+
+  it("fires via bandLine string match", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: "从胚胎学数据来看……",
+      emotionalBandLine: "状态：亲近中｜克制低｜情绪中｜唤起：高",
+    });
+    assert.ok(failures.length > 0, "fires on bandLine containing 唤起：高");
+  });
+
+  it("rewrite guidance quotes R1/R8", () => {
+    const failures = runIntimateMonologueGuard({
+      draft: oocDraft(),
+      emotionalAxisBands: { arousal: "high" },
+    });
+    assert.ok(failures.length > 0);
+    assert.ok(
+      failures[0]!.issue.includes("沉默比任何话都更接近"),
+      "rewrite guidance quotes R8",
+    );
+    assert.ok(
+      failures.some((f) => f.issue.includes("温度")),
+      "rewrite guidance quotes R1",
+    );
   });
 });
 

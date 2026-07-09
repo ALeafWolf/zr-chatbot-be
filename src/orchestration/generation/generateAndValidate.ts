@@ -861,6 +861,10 @@ export function buildValidatorContext(input: {
     retrievedCanonNarrative?: string;
     selectedMemorySources?: Array<unknown>;
     canonTruthMode?: string;
+    /** TG2.2: Emotional axis fields exported by buildPromptContext. */
+    emotionalBandLine?: string;
+    emotionalLastTraceEvent?: string;
+    emotionalAxisBands?: Record<string, string>;
   };
   userMessage: string;
   signal?: AbortSignal;
@@ -891,6 +895,16 @@ export function buildValidatorContext(input: {
       (input.promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
     selectedMemorySources: (input.promptContext.selectedMemorySources ?? []) as any,
     canonTruthMode: input.promptContext.canonTruthMode as CanonTruthMode | undefined,
+    // TG2.2: Pass through emotional axis fields from promptContext
+    ...(input.promptContext.emotionalBandLine
+      ? { emotionalBandLine: input.promptContext.emotionalBandLine }
+      : {}),
+    ...(input.promptContext.emotionalLastTraceEvent
+      ? { emotionalLastTraceEvent: input.promptContext.emotionalLastTraceEvent }
+      : {}),
+    ...(input.promptContext.emotionalAxisBands
+      ? { emotionalAxisBands: input.promptContext.emotionalAxisBands }
+      : {}),
     signal: input.signal,
   };
 }

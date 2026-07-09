@@ -1015,6 +1015,68 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // TG1.3 — Generation-facing history sanitizer for assistant turns
+  // ---------------------------------------------------------------------------
+
+  it("TG1.3: sanitizes （心想：/（内心：） spans from assistant conversationHistory", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "用户消息", turnIndex: 0 },
+        { role: "assistant" as const, content: "（心想：分析模式）正文（停顿）继续", turnIndex: 1 },
+        { role: "user" as const, content: "另一条用户消息", turnIndex: 2 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    const hist = ctx.conversationHistory;
+
+    // Assistant turn: 心想 span stripped, action paren preserved
+    assert.equal(hist[1]!.role, "assistant");
+    assert.equal(hist[1]!.content, "正文（停顿）继续");
+
+    // User turn: unchanged
+    assert.equal(hist[0]!.role, "user");
+    assert.equal(hist[0]!.content, "用户消息");
+  });
+
+  it("TG1.3: preserves short action parentheticals in assistant history", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "assistant" as const, content: "（停顿片刻）他垂下眼。", turnIndex: 0 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    assert.equal(
+      ctx.conversationHistory[0]!.content,
+      "（停顿片刻）他垂下眼。",
+    );
+  });
+
+  it("TG1.3: does not modify user turns — only assistant turns are sanitized", () => {
+    const input = {
+      ...base(),
+      userMessage: "test",
+      recentTurns: [
+        { role: "user" as const, content: "用户【方向】消息", turnIndex: 0 },
+        { role: "assistant" as const, content: "（心想：分析）回复", turnIndex: 1 },
+      ],
+    };
+    const ctx = buildPromptContext(input);
+    const hist = ctx.conversationHistory;
+
+    // User turn: still gets the TG4 【】→（场外指示：…）relabel, NOT sanitized
+    assert.equal(hist[0]!.role, "user");
+    assert.equal(hist[0]!.content, "用户（场外指示：方向）消息");
+
+    // Assistant turn: sanitized
+    assert.equal(hist[1]!.role, "assistant");
+    assert.equal(hist[1]!.content, "回复");
+  });
+
+  // ---------------------------------------------------------------------------
   // TG4 4.2 — TG2 PromptContext fields are populated (review-004 note)
   // ---------------------------------------------------------------------------
 

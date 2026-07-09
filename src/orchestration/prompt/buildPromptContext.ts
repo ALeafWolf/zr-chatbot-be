@@ -30,6 +30,7 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { extractReplyDirections, serializeSegmentsForPrompt, relabelReplyDirectionsForHistory } from "./generationUserMessage";
+import { sanitizeAssistantHistory } from "./historySanitizer";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
@@ -628,12 +629,16 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     .join("\n\n");
 
   // TG4: Relabel 【】 in prior user turns for generation-facing history
+  // TG1.3: Sanitize assistant history — strip （心想：/（内心：） spans from
+  // the copy sent to the generator (DB text and memory extraction untouched).
   const conversationHistory: Array<{
     role: "user" | "assistant";
     content: string;
   }> = recentTurns.map((t) => ({
     role: t.role,
-    content: t.role === "user" ? relabelReplyDirectionsForHistory(t.content) : t.content,
+    content: t.role === "user"
+      ? relabelReplyDirectionsForHistory(t.content)
+      : sanitizeAssistantHistory(t.content),
   }));
 
   // TG6: Export exact slimmable strings for director-gated prompt slimming.

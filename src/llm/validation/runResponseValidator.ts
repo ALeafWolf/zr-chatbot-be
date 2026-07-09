@@ -12,6 +12,10 @@ import {
   type AttributionJudgeResult,
 } from "./runAttributionJudge";
 import { attachTraceLlmMetadata } from "../../observability/traceMetadata";
+import {
+  countClinicalWordHits,
+  countLongParentheticalMonologue,
+} from "./oocTextMetrics";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -32,7 +36,8 @@ export type DeterministicGuardKind =
   | "canon_unsupported_claim"
   | "temporal_premise_contradiction"
   | "unsupported_autobiographical_claim"
-  | "self_analysis_leakage";
+  | "self_analysis_leakage"
+  | "intimate_monologue_intrusion";
 
 export interface DeterministicGuardFailure {
   kind: DeterministicGuardKind;
@@ -57,6 +62,12 @@ export interface ValidatorInput {
   selectedMemorySources?: Array<{ source: string; relevance: string; usageInstruction: string }>;
   /** Canon truth mode for this turn (derived in buildPromptContext). */
   canonTruthMode?: CanonTruthMode;
+  /** TG2.2: Emotional band line from the render block (e.g. "状态：亲近偏高｜克制偏低｜情绪中｜唤起：高"). */
+  emotionalBandLine?: string;
+  /** TG2.2: Last trace event type (e.g. "intimate_moment", "user_shows_warmth"). */
+  emotionalLastTraceEvent?: string;
+  /** TG2.2: Emotional axis bands for this turn (e.g. "{ arousal: 'high', restraint: 'low' }"). */
+  emotionalAxisBands?: Record<string, string>;
   signal?: AbortSignal;
 }
 
@@ -431,6 +442,9 @@ export function runDeterministicValidatorGuards(
     | "wasCanonInjected"
     | "retrievedCanonNarrative"
     | "recentContext"
+    | "emotionalBandLine"
+    | "emotionalLastTraceEvent"
+    | "emotionalAxisBands"
   >,
 ): DeterministicGuardFailure[] {
   const failures: DeterministicGuardFailure[] = [];
@@ -497,6 +511,110 @@ export function runDeterministicValidatorGuards(
   });
   failures.push(...analysisFailures);
 
+  // ---------------------------------------------------------------------------
+  // TG2.3: Intimate-scene monologue intrusion guard (deterministic, no LLM call)
+  // ---------------------------------------------------------------------------
+  const intimateFailures = runIntimateMonologueGuard({
+    draft,
+    emotionalBandLine: input.emotionalBandLine,
+    emotionalLastTraceEvent: input.emotionalLastTraceEvent,
+    emotionalAxisBands: input.emotionalAxisBands,
+  });
+  failures.push(...intimateFailures);
+
+  return failures;
+}
+
+// ---------------------------------------------------------------------------
+// TG2.3: Intimate-scene monologue intrusion guard
+// ---------------------------------------------------------------------------
+
+/** Maximum reply length for intimate-mode drafts. */
+const INTIMATE_MAX_REPLY_LENGTH = 1200;
+
+/** Minimum clinical-word density threshold (hits per 1000 chars) to flag. */
+const INTIMATE_CLINICAL_DENSITY_THRESHOLD = 3.0;
+
+/** Minimum number of long parenthetical monologue spans to flag. */
+const INTIMATE_MIN_LONG_MONOLOGUE_SPANS = 3;
+
+function isIntimateMode(
+  bandLine?: string,
+  lastTraceEvent?: string,
+  axisBands?: Record<string, string>,
+): boolean {
+  // Arousal band = high OR recent event = intimate_moment
+  if (axisBands?.arousal === "high") return true;
+  if (lastTraceEvent?.includes("intimate_moment")) return true;
+  if (bandLine?.includes("唤起：高") || bandLine?.includes("唤起: high")) return true;
+  return false;
+}
+
+/**
+ * Run the intimate-scene monologue intrusion guard.
+ * Triggered when the emotional state indicates high intimacy.
+ * Checks: clinical-word density > threshold, reply length > cap,
+ * long parenthetical monologue spans ≥ threshold.
+ *
+ * On failure, quotes R1/R8 as the correction direction:
+ *   R1: "此刻他是放松的，但放松改变的是温度，不是边界……
+ *        语言依然只说一半。"
+ *   R8: "这是一个他不舍得用语言去覆盖的瞬间。沉默比任何话都更接近……"
+ */
+export function runIntimateMonologueGuard(input: {
+  draft: string;
+  emotionalBandLine?: string;
+  emotionalLastTraceEvent?: string;
+  emotionalAxisBands?: Record<string, string>;
+}): DeterministicGuardFailure[] {
+  if (!isIntimateMode(
+    input.emotionalBandLine,
+    input.emotionalLastTraceEvent,
+    input.emotionalAxisBands,
+  )) {
+    return []; // Not an intimate turn — skip
+  }
+
+  const draft = input.draft;
+  const failures: DeterministicGuardFailure[] = [];
+  const clinicalHits = countClinicalWordHits(draft);
+
+  // Correction direction quoting R1/R8
+  const R1_R8_GUIDANCE =
+    "亲密场景风格规则：此刻他是放松的，但放松改变的是温度，不是边界——" +
+    "语言依然只说一半。这是一个他不舍得用语言去覆盖的瞬间。沉默比任何话都更接近。";
+
+  // Check 1: Clinical/academic word density
+  if (draft.length > 0) {
+    const density = (clinicalHits / draft.length) * 1000;
+    if (density >= INTIMATE_CLINICAL_DENSITY_THRESHOLD) {
+      failures.push({
+        kind: "intimate_monologue_intrusion",
+        matched: `clinical density ${density.toFixed(1)}/1k (threshold ${INTIMATE_CLINICAL_DENSITY_THRESHOLD})`,
+        issue: `Draft contains clinical/academic exposition in an intimate scene. ${R1_R8_GUIDANCE}`,
+      });
+    }
+  }
+
+  // Check 2: Reply length over cap
+  if (draft.length > INTIMATE_MAX_REPLY_LENGTH) {
+    failures.push({
+      kind: "intimate_monologue_intrusion",
+      matched: `reply length ${draft.length} chars (cap ${INTIMATE_MAX_REPLY_LENGTH})`,
+      issue: `Draft is too long for an intimate scene. ${R1_R8_GUIDANCE}`,
+    });
+  }
+
+  // Check 3: Long parenthetical monologue spans
+  const longMonologueCount = countLongParentheticalMonologue(draft);
+  if (longMonologueCount >= INTIMATE_MIN_LONG_MONOLOGUE_SPANS) {
+    failures.push({
+      kind: "intimate_monologue_intrusion",
+      matched: `${longMonologueCount} long parenthetical monologue spans (threshold ${INTIMATE_MIN_LONG_MONOLOGUE_SPANS})`,
+      issue: `Draft contains analytical parenthetical monologue in an intimate scene. ${R1_R8_GUIDANCE}`,
+    });
+  }
+
   return failures;
 }
 
@@ -508,7 +626,8 @@ function validationFromDeterministicFailures(
       (f) =>
         f.kind === "meta_assistant_language" ||
         f.kind === "unsupported_autobiographical_claim" ||
-        f.kind === "self_analysis_leakage",
+        f.kind === "self_analysis_leakage" ||
+        f.kind === "intimate_monologue_intrusion",
     ),
     // Note: unsupported_autobiographical_claim is intentionally excluded from
     // canon_consistent because it is an in-character/truthfulness failure, not

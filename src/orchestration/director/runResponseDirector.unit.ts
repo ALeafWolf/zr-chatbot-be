@@ -415,6 +415,60 @@ describe("buildDirectorUserPrompt", () => {
     const prompt = buildDirectorUserPrompt(input);
     assert.equal(prompt.includes("[记忆要点]"), false, "no memory section when empty");
   });
+
+  // ---------------------------------------------------------------------------
+  // TG2.1 — Director input recency
+  // ---------------------------------------------------------------------------
+
+  it("TG2.1: [用户输入分段] is the LAST section (recency slot)", () => {
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      segments: [
+        { lane: "user_speech", text: "本轮输入" },
+      ],
+      latestTurnDeltaFacts: ["上一轮用户消息: 扛腿吹气", "上一轮回复"],
+      recentTurnPreviews: ["user: 之前的内容", "assistant: 回复"],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    const segIdx = prompt.lastIndexOf("[用户输入分段 — 原始顺序]");
+    const deltaIdx = prompt.lastIndexOf("[最近变化]");
+    const recentIdx = prompt.lastIndexOf("[最近对白]");
+
+    assert.ok(segIdx >= 0, "[用户输入分段] section present");
+    assert.ok(deltaIdx >= 0, "[最近变化] present");
+    assert.ok(recentIdx >= 0, "[最近对白] present");
+
+    // [用户输入分段] must come AFTER both [最近变化] and [最近对白]
+    assert.ok(segIdx > deltaIdx, "[用户输入分段] after [最近变化]");
+    assert.ok(segIdx > recentIdx, "[用户输入分段] after [最近对白]");
+  });
+
+  it("TG2.1: latestTurnDeltaFacts items truncated to ~120 chars", () => {
+    const longFact = "x".repeat(200);
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      latestTurnDeltaFacts: [longFact],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+
+    // The truncated item should appear with "…" suffix
+    const truncatedMatch = prompt.match(/\[最近变化\] (.+)/);
+    assert.ok(truncatedMatch, "[最近变化] line present");
+    const truncatedText = truncatedMatch![1]!;
+    assert.ok(truncatedText.endsWith("…"), "truncated item ends with ellipsis");
+    // 120 chars + "…" = 121
+    assert.equal(truncatedText.length, 121, "120 chars + ellipsis");
+  });
+
+  it("TG2.1: short delta items preserved as-is", () => {
+    const shortFact = "简短事实";
+    const input: ResponseDirectorInput = {
+      ...baseInput,
+      latestTurnDeltaFacts: [shortFact],
+    };
+    const prompt = buildDirectorUserPrompt(input);
+    assert.ok(prompt.includes("[最近变化] 简短事实"), "short item preserved");
+  });
 });
 
 // ---------------------------------------------------------------------------

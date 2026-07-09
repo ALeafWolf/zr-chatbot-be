@@ -11,50 +11,23 @@
  *   同源/器官/结构/证据/角度/计数/分类/分析/认知/模式/反应/阈值/频率/维度
  */
 
+// Shared clinical-word metrics from the production module (avoids eval→prod
+// inversion — the validator's intimate guard also uses these).
+import {
+  CLINICAL_WORDS,
+  countClinicalWordHits,
+  countLongParentheticalMonologue,
+} from "../../llm/validation/oocTextMetrics";
+// Re-export so consumers of oocMetrics can still access them.
+export { CLINICAL_WORDS, type ClinicalWord, countClinicalWordHits, countLongParentheticalMonologue } from "../../llm/validation/oocTextMetrics";
+// Note: extractParentheticalSpans is NOT imported/re-exported from the shared
+// module; this file keeps its own local version with half-width () support.
+
 import type {
   OocPerTurnMetrics,
   OocAggregateMetrics,
   HistoryVariant,
 } from "./replayTypes";
-
-// ---------------------------------------------------------------------------
-// Clinical/academic word list
-// ---------------------------------------------------------------------------
-
-export const CLINICAL_WORDS = [
-  "胚胎",
-  "解剖",
-  "对称",
-  "G点",
-  "尿道",
-  "腺体",
-  "数据",
-  "定义",
-  "翻译",
-  "复刻",
-  "同源",
-  "器官",
-  "结构",
-  "证据",
-  "角度",
-  "计数",
-  "分类",
-  "分析",
-  "认知",
-  "模式",
-  "反应",
-  "阈值",
-  "频率",
-  "维度",
-  "对称性",
-  "机制",
-  "规律",
-  "本质",
-  "对应",
-  "映射",
-] as const;
-
-export type ClinicalWord = (typeof CLINICAL_WORDS)[number];
 
 // ---------------------------------------------------------------------------
 // Sentence-splitting helpers (Chinese + English punctuation)
@@ -85,6 +58,10 @@ export function splitSentences(text: string): string[] {
 /**
  * Extract all parenthetical spans from text — content wrapped in
  * Chinese （） or English () brackets.
+ *
+ * Note: The production module version (oocTextMetrics.ts) only matches
+ * full-width （）. This eval-local variant also matches half-width () for
+ * broader metric coverage.
  */
 export function extractParentheticalSpans(text: string): string[] {
   const spans: string[] = [];
@@ -108,49 +85,6 @@ export function extractParentheticalSpans(text: string): string[] {
 export function isXiangXinNeiXinSpan(span: string): boolean {
   const trimmed = span.trim();
   return trimmed.startsWith("心想：") || trimmed.startsWith("内心：");
-}
-
-/**
- * Count parenthetical monologue spans that are ≥30 Chinese chars long.
- */
-export function countLongParentheticalMonologue(text: string): number {
-  const spans = extractParentheticalSpans(text);
-  return spans.filter((span) => {
-    // Count Chinese characters (ignore ASCII)
-    const chineseChars = [...span].filter(
-      (ch) => ch >= "\u4e00" && ch <= "\u9fff",
-    ).length;
-    return chineseChars >= 30;
-  }).length;
-}
-
-// ---------------------------------------------------------------------------
-// Clinical-word density
-// ---------------------------------------------------------------------------
-
-/**
- * Count clinical/academic word hits in text.
- *
- * Uses regex alternation with longest-word-first ordering so overlapping terms
- * at the same position are counted once (e.g. "对称性" matches the longer term
- * "对称性" and does NOT also match "对称"). The regex `exec` loop inherently
- * advances past each match, avoiding double-counts.
- *
- * Each word matched adds 1 to the count.
- */
-export function countClinicalWordHits(text: string): number {
-  if (!text) return 0;
-  // Sort by length descending so longer terms match first, preventing overlap
-  const sorted = [...CLINICAL_WORDS].sort((a, b) => b.length - a.length);
-  const pattern = sorted
-    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  const regex = new RegExp(pattern, "g");
-  let count = 0;
-  while (regex.exec(text) !== null) {
-    count++;
-  }
-  return count;
 }
 
 /**

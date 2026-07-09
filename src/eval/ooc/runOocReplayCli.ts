@@ -42,7 +42,7 @@ import {
   computeOocPerTurnMetrics,
   computeAggregateMetrics,
 } from "./oocMetrics";
-import { sanitizeAssistantHistory } from "./historySanitizer";
+import { sanitizeAssistantHistory } from "../../orchestration/prompt/historySanitizer";
 import type {
   HistoryVariant,
   OocAggregateMetrics,

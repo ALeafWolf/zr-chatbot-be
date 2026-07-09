@@ -72,6 +72,64 @@ describe("deepseek thinking mode helper", () => {
     });
   });
 
+  describe("TG1.1 — INNER_OS_MARKER output-isolation constraint", () => {
+    it("contains 【正文隔离约束】 block", () => {
+      assert.ok(
+        INNER_OS_MARKER.includes("【正文隔离约束】"),
+        "must contain the output-isolation block",
+      );
+    });
+
+    it("bans 心想/内心-lead parentheticals but preserves short action parens", () => {
+      // Banned patterns
+      assert.ok(
+        INNER_OS_MARKER.includes("（心想："),
+        "bans （心想： pattern",
+      );
+      assert.ok(
+        INNER_OS_MARKER.includes("（内心："),
+        "bans （内心： pattern",
+      );
+      // Short action exemption
+      assert.ok(
+        INNER_OS_MARKER.includes("（停顿片刻）"),
+        "short action paren exemption wording present",
+      );
+    });
+
+    it("does NOT contain operator meta-text (env-var / threshold / mode-switch)", () => {
+      // The downgrade criterion is an operator decision rule, NOT injected
+      // into the prompt. The marker must not leak config chatter.
+      assert.ok(
+        !INNER_OS_MARKER.includes("no_inner_os"),
+        "must not contain no_inner_os mode name",
+      );
+      assert.ok(
+        !INNER_OS_MARKER.includes("DEEPSEEK_V4_THINKING_MODE"),
+        "must not contain env-var name",
+      );
+      assert.ok(
+        !INNER_OS_MARKER.includes("20%"),
+        "must not contain operator threshold",
+      );
+      assert.ok(
+        !INNER_OS_MARKER.includes("50%"),
+        "must not contain operator threshold",
+      );
+    });
+
+    it("preserves original inner_os rules (role immersion)", () => {
+      assert.ok(
+        INNER_OS_MARKER.includes("角色沉浸要求"),
+        "original marker header preserved",
+      );
+      assert.ok(
+        INNER_OS_MARKER.includes("内心独白分析剧情"),
+        "original analytical monologue rule preserved",
+      );
+    });
+  });
+
   describe("appendDeepSeekThinkingMarker", () => {
     it("injects/withholds marker based on mode, model, turn, and pre-existing content", () => {
       const cases = [
