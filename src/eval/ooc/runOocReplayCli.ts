@@ -301,6 +301,13 @@ async function runReplay(
     const { cleanupEvalSession } = await import(
       "../langsmith/cleanupEvalSession"
     );
+    const { postTurnRunner } = await import(
+      "../../jobs/postTurnRunner"
+    );
+    const {
+      createAgentEvalCapture,
+      withAgentEvalCapture,
+    } = await import("../evalSnapshots");
 
     // Build the seed input
     const seedMessages = scenario.seedMessages.map((m) => ({
@@ -323,6 +330,13 @@ async function runReplay(
         thinking: true,
       },
       recentMessages: seedMessages,
+      // TG0.7b: Wire the transcript's turn-259 axis state so the replay
+      // starts from the correct arousal/restraint baseline, not cold.
+      seedAxisState: scenario.seedAxisState as import("../langsmith/evalTypes").AgentEvalInput["seedAxisState"],
+      // TG0.7c: Forward accumulated memory from the transcript where available.
+      sessionSummary: scenario.sessionSummary,
+      durableMemories: scenario.durableMemories as import("../langsmith/evalTypes").AgentEvalInput["durableMemories"],
+      structMemEntries: scenario.structMemEntries as import("../langsmith/evalTypes").AgentEvalInput["structMemEntries"],
     };
 
     // Seed the session
@@ -335,6 +349,10 @@ async function runReplay(
     let successCount = 0;
     let failCount = 0;
 
+    // TG0.7a-fix: Run each turn's post-turn job SYNCHRONOUSLY before cleanup
+    // (mirrors runAgentEval.ts:200-212). Prevents the FK-violation race where
+    // cleanupEvalSession deletes the session before the async post-turn job
+    // writes session_memory_chunks.
     try {
       for (let i = 0; i < limitedTurns.length; i++) {
         const turn = limitedTurns[i];
@@ -343,20 +361,32 @@ async function runReplay(
         );
 
         try {
-          const result = await runCharacterTurn({
-            sessionId: seeded.sessionId,
-            userMessage: turn.userMessage,
+          const capture = createAgentEvalCapture({
+            scenarioId: `ooc_replay_${variant}`,
+            evalSessionId: seeded.sessionId,
           });
 
-          const replyContent = result.content;
-          replies.push({
-            turnIndex: turn.turnIndex,
-            content: replyContent,
+          await withAgentEvalCapture(capture, async () => {
+            const result = await runCharacterTurn({
+              sessionId: seeded.sessionId,
+              userMessage: turn.userMessage,
+            });
+
+            const jobId = capture.memoryWrite.postTurnJobId;
+            if (jobId) {
+              await postTurnRunner.runJobByIdForEval(jobId);
+            }
+
+            const replyContent = result.content;
+            replies.push({
+              turnIndex: turn.turnIndex,
+              content: replyContent,
+            });
+            successCount++;
+            console.error(
+              `    → ${replyContent.length} chars`,
+            );
           });
-          successCount++;
-          console.error(
-            `    → ${replyContent.length} chars`,
-          );
         } catch (err) {
           failCount++;
           const errMsg =

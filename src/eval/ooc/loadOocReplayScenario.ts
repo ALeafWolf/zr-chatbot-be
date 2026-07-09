@@ -13,6 +13,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { ReplayScenario, ReplayTurn } from "./replayTypes";
+import type { PersistedAxisState } from "../../state/emotionalEngine/types";
 
 // ---------------------------------------------------------------------------
 // Transcript JSON structure
@@ -99,6 +100,48 @@ function turnIndex(turn1Based: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Seed axis state conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert the transcript's reduced emotional_axis snapshot into a VALID
+ * PersistedAxisState that survives parsePersistedAxisState (non-null) and
+ * mergeAxisStateIntoDelta (no throw).
+ *
+ * The transcript's `emotional_axis` is a per-turn export snapshot with
+ * `{version, tick, scope, axes, bands}` but NO `history` or `lastTrace`.
+ * We synthesize a minimal valid lastTrace and empty history so the engine
+ * can boot from it without crashing.
+ */
+export function buildSeedAxisState(
+  raw: Record<string, unknown> | undefined,
+): PersistedAxisState | undefined {
+  if (!raw || typeof raw.version !== "number" || typeof raw.tick !== "number") {
+    return undefined;
+  }
+  const axes = raw.axes as PersistedAxisState["axes"] | undefined;
+  if (!axes || typeof axes.connection !== "number") return undefined;
+
+  const tick = raw.tick as number;
+  const bands = raw.bands as PersistedAxisState["bands"];
+
+  return {
+    version: 1,
+    tick,
+    axes,
+    bands: bands ?? { connection: "mid", valence: "mid", arousal: "mid", restraint: "mid" },
+    history: [],
+    lastTrace: {
+      tick,
+      axesBefore: axes,
+      axesAfter: axes,
+      couplingsFired: [],
+      effectiveBaselines: {},
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Scenario builder
 // ---------------------------------------------------------------------------
 
@@ -162,12 +205,20 @@ export function loadOocReplayScenario(
     }
   }
 
+  // TG0.7b-fix: Convert the transcript's reduced axis to a valid PersistedAxisState
+  // (synthesizes lastTrace + history so the engine doesn't crash on read-back).
+  const seedAxisState = buildSeedAxisState(lastAxisState);
+
   return {
     sessionId: transcript.session_id,
     title: transcript.title,
     seedMessages,
     replayTurns,
-    seedAxisState: lastAxisState,
+    seedAxisState: seedAxisState as Record<string, unknown> | undefined,
+    // TG0.7c: The evidence transcript does not include session summary,
+    // durable memories, or StructMem entries. These fields are left
+    // undefined — seedEvalSession accepts them as optional and will use
+    // empty defaults. Future transcript sources may populate them.
   };
 }
 

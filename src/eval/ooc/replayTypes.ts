@@ -102,6 +102,7 @@ export interface ReplayScenario {
   seedAxisState?: Record<string, unknown>;
   sessionSummary?: string;
   durableMemories?: Array<Record<string, unknown>>;
+  structMemEntries?: Array<Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
