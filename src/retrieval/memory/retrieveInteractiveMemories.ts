@@ -1,6 +1,6 @@
 import { db } from "../../db/client";
 import { interactiveMemoryEvents } from "../../db/schema/memory";
-import { eq, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { MemoryNamespace } from "../../memory/shared/memoryNamespace";
 import { RETRIEVAL_LIMITS } from "../../character/canonRules";
 

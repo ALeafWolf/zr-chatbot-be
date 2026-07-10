@@ -1,5 +1,5 @@
 import type { EvaluationResult } from "langsmith/evaluation";
-import type { Example, Run } from "langsmith/schemas";
+import type { Example } from "langsmith/schemas";
 
 /**
  * Evaluates whether the reranker selected memory items match expected selections.

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { createTurnGraph, type TurnRunner } from "./turnGraph";
+import { createTurnGraph } from "./turnGraph";
 
 const FAKE_RESULT = { assistantMessageId: "msg_abc123", content: "Hello from the fake runner!", wasRewritten: false, wasDeflected: false, turnIndex: 5, route: "roleplay_turn" };
 

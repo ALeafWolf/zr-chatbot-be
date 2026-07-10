@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { runRoleplayGenerationAdapter, type RoleplayGenerationEvent, type RoleplayGenerationInput } from "./roleplayGenerationAdapter";
+import { runRoleplayGenerationAdapter, type RoleplayGenerationInput } from "./roleplayGenerationAdapter";
 import type { Thought } from "../thought/thoughtTypes";
 import type { PromptContext } from "../prompt/buildPromptContext";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";

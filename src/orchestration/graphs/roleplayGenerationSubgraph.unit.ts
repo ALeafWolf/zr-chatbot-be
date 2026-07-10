@@ -132,7 +132,7 @@ describe("createGenerationSubgraph", () => {
   it("graph validation receives meaningful recentContext and canon narrative from promptContext", async () => {
     let receivedValidatorInput: any = null;
     const deps = makeMinDeps();
-    deps.validateDraftFn = (async (draft: string, vi: any) => {
+    deps.validateDraftFn = (async (_draft: string, vi: any) => {
       receivedValidatorInput = vi;
       return { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false };
     }) as any;
@@ -174,7 +174,7 @@ describe("createGenerationSubgraph", () => {
   it("graph validation wasCanonInjected is false when canon narrative is short or empty", async () => {
     let receivedValidatorInput: any = null;
     const deps = makeMinDeps();
-    deps.validateDraftFn = (async (draft: string, vi: any) => {
+    deps.validateDraftFn = (async (_draft: string, vi: any) => {
       receivedValidatorInput = vi;
       return { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false };
     }) as any;
@@ -206,7 +206,7 @@ describe("createGenerationSubgraph", () => {
   it("graph validation recentContext falls back to '(none)' when conversationHistory is empty", async () => {
     let receivedValidatorInput: any = null;
     const deps = makeMinDeps();
-    deps.validateDraftFn = (async (draft: string, vi: any) => {
+    deps.validateDraftFn = (async (_draft: string, vi: any) => {
       receivedValidatorInput = vi;
       return { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false };
     }) as any;
@@ -258,7 +258,7 @@ describe("createGenerationSubgraph", () => {
     // Build the graph-path context via the generation subgraph
     let graphCtx: any = null;
     const deps = makeMinDeps();
-    deps.validateDraftFn = (async (draft: string, vi: any) => {
+    deps.validateDraftFn = (async (_draft: string, vi: any) => {
       graphCtx = vi;
       return { in_character: true, canon_consistent: true, session_state_consistent: true, nsfw_within_bounds: true, issues: [], needs_rewrite: false };
     }) as any;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildRecallThoughtContext, __testing, type RecallThoughtContextItem } from "./recallThoughtContext";
+import { buildRecallThoughtContext, __testing } from "./recallThoughtContext";
 import type { MemoryRerankOutput } from "../retrieval/memoryRerank";
 import type { RetrievedMemory } from "../../retrieval/memory/retrieveInteractiveMemories";
 import type { RetrievedSessionMemoryChunk } from "../../retrieval/memory/retrieveSessionMemoryChunks";

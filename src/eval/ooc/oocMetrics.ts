@@ -14,7 +14,6 @@
 // Shared clinical-word metrics from the production module (avoids eval→prod
 // inversion — the validator's intimate guard also uses these).
 import {
-  CLINICAL_WORDS,
   countClinicalWordHits,
   countLongParentheticalMonologue,
 } from "../../llm/validation/oocTextMetrics";

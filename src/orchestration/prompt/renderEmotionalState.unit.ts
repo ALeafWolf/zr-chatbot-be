@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { selectRenderRules, selectRenderRuleMatches, formatBandLine, buildTierABlock, buildEmotionalRenderBlock } from "./renderEmotionalState";
-import type { AxisName, Band, StateTrace, HistoryEntry } from "../../state/emotionalEngine/types";
+import type { AxisName, Band, StateTrace } from "../../state/emotionalEngine/types";
 
 // ---------------------------------------------------------------------------
 // Helpers

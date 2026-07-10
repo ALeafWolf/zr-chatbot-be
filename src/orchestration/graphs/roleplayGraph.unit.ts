@@ -308,7 +308,7 @@ describe("roleplayGraph", () => {
       generateDraftFn: async function* () {
         return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
       } as any,
-      validateDraftFn: async (draft: string, input: any, attempt: number) => {
+      validateDraftFn: async (_draft: string, _input: any, attempt: number) => {
         if (attempt === 1) return { ...fakePassValidation, needs_rewrite: true, issues: ["character inconsistency: spoke out of character"] };
         return { ...fakePassValidation, needs_rewrite: true, issues: ["still out of character"] };
       },
@@ -349,7 +349,7 @@ describe("roleplayGraph", () => {
       generateDraftFn: async function* () {
         return { content: "Draft.", inputTokens: 100, outputTokens: 50 };
       } as any,
-      validateDraftFn: async (draft: string, input: any, attempt: number) => {
+      validateDraftFn: async (_draft: string, _input: any, attempt: number) => {
         if (attempt === 1) return { ...fakePassValidation, needs_rewrite: true, issues: ["character inconsistency: spoke out of character"] };
         return { ...fakePassValidation, needs_rewrite: true, issues: ["validator system failure: schema mismatch"] };
       },

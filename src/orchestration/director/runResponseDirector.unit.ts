@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import { renderDirectorNote, buildDirectorUserPrompt, DirectorOutputSchema, createDirectorDeadlineSignal, type DirectorOutput, type ResponseDirectorInput } from "./runResponseDirector";
 import { env } from "../../config/env";
-import { formatDirectorCharacterDigest } from "../../character/psychology/formatInternalLogic";
-import type { CharacterDefaults } from "../../character/characterDefaults";
 
 // ---------------------------------------------------------------------------
 // renderDirectorNote — formatting

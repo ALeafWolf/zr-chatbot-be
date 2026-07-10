@@ -52,7 +52,6 @@ import {
 import { env } from "../../config/env";
 import {
   annotationHeuristicFallback,
-  rewriteQuery,
   shouldUseAnnotationFallback,
   type QueryRewriteResult,
 } from "../../retrieval/query/rewriteQuery";
@@ -68,20 +67,14 @@ import {
   buildRetrievalPlan,
   classifyTurnType,
   type RetrievalPlan,
-  summarizeContextNeedForTrace,
 } from "../retrieval/retrievalPlan";
 import { ROLEPLAY_TURN_ROUTE } from "../turn/turnRoutes";
-import { selectPromptMemoryContext as selectPromptMemoryContextStatic } from "./promptMemoryContextSelector";
 import { planContext, type ContextPlannerOutput } from "./contextPlanner";
 import {
   buildPromptContextCandidates,
-  type ContextCandidate,
   type CandidateShortlist,
-  type ContextCandidateSource,
-  applyCandidateSelection,
-  filterCanonBySelection,
 } from "./contextCandidates";
-import { rerankCandidates, type MemoryRerankOutput } from "../retrieval/memoryRerank";
+import { type MemoryRerankOutput } from "../retrieval/memoryRerank";
 import { rerankContext } from "./rerankContext";
 import {
   readFreshTurnDelta,
@@ -248,7 +241,6 @@ export async function assembleResolvedContext(
   const {
     session,
     userMessage,
-    characterDefaults,
     queryRewrite,
     retrievalPlan,
     queryRewriteMs,
@@ -258,21 +250,14 @@ export async function assembleResolvedContext(
     structMemEntries,
     structMemConsolidations,
     openThreads,
-    canonChunks: preCanonChunks,
-    canonScenes: preCanonScenes,
-    sessionSummary,
     latestTurnDelta,
-    memoryCorrections,
     motifSignal,
     motifProbe,
-    internalLogicEvidence: preInternalLogicEvidence,
     queryEmbedding,
     canonQueryEmbedding,
     hypotheticalQueryEmbedding,
     derivedState,
     shortlistMs,
-    latestTurnDeltaText,
-    motifProbeText,
     startedAt,
     embeddingsMs,
     mainRetrievalMs,
@@ -287,7 +272,6 @@ export async function assembleResolvedContext(
   const {
     selectedContext,
     rerankOutput,
-    rerankFallbackUsed,
     rerankFallbackReason,
     rerankMs,
     selectorFallbackMs,
@@ -507,43 +491,6 @@ const tracedRetrievalDiagnostics = traceStageWithIO(
     processOutputs: (outputs) => outputs,
   },
 );
-const tracedPromptMemorySelector = traceStageWithIO(
-  "retrieval.prompt_context_selector",
-  async (input: Parameters<typeof selectPromptMemoryContextStatic>[0]) =>
-    selectPromptMemoryContextStatic(input),
-  {
-    subsystem: "retrieval",
-    turn: "foreground",
-    processInputs: (inputs) => {
-      const input = inputs as unknown as Parameters<
-        typeof selectPromptMemoryContextStatic
-      >[0];
-      return {
-        memoryCount: input.memories.length,
-        sessionRecallCount: input.sessionRecall.length,
-        structMemEntryCount: input.structMemEntries.length,
-        structMemConsolidationCount: input.structMemConsolidations.length,
-        openThreadCount: input.openThreads.length,
-        recentTurnCount: input.recentTurns.length,
-        retrievalPlan: {
-          intent: input.retrievalPlan.intent,
-          canonMode: input.retrievalPlan.canonMode,
-          broadFailOpen: input.retrievalPlan.broadFailOpen,
-          contextNeed: summarizeContextNeedForTrace(
-            input.retrievalPlan.contextNeed,
-          ),
-        },
-      };
-    },
-    processOutputs: (outputs) => {
-      const output = outputs as unknown as ReturnType<
-        typeof selectPromptMemoryContextStatic
-      >;
-      return output.diagnostics as unknown as Record<string, unknown>;
-    },
-  },
-);
-
 function scoreMemory(memory: RetrievedMemory): number {
   return (
     memory.cosineSimilarity +

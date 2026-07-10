@@ -36,7 +36,7 @@ describe("createRoleplayStreamFn", () => {
   it("routes through graph adapter when flag true, existing stream when false, and invokes pre-generation", async () => {
     // Flag true → graph adapter path
     let preGenCalled = false;
-    let deps: RoleplayGraphStreamAdapterDeps = { ...minimalFakeDeps, runPreGeneration: async (input, deps) => { preGenCalled = true; return fakePreGenerationResult(); } };
+    let deps: RoleplayGraphStreamAdapterDeps = { ...minimalFakeDeps, runPreGeneration: async (_input, _deps) => { preGenCalled = true; return fakePreGenerationResult(); } };
     let streamFn = createRoleplayStreamFn(true, deps);
     let events = await collect(streamFn({ sessionId: "sess_test", userMessage: "hello", session: fakeSession() }));
     assert.ok(preGenCalled, "flag true — pre-generation called");
@@ -54,7 +54,7 @@ describe("createRoleplayStreamFn", () => {
 
     // Production stream is pre-generation/adapter based
     preGenCalled = false;
-    deps = { ...minimalFakeDeps, runPreGeneration: async (input, deps) => { preGenCalled = true; return fakePreGenerationResult(); } };
+    deps = { ...minimalFakeDeps, runPreGeneration: async (_input, _deps) => { preGenCalled = true; return fakePreGenerationResult(); } };
     streamFn = createRoleplayStreamFn(true, deps);
     await collect(streamFn({ sessionId: "sess_test", userMessage: "hello", session: fakeSession() }));
     assert.ok(preGenCalled, "production — preGeneration called");

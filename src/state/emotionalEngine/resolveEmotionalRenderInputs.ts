@@ -6,7 +6,7 @@
 // Returns null only when genuinely unrenderable (no emotional_axes config).
 // ---------------------------------------------------------------------------
 
-import type { PersistedAxisState, AxesConfig, ScopeBaselineOverrides, Band, StateTrace, HistoryEntry, AxisName, CharacterStateAxes } from './types';
+import type { AxesConfig, ScopeBaselineOverrides, Band, StateTrace, HistoryEntry, AxisName, CharacterStateAxes } from './types';
 import { readAxisState } from './axisStatePersistence';
 import { resolveAxesConfigForScope } from './resolveAxesConfigForScope';
 import { computeBands } from './bands';

@@ -99,13 +99,6 @@ function loadTranscript(filePath?: string): TranscriptFile {
   return JSON.parse(raw) as TranscriptFile;
 }
 
-/**
- * Convert 1-indexed turn number to the 0-indexed turn_index used in the transcript.
- */
-function turnIndex(turn1Based: number): number {
-  return turn1Based - 1;
-}
-
 function resolveMemoryExportPath(transcriptPath: string): string | undefined {
   const resolved = transcriptPath.replace(/-transcript\.json$/, "-memory.json");
   return resolved === transcriptPath ? undefined : resolved;

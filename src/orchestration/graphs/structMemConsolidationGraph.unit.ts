@@ -5,7 +5,6 @@ import type { StructMemConsolidationJob } from "../../db/schema/structmem";
 import type { ChatSession } from "../../db/schema/chat";
 import type { ConsolidationCandidateEntry } from "../../memory/structmem/structmemConsolidationSelection";
 import type { StructMemConsolidationSynthesisResult } from "../../memory/structmem/structmemConsolidationSynthesis";
-import type { PersistCurrentSessionConsolidationInput, PersistCurrentSessionConsolidationResult } from "../../memory/structmem/structmemConsolidationRepo";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -300,7 +299,7 @@ describe("structMemConsolidationGraph", () => {
   });
 
   it("empty buffer records sourceEventCount and selectedEntryCount as 0", async () => {
-    const { deps, calls } = createFakeDeps();
+    const { deps } = createFakeDeps();
     deps.selectBufferFn = async (_input: any): Promise<any> => ({
       bufferEntries: [],
       semanticSeedEntries: [],
@@ -350,7 +349,7 @@ describe("structMemConsolidationGraph", () => {
   });
 
   it("full success path records all expected metadata fields", async () => {
-    const { deps, calls } = createFakeDeps();
+    const { deps } = createFakeDeps();
     const graph = createStructMemConsolidationGraph(deps);
     const result = await graph.invoke({ jobId: "job_001" });
 

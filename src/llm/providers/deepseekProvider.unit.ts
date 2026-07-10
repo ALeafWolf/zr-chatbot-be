@@ -1,7 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createDeepSeekProvider, __test_setClient } from "./deepseekProvider";
-import type { LLMUsage } from "./providerTypes";
 
 function mkCompletion(o: { prompt_tokens: number; completion_tokens: number; prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number; reasoning_tokens?: number }) {
   return { id: "c1", object: "chat.completion", created: 1_000_000, model: "deepseek-v4-flash", choices: [{ index: 0, message: { role: "assistant", content: "Hello", ...(o.reasoning_tokens !== undefined ? { reasoning_content: "thinking..." } : {}) }, finish_reason: "stop" }], usage: { prompt_tokens: o.prompt_tokens, completion_tokens: o.completion_tokens, total_tokens: o.prompt_tokens + o.completion_tokens, prompt_cache_hit_tokens: o.prompt_cache_hit_tokens ?? null, prompt_cache_miss_tokens: o.prompt_cache_miss_tokens ?? null, completion_tokens_details: o.reasoning_tokens !== undefined ? { reasoning_tokens: o.reasoning_tokens } : undefined } };

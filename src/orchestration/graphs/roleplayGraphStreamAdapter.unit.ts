@@ -8,7 +8,6 @@ import type { PreGenerationResult } from "./roleplayPreGenerationGraph";
 import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { RoleplayGenerationEvent } from "../roleplay/roleplayGenerationAdapter";
 import type { PersistRoleplayTurnInput } from "../roleplay/roleplayPersistenceAdapter";
-import type { CharacterTurnSseEvent } from "../turn/runCharacterTurn";
 import type { ChatSession } from "../../db/schema/chat";
 import type { Thought } from "../thought/thoughtTypes";
 

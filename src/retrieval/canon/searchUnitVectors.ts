@@ -1,7 +1,6 @@
 import { db } from "../../db/client";
 import { sql } from "drizzle-orm";
 import {
-  CANON_RETRIEVAL,
   CANON_VECTOR_RANK_WEIGHTS,
 } from "../../character/canonRules";
 

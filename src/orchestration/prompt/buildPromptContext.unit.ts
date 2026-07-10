@@ -1201,7 +1201,6 @@ describe("buildPromptContext — TG1 reply-direction isolation", () => {
   it("TG6 directorSlimmable: emotional pair absent when render block absent (bandsOnly)", async () => {
     const savedRender = (env as any).EMOTIONAL_RENDER_ENABLED;
     const savedEngine = (env as any).EMOTIONAL_ENGINE_ENABLED;
-    const savedConfig = getEmotionalAxisEvalConfig();
     try {
       (env as any).EMOTIONAL_RENDER_ENABLED = true;
       (env as any).EMOTIONAL_ENGINE_ENABLED = true;

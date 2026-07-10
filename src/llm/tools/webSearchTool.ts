@@ -99,7 +99,7 @@ export const webSearchTool: ToolDef<WebSearchArgs, WebSearchResult> = {
     }
     return fetchTavily(parsed.query, parsed.max_results, ctx.signal);
   },
-  summarize(args, result) {
+  summarize(_args, result) {
     if (result.error === "web_search_unavailable") {
       return "Web search is not configured.";
     }

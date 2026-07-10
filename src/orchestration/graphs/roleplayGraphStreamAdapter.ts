@@ -3,7 +3,6 @@ import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { RoleplayGenerationEvent, RoleplayGenerationInput } from "../roleplay/roleplayGenerationAdapter";
 import type { PersistRoleplayTurnInput, PersistRoleplayTurnOutput } from "../roleplay/roleplayPersistenceAdapter";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
-import type { OrchestrationStreamEvent } from "../thought/thoughtTypes";
 import type { ModelBinding } from "../../config/models";
 import {
   createRecallThoughtTask,

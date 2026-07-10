@@ -290,7 +290,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  */
 export function dedupByExactMatch(
   proposals: MappedProposal[],
-  characterId: string,
+  _characterId: string,
   existingRows: ExistingEvidenceRow[],
 ): { kept: MappedProposal[]; skipped: number } {
   // Build a set of "node::normalizedText" for existing rows

@@ -6,23 +6,22 @@ import { eq } from 'drizzle-orm';
 import type { ChatSession } from '../../db/schema/chat';
 import { writeInteractiveMemory } from '../../memory/interactive/writeInteractiveMemory';
 import type { MemoryNamespace } from '../../memory/shared/memoryNamespace';
-import { writeStructMemTurn, type StructMemTurnWriteInput, type StructMemTurnWriteResult } from '../../memory/structmem/writeStructMemTurn';
-import { maybeEnqueueStructMemConsolidation, type MaybeEnqueueStructMemConsolidationResult } from '../../memory/structmem/structmemConsolidationRepo';
+import { writeStructMemTurn } from '../../memory/structmem/writeStructMemTurn';
+import { maybeEnqueueStructMemConsolidation } from '../../memory/structmem/structmemConsolidationRepo';
 import { collectPhase1StructMemPersistRows, type StructMemPersistRow } from '../../memory/structmem/structmemMapping';
-import { persistSessionMemoryChunk, sessionMemoryChunkExists, writeRawTurnPairSessionChunkTraced, type SessionChunkTypePersisted, type WriteRawTurnChunkResult } from '../../memory/session/writeSessionMemoryChunk';
-import { maybeCompactSessionSummary, type SessionSummaryCompactResult, type MaybeCompactSessionSummaryInput } from '../../memory/session/compactSessionSummary';
-import { extractPostTurnSignals, type ExtractSignalsInput, type PostTurnSignals } from '../../llm/extraction/extractPostTurnSignals';
-import { buildPostTurnWritePlan, type PostTurnWritePlan, type PostTurnWritePlanSession, type PostTurnWritePlanEnv, type PostTurnWritePlanSignals } from '../../jobs/postTurnPolicies';
+import { persistSessionMemoryChunk, sessionMemoryChunkExists, writeRawTurnPairSessionChunkTraced, type SessionChunkTypePersisted } from '../../memory/session/writeSessionMemoryChunk';
+import { maybeCompactSessionSummary } from '../../memory/session/compactSessionSummary';
+import { extractPostTurnSignals } from '../../llm/extraction/extractPostTurnSignals';
+import { buildPostTurnWritePlan, type PostTurnWritePlanSession, type PostTurnWritePlanEnv } from '../../jobs/postTurnPolicies';
 import { isStepComplete, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepStatus } from '../../jobs/postTurnJobPayload';
 import { recordMemoryWriteSnapshot, recordEmotionalAxisUpdateSnapshot, incrementSessionChunkWrite } from '../../eval/evalSnapshots';
-import type { MemoryWriteEvalSnapshot } from '../../eval/evalSnapshots';
 import { getEmotionalAxisEvalConfig } from '../../eval/emotionalAxisEvalConfig';
 import { PostTurnGraphStateSchema, type PostTurnGraphState, type PostTurnRetryReason } from '../graphState/postTurnGraphState';
 import { advanceCharacterState } from '../../state/emotionalEngine/advanceCharacterState';
 import { readAxisState, writeAxisState, persistAxisSnapshot, buildAxisTurnExportSnapshot, MissingAssistantMessageError } from '../../state/emotionalEngine/axisStatePersistence';
 import { loadCharacterDefaults } from '../../character/characterDefaults';
 import { getSessionState } from '../../state/sessionStateRepo';
-import { HISTORY_CAP, MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
+import { MAX_AXIS_DELTA_PER_UPDATE, EVENT_TO_DELTA_MAP } from '../../state/emotionalEngine/constants';
 import { computeBands } from '../../state/emotionalEngine/bands';
 import { resolveAxesConfigForScope } from '../../state/emotionalEngine/resolveAxesConfigForScope';
 import { traceStage } from '../../observability/langsmithTracing';
@@ -332,15 +331,11 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
       }
 
       let currentState: CharacterStateAxes;
-      let currentBands: Record<AxisName, Band>;
       let currentHistory: PersistedAxisState['history'];
-      let persistedTrace: PersistedAxisState['lastTrace'];
 
       if (persisted) {
         currentState = persisted.axes;
-        currentBands = persisted.bands;
         currentHistory = persisted.history;
-        persistedTrace = persisted.lastTrace;
       } else {
         // First tick: init from baselines
         currentState = {
@@ -349,15 +344,7 @@ export function createPostTurnMemoryGraph(deps: PostTurnMemoryGraphDeps = defaul
           arousal: axesConfig.arousal.baseline,
           restraint: axesConfig.restraint.baseline,
         };
-        currentBands = { connection: 'mid', valence: 'mid', arousal: 'mid', restraint: 'mid' };
         currentHistory = [];
-        persistedTrace = {
-          tick: 0,
-          axesBefore: { ...currentState },
-          axesAfter: { ...currentState },
-          couplingsFired: [],
-          effectiveBaselines: {},
-        };
       }
 
       // Compute core via injected function (traced by default)

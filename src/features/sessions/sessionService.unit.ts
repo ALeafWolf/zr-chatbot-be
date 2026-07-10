@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
-import type { AxisName, Band, CharacterStateAxes } from "../../state/emotionalEngine/types";
+import type { AxisName, Band } from "../../state/emotionalEngine/types";
 
 // ---------------------------------------------------------------------------
 // Mutable mock objects — mocked once at module level, mutated per test
