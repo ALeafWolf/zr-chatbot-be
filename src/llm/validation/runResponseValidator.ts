@@ -16,6 +16,7 @@ import {
   countClinicalWordHits,
   countLongParentheticalMonologue,
 } from "./oocTextMetrics";
+import { isIntimateMode } from "../../state/emotionalEngine/intimateMode";
 
 export interface ValidationResult {
   in_character: boolean;
@@ -537,18 +538,6 @@ const INTIMATE_CLINICAL_DENSITY_THRESHOLD = 3.0;
 
 /** Minimum number of long parenthetical monologue spans to flag. */
 const INTIMATE_MIN_LONG_MONOLOGUE_SPANS = 3;
-
-function isIntimateMode(
-  bandLine?: string,
-  lastTraceEvent?: string,
-  axisBands?: Record<string, string>,
-): boolean {
-  // Arousal band = high OR recent event = intimate_moment
-  if (axisBands?.arousal === "high") return true;
-  if (lastTraceEvent?.includes("intimate_moment")) return true;
-  if (bandLine?.includes("唤起：高") || bandLine?.includes("唤起: high")) return true;
-  return false;
-}
 
 /**
  * Run the intimate-scene monologue intrusion guard.

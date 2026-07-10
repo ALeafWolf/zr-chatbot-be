@@ -34,8 +34,10 @@ import { sanitizeAssistantHistory } from "./historySanitizer";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
+import { isIntimateMode } from "../../state/emotionalEngine/intimateMode";
 import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
 import { getEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
+import { buildIntimateSensoryGuidanceBlock } from "./intimateSensoryGuidance";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -353,6 +355,14 @@ export function buildPromptContext(input: {
     emotionalAxisHistory,
   });
 
+  const intimateSensoryGuidanceBlock = env.INTIMATE_SENSORY_GUIDANCE_ENABLED && isIntimateMode(
+    emotionalAxisBands ? formatBandLine(emotionalAxisBands) : undefined,
+    emotionalAxisLastTrace?.event?.type,
+    emotionalAxisBands,
+  )
+    ? buildIntimateSensoryGuidanceBlock()
+    : null;
+
   // TG2: Compute emotional director input fields when axis state is present.
   let emotionalBandLine: string | undefined;
   let emotionalRenderRuleTexts: string[] | undefined;
@@ -442,6 +452,11 @@ ${hardRules}
     // source — see design point 2). Degradation: absent axis state ⇒ skip + log.
     ...(renderEmotionalBlock
       ? [renderEmotionalBlock]
+      : []),
+
+    // Intimate sensory guidance is intentionally not included in DirectorSlimmable.
+    ...(intimateSensoryGuidanceBlock
+      ? [intimateSensoryGuidanceBlock]
       : []),
 
     // [CHARACTER INTERNAL LOGIC EVIDENCE] — selected canon-grounded evidence
