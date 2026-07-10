@@ -202,6 +202,7 @@ describe("oocMetrics", () => {
         260,
       );
       assert.equal(metrics.turnIndex, 260);
+      assert.equal(metrics.replyText.length, metrics.replyLength);
       // "他沉默了片刻。\n（停顿）\n“……好。" = 18 chars (two … are each 1 char)
       assert.equal(metrics.replyLength, 18);
       assert.equal(metrics.sentenceCount, 2);
@@ -222,6 +223,7 @@ describe("oocMetrics", () => {
         metrics.longParentheticalMonologueCount > 0,
         "should detect long monologue",
       );
+      assert.equal(metrics.xiangXinNeiXinSpanTagCount, 1);
       assert.ok(
         metrics.literalXiangXinNeiXinHits > 0,
         "should detect 心想/内心",
@@ -229,10 +231,19 @@ describe("oocMetrics", () => {
     });
   });
 
+  it("counts strict tags but not bare in-character interiority", () => {
+    const tagged = "\uFF08心想：分析\uFF09";
+    const bare = "我的内心正在沉默";
+    const metrics = computeOocPerTurnMetrics(tagged + bare, 282);
+    assert.equal(metrics.xiangXinNeiXinSpanTagCount, 1);
+    assert.equal(metrics.literalXiangXinNeiXinHits, 2);
+  });
+
   describe("computeAggregateMetrics", () => {
     const fakePerTurn: OocPerTurnMetrics[] = [
       {
         turnIndex: 260,
+        replyText: "",
         replyLength: 300,
         sentenceCount: 5,
         shortSentenceRatio: 0.2,
@@ -241,9 +252,11 @@ describe("oocMetrics", () => {
         longParentheticalMonologueCount: 0,
         parentheticalSpanCount: 1,
         literalXiangXinNeiXinHits: 0,
+        xiangXinNeiXinSpanTagCount: 0,
       },
       {
         turnIndex: 261,
+        replyText: "",
         replyLength: 700,
         sentenceCount: 10,
         shortSentenceRatio: 0.3,
@@ -252,6 +265,7 @@ describe("oocMetrics", () => {
         longParentheticalMonologueCount: 2,
         parentheticalSpanCount: 3,
         literalXiangXinNeiXinHits: 1,
+        xiangXinNeiXinSpanTagCount: 1,
       },
     ];
 
@@ -260,6 +274,7 @@ describe("oocMetrics", () => {
       assert.equal(agg.turnCount, 2);
       assert.equal(agg.variant, "raw");
       assert.equal(agg.totalClinicalWordHits, 3);
+      assert.equal(agg.totalXiangXinNeiXinSpanTags, 1);
       assert.equal(agg.totalLongParentheticalMonologue, 2);
       assert.equal(agg.turnsWithLongMonologue, 1);
       assert.equal(agg.turnsWithClinicalWords, 1);

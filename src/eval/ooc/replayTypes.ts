@@ -19,6 +19,8 @@ export const HISTORY_VARIANTS: HistoryVariant[] = ["raw", "sanitized"];
 // ---------------------------------------------------------------------------
 
 export interface OocPerTurnMetrics {
+  /** Full final assistant reply, retained for offline metric adjudication. */
+  replyText: string;
   /** 0-based turn index in the transcript (260–291). */
   turnIndex: number;
   /** Number of characters in the assistant reply. */
@@ -37,6 +39,8 @@ export interface OocPerTurnMetrics {
   parentheticalSpanCount: number;
   /** Number of literal 「心想」 or 「内心」 hits. */
   literalXiangXinNeiXinHits: number;
+  /** Number of strict narrator-tag parenthetical spans. */
+  xiangXinNeiXinSpanTagCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +74,7 @@ export interface OocAggregateMetrics {
   turnsWithClinicalWords: number;
   /** Total literal 「心想」/「内心」 hits. */
   totalLiteralXiangXinNeiXinHits: number;
+  totalXiangXinNeiXinSpanTags: number;
   /** Per-turn metrics array. */
   perTurn: OocPerTurnMetrics[];
 }

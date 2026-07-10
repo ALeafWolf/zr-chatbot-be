@@ -161,9 +161,13 @@ export function computeOocPerTurnMetrics(
     countLongParentheticalMonologue(reply);
   const parentheticalSpans = extractParentheticalSpans(reply);
   const literalHits = countLiteralXiangXinNeiXinHits(reply);
+  const xiangXinNeiXinSpanTagCount = parentheticalSpans.filter(
+    isXiangXinNeiXinSpan,
+  ).length;
 
   return {
     turnIndex,
+    replyText: reply,
     replyLength: reply.length,
     sentenceCount,
     shortSentenceRatio,
@@ -172,6 +176,7 @@ export function computeOocPerTurnMetrics(
     longParentheticalMonologueCount,
     parentheticalSpanCount: parentheticalSpans.length,
     literalXiangXinNeiXinHits: literalHits,
+    xiangXinNeiXinSpanTagCount,
   };
 }
 
@@ -231,6 +236,10 @@ export function computeAggregateMetrics(
     turnsWithClinicalWords,
     totalLiteralXiangXinNeiXinHits: perTurn.reduce(
       (sum, m) => sum + m.literalXiangXinNeiXinHits,
+      0,
+    ),
+    totalXiangXinNeiXinSpanTags: perTurn.reduce(
+      (sum, m) => sum + m.xiangXinNeiXinSpanTagCount,
       0,
     ),
     perTurn,

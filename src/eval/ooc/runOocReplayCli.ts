@@ -179,21 +179,24 @@ function formatMetricsReport(
   lines.push(
     `| Total 心想/内心 hits | ${aggregate.totalLiteralXiangXinNeiXinHits} |`,
   );
+  lines.push(
+    `| Total strict tags | ${aggregate.totalXiangXinNeiXinSpanTags} |`,
+  );
   lines.push(``);
 
   // --- Per-turn metrics ---
   lines.push(`## Per-Turn Metrics`);
   lines.push(``);
   lines.push(
-    `| Turn | Length | Sentences | Short% | Clinical | Clinical/1k | LongParen | 心想/内心 |`,
+    `| Turn | Length | Sentences | Short% | Clinical | Clinical/1k | LongParen | 心想/内心 | Strict tags |`,
   );
   lines.push(
-    `|------|--------|-----------|--------|----------|-------------|-----------|----------|`,
+    `|------|--------|-----------|--------|----------|-------------|-----------|----------|------------|`,
   );
 
   for (const m of aggregate.perTurn) {
     lines.push(
-      `| ${m.turnIndex} | ${m.replyLength} | ${m.sentenceCount} | ${(m.shortSentenceRatio * 100).toFixed(0)}% | ${m.clinicalWordHits} | ${m.clinicalWordDensity.toFixed(2)} | ${m.longParentheticalMonologueCount} | ${m.literalXiangXinNeiXinHits} |`,
+      `| ${m.turnIndex} | ${m.replyLength} | ${m.sentenceCount} | ${(m.shortSentenceRatio * 100).toFixed(0)}% | ${m.clinicalWordHits} | ${m.clinicalWordDensity.toFixed(2)} | ${m.longParentheticalMonologueCount} | ${m.literalXiangXinNeiXinHits} | ${m.xiangXinNeiXinSpanTagCount} |`,
     );
   }
   lines.push(``);
@@ -237,6 +240,7 @@ function formatMetricsJson(
         turnsWithClinicalWords: aggregate.turnsWithClinicalWords,
         totalLiteralXiangXinNeiXinHits:
           aggregate.totalLiteralXiangXinNeiXinHits,
+        totalXiangXinNeiXinSpanTags: aggregate.totalXiangXinNeiXinSpanTags,
       },
       perTurn: aggregate.perTurn.map((m) => ({
         turnIndex: m.turnIndex,
@@ -249,6 +253,8 @@ function formatMetricsJson(
           m.longParentheticalMonologueCount,
         parentheticalSpanCount: m.parentheticalSpanCount,
         literalXiangXinNeiXinHits: m.literalXiangXinNeiXinHits,
+        xiangXinNeiXinSpanTagCount: m.xiangXinNeiXinSpanTagCount,
+        replyText: m.replyText,
       })),
     },
     null,
