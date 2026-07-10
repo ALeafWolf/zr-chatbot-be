@@ -708,11 +708,9 @@ export function applyAttributionVerdictMerge(
 function applyStrictAttributionSoftPenalty(
   result: ValidationResult,
   draft: string,
-  recentContext: string,
   canon: string,
 ): ValidationResult {
   if (!result.in_character) return result;
-  const corpus = `${recentContext}\n${canon}`;
   const cues =
     /提议|安排|第一次|第二次|谁先|谁提出/.test(draft) &&
     /左然|用户|你/.test(draft);
@@ -889,7 +887,6 @@ Return the JSON validation result.`.trim();
       parsed = applyStrictAttributionSoftPenalty(
         parsed,
         input.draft,
-        input.recentContext,
         canonEvidence,
       );
     }

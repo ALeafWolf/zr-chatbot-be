@@ -290,7 +290,6 @@ export async function* generateDraft(input: {
   const {
     promptContext,
     userMessage,
-    session,
     characterDefaults,
     toolCtx,
     signal,
@@ -423,7 +422,7 @@ export async function* rewriteDraft(input: {
   buildRewriteMessages: typeof buildRewriteToolMessages;
 }): AsyncGenerator<OrchestrationStreamEvent, { content: string; inputTokens: number; outputTokens: number }> {
   const {
-    promptContext, userMessage, session, characterDefaults, toolCtx, signal,
+    promptContext, userMessage, characterDefaults, toolCtx, signal,
     thoughtSummaryCache, thoughtsAcc, isFirstUserTurn, voiceHints,
     openAICompatibleRequestExtensions, issues, rewriteIntro, buildRewriteMessages,
   } = input;
@@ -711,12 +710,6 @@ export async function* generateAndValidateStream(input: {
     cache,
   );
   yield* emitThought({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
-
-  const hasCanonEvidenceIssue = drafterIssues1.some(
-    (i) =>
-      i.startsWith("Attribution claim") ||
-      i.includes("canon_unsupported_claim"),
-  );
 
   let rewrite: { content: string; inputTokens: number; outputTokens: number };
 
