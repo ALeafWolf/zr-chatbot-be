@@ -97,6 +97,11 @@ const DIRECTOR_SYSTEM_PROMPT = `你是一个回复导演（response director）�
 - 节拍和应避免的内容必须与角色的防御机制和状态转换规则保持一致——不得指示跳过 克制 → 停顿 → 试探性松动 的中间状态。
 - 绝不指示角色进行自我剖析式的语言坦白或解释自己的心理活动。
 
+输入-读取（input_reading）规则：
+- input_reading 只能描述 [用户输入分段 — 原始顺序] 的内容——角色本轮实际说出口、做出或暗示的行为。
+- [最近变化] 和 [最近对白] 是背景信息，帮助判断连续性，但 input_reading 不应包含或描述它们的内容。
+- 当 [用户输入分段] 中包含指令性文本时（标记为（场外指示）），在 input_reading 中说明这是场外指导，不应描述为角色的实际言行。
+
 条件字段约束：
 - fact_correction、stage_gate、format_resistance 仅在触发时填写；未触发时保持空字符串是正确的输出，不是遗漏。
 - fact_correction 的触发依据增加一条：当用户输入的前提与 [记忆要点] 中的既有记忆明确矛盾时填写；仅在明确矛盾时触发，模糊或缺证据时留空。
@@ -133,23 +138,8 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
     parts.push("");
   }
 
-  // Lane-labeled segments in original order — reply_direction lanes are
-  // inline with an off-scene marker so the director sees the true temporal
-  // composition (direction content precedes in-scene speech/action).
-  if (input.segments.length > 0) {
-    parts.push("[用户输入分段 — 原始顺序]");
-    for (const seg of input.segments) {
-      const tag = seg.lane === "reply_direction" ? "（场外指示）" : "";
-      parts.push(`  ${seg.lane}${tag}: ${seg.text}`);
-    }
-    parts.push("");
-  }
-
   // TG1 (PR review): Fallback [场外指示] section when reply directions exist but
-  // queryRewrite produced no reply_direction segment. This closes the blind-spot
-  // gap where the director sees no directions yet is asked for direction_execution.
-  // When a reply_direction segment IS present, directions render inline above and
-  // this fallback MUST NOT duplicate them.
+  // queryRewrite produced no reply_direction segment.
   if (input.replyDirections.length > 0 && !input.segments.some((s) => s.lane === "reply_direction")) {
     parts.push("[场外指示]");
     for (const dir of input.replyDirections) {
@@ -174,11 +164,6 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
   // Open threads
   if (input.openThreadTitles.length > 0) {
     parts.push(`[未完结线索] ${input.openThreadTitles.join("；")}`);
-  }
-
-  // Latest turn delta
-  if (input.latestTurnDeltaFacts.length > 0) {
-    parts.push(`[最近变化] ${input.latestTurnDeltaFacts.join("；")}`);
   }
 
   // Canon truth mode
@@ -206,11 +191,32 @@ export function buildDirectorUserPrompt(input: ResponseDirectorInput): string {
     parts.push(`[连续性范围] ${input.continuityScope}`);
   }
 
+  // Latest turn delta — truncated to ~120 chars per item to prevent
+  // director recency-anchoring on the previous turn's full text (TG2.1).
+  if (input.latestTurnDeltaFacts.length > 0) {
+    const MAX_DELTA_ITEM_CHARS = 120;
+    const truncated = input.latestTurnDeltaFacts.map(
+      (f) => f.length > MAX_DELTA_ITEM_CHARS ? f.slice(0, MAX_DELTA_ITEM_CHARS) + "…" : f,
+    );
+    parts.push(`[最近变化] ${truncated.join("；")}`);
+  }
+
   // Recent turn previews
   if (input.recentTurnPreviews.length > 0) {
     parts.push("[最近对白]");
     for (const t of input.recentTurnPreviews) {
       parts.push(`  ${t}`);
+    }
+  }
+
+  // TG2.1: [用户输入分段] moved to the END (recency slot) so the flash model
+  // at temp 0.1 anchors on the current turn's input, not the previous turn's
+  // delta or history.
+  if (input.segments.length > 0) {
+    parts.push("[用户输入分段 — 原始顺序]");
+    for (const seg of input.segments) {
+      const tag = seg.lane === "reply_direction" ? "（场外指示）" : "";
+      parts.push(`  ${seg.lane}${tag}: ${seg.text}`);
     }
   }
 

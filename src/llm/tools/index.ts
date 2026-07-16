@@ -1,4 +1,4 @@
-import { defaultTools, registerTool } from "./toolRegistry";
+import { defaultTools } from "./toolRegistry";
 
 defaultTools();
 

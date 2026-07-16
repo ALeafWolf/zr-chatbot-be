@@ -290,7 +290,6 @@ export async function* generateDraft(input: {
   const {
     promptContext,
     userMessage,
-    session,
     characterDefaults,
     toolCtx,
     signal,
@@ -423,7 +422,7 @@ export async function* rewriteDraft(input: {
   buildRewriteMessages: typeof buildRewriteToolMessages;
 }): AsyncGenerator<OrchestrationStreamEvent, { content: string; inputTokens: number; outputTokens: number }> {
   const {
-    promptContext, userMessage, session, characterDefaults, toolCtx, signal,
+    promptContext, userMessage, characterDefaults, toolCtx, signal,
     thoughtSummaryCache, thoughtsAcc, isFirstUserTurn, voiceHints,
     openAICompatibleRequestExtensions, issues, rewriteIntro, buildRewriteMessages,
   } = input;
@@ -712,12 +711,6 @@ export async function* generateAndValidateStream(input: {
   );
   yield* emitThought({ kind: "rewrite", text: rewriteIntro, ts: Date.now() });
 
-  const hasCanonEvidenceIssue = drafterIssues1.some(
-    (i) =>
-      i.startsWith("Attribution claim") ||
-      i.includes("canon_unsupported_claim"),
-  );
-
   let rewrite: { content: string; inputTokens: number; outputTokens: number };
 
   try {
@@ -861,6 +854,10 @@ export function buildValidatorContext(input: {
     retrievedCanonNarrative?: string;
     selectedMemorySources?: Array<unknown>;
     canonTruthMode?: string;
+    /** TG2.2: Emotional axis fields exported by buildPromptContext. */
+    emotionalBandLine?: string;
+    emotionalLastTraceEvent?: string;
+    emotionalAxisBands?: Record<string, string>;
   };
   userMessage: string;
   signal?: AbortSignal;
@@ -891,6 +888,16 @@ export function buildValidatorContext(input: {
       (input.promptContext.retrievedCanonNarrative?.length ?? 0) > 30,
     selectedMemorySources: (input.promptContext.selectedMemorySources ?? []) as any,
     canonTruthMode: input.promptContext.canonTruthMode as CanonTruthMode | undefined,
+    // TG2.2: Pass through emotional axis fields from promptContext
+    ...(input.promptContext.emotionalBandLine
+      ? { emotionalBandLine: input.promptContext.emotionalBandLine }
+      : {}),
+    ...(input.promptContext.emotionalLastTraceEvent
+      ? { emotionalLastTraceEvent: input.promptContext.emotionalLastTraceEvent }
+      : {}),
+    ...(input.promptContext.emotionalAxisBands
+      ? { emotionalAxisBands: input.promptContext.emotionalAxisBands }
+      : {}),
     signal: input.signal,
   };
 }

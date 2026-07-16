@@ -3,13 +3,11 @@ import { v4 as uuidv4 } from "uuid";
 import {
   StructMemConsolidationGraphStateSchema,
   type StructMemConsolidationGraphState,
-  type StructMemConsolidationFailureReason,
 } from "../graphState/structMemConsolidationGraphState";
 import type { StructMemConsolidationJob } from "../../db/schema/structmem";
 import type { ChatSession } from "../../db/schema/chat";
 import { embedText } from "../../llm/embeddings/embedText";
 import { synthesizeStructMemConsolidation } from "../../memory/structmem/structmemConsolidationSynthesis";
-import type { StructMemConsolidationSynthesisResult } from "../../memory/structmem/structmemConsolidationSynthesis";
 import { maybeWriteCrossSessionStructMemConsolidations } from "../../memory/structmem/structmemConsolidationRepo";
 import {
   loadConsolidationJobById,
@@ -74,28 +72,6 @@ export function defaultStructMemConsolidationGraphDeps(
     maxSynthesisInputTokens:
       overrides?.maxSynthesisInputTokens ?? Number(env.STRUCTMEM_MAX_SYNTHESIS_INPUT_TOKENS),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Retry-reason detection
-// ---------------------------------------------------------------------------
-
-function detectFailureReason(
-  err: unknown,
-  stage: string,
-): StructMemConsolidationFailureReason | undefined {
-  if (stage === "loadClaimedConsolidationJob") return "job_not_found";
-  if (stage === "synthesizeCurrentSessionConsolidation")
-    return "synthesis_failed";
-  if (stage === "embedConsolidation") return "embedding_failed";
-  if (
-    stage === "persistCurrentSessionConsolidation" ||
-    stage === "markCompleteOrSkipped"
-  )
-    return "db_write_failed";
-  if (stage === "maybeWriteCrossSessionConsolidations")
-    return "cross_session_write_failed";
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------

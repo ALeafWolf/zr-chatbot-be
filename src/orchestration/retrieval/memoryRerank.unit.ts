@@ -6,7 +6,6 @@ import { buildMemoryRerankPrompt } from "./memoryRerankPrompt";
 import { __testing } from "./memoryRerank";
 import { env } from "../../config/env";
 import { buildRetrievalDiagnosticsPayload } from "./retrievalDiagnostics";
-import type { RetrievalPlan } from "./retrievalPlan";
 
 function makeCandidate(overrides: Partial<ContextCandidate> = {}): ContextCandidate {
   return {

@@ -60,13 +60,6 @@ const BAND_LABELS: Record<Band, string> = {
   low: '偏低',
 };
 
-const AXIS_LABELS: Record<AxisName, string> = {
-  connection: '亲近',
-  valence: '情绪',
-  arousal: '唤起',
-  restraint: '克制',
-};
-
 /**
  * Format the fixed-format band line for Tier A.
  * Example: 「克制：偏高｜亲近：中｜情绪：平稳｜唤起：低」

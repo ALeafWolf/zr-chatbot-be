@@ -513,11 +513,6 @@ function createRoleplayGraphImpl(
 
   // ---- conditional routing -------------------------------------------------
 
-  function hasErrors(state: RoleplayGraphState): string {
-    if (state.errors && state.errors.length > 0) return "__error__";
-    return "__next__";
-  }
-
   function afterGenerateDraft(state: RoleplayGraphState): string {
     if (state.errors?.some((e) => (e as any).toolLoopExceeded)) return "safeDeflection";
     if (state.errors?.length) return "__error__";

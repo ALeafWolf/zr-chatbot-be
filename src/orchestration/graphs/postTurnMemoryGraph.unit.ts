@@ -2,12 +2,11 @@
 import assert from "node:assert";
 import { MissingAssistantMessageError } from "../../state/emotionalEngine/axisStatePersistence";
 import { createPostTurnMemoryGraph, applyEngineStateInputMapper, applyEngineStateOutputMapper, type PostTurnMemoryGraphDeps } from "./postTurnMemoryGraph";
-import { setEmotionalAxisEvalConfig, resetEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
+import { setEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
 import { createInitialPostTurnRuntimeState } from "../graphState/postTurnGraphState";
 import { INITIAL_POST_TURN_STEP_STATUS, markStepCompleted, type PostTurnJobPayloadV1, type PostTurnStepName, type PostTurnStepState, type PostTurnStepStatus } from "../../jobs/postTurnJobPayload";
 import type { PostTurnWritePlan } from "../../jobs/postTurnPolicies";
 import type { WriteRawTurnChunkResult } from "../../memory/session/writeSessionMemoryChunk";
-import { type PostTurnSignals } from "../../llm/extraction/extractPostTurnSignals";
 import type { ChatSession } from "../../db/schema/chat";
 
 // ---------------------------------------------------------------------------
@@ -305,7 +304,7 @@ describe("postTurnMemoryGraph", () => {
   it("markJobCompleteNode calls completeJobFn exactly once", async () => {
     const { deps, calls } = createFakeDeps();
     const graph = createPostTurnMemoryGraph(deps);
-    const state = await graph.invoke(createInitialState());
+    await graph.invoke(createInitialState());
 
     assert.strictEqual(calls.completeJobFn.length, 1);
     assert.strictEqual(calls.completeJobFn[0].jobId, FAKE_JOB_ID);
@@ -359,7 +358,7 @@ describe("postTurnMemoryGraph", () => {
   it("persists payload with signals", async () => {
     const { deps } = createFakeDeps();
     const capturedPayload: { value: any } = { value: null };
-    deps.persistStepComplete = async (jobId: any, step: any, payload: any, stepStatus: any) => {
+    deps.persistStepComplete = async (_jobId: any, step: any, payload: any, stepStatus: any) => {
       if (step === "extract_signals") capturedPayload.value = payload;
       return markStepCompleted(stepStatus, step);
     };
@@ -634,7 +633,7 @@ describe("postTurnMemoryGraph", () => {
     it("F15: scope-resolved baseline — main_married axesConfig passed to computeEngineAdvanceFn", async () => {
       const captured: { computeArgs: any[] } = { computeArgs: [] };
 
-      const { deps, calls } = createFakeDeps();
+      const { deps } = createFakeDeps();
       deps.emotionalEngineEnabled = true;
       // Override loadCharacterDefaultsFn to include scope baselines
       deps.loadCharacterDefaultsFn = (_id: string) => ({
@@ -770,7 +769,7 @@ describe("postTurnMemoryGraph", () => {
 
       async function runNoCouplingTest(noCoupling: boolean) {
         const captured: { computeArgs: any[] } = { computeArgs: [] };
-        const { deps, calls } = createFakeDeps();
+        const { deps } = createFakeDeps();
         deps.emotionalEngineEnabled = true;
         // Override loadCharacterDefaultsFn to include non-empty couplings
         deps.loadCharacterDefaultsFn = (_id: string) => ({
@@ -932,7 +931,7 @@ describe("postTurnMemoryGraph", () => {
 
   describe("applyEngineState — F1 missing-message propagation", () => {
     it("propagates MissingAssistantMessageError and does NOT mark engine_state complete", async () => {
-      const { deps, calls } = createFakeDeps();
+      const { deps } = createFakeDeps();
 
       // Make persistAxisSnapshotFn throw MissingAssistantMessageError
       deps.persistAxisSnapshotFn = async (_sessionId, _messageId, _next, _snapshot) => {

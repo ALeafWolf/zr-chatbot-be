@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { persistRoleplayTurn, type PersistRoleplayTurnInput, type PersistRoleplayTurnOutput } from "./roleplayPersistenceAdapter";
+import { persistRoleplayTurn, type PersistRoleplayTurnInput } from "./roleplayPersistenceAdapter";
 import type { ChatSession } from "../../db/schema/chat";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
 import type { ModelBinding } from "../../config/models";

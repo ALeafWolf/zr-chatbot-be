@@ -136,7 +136,6 @@ export async function expandAnchorScenes(input: {
 
   // Identify episodes where a later scene was retrieved but Scene 1 was not.
   // Use sceneOrder from expanded rows (may be null if schema lacks it).
-  const retrievedEpisodeIds = new Set(rows.map((r) => r.episodeId));
   const episodeHasScene1 = new Set<string>();
   const episodeNeedsOpening = new Set<string>();
   for (const r of rows) {

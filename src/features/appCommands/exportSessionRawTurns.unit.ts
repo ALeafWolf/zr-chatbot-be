@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildExportArtifact } from "./exportSessionRawTurns";
 import type { ChatMessage } from "../../db/schema/chat";
-import type { ExportOptions, FileExportResult } from "./appCommandTypes";
+import type { ExportOptions } from "./appCommandTypes";
 import type { EmotionalAxisTurnExportSnapshot } from "../../state/emotionalEngine/types";
 
 function opts(

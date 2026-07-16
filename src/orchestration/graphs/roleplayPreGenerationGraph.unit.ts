@@ -521,10 +521,9 @@ describe("roleplayPreGenerationGraph", () => {
 
   it("RERANK_VARIANT=deterministic_only records variant_deterministic_only as fallback reason", async () => {
     let deterministicCalled = false;
-    let passedFallbackReason: string | undefined;
 
     const deps = defaultTestDeps({
-      deterministicSelectorFn: async (input: any) => {
+      deterministicSelectorFn: async (_input: any) => {
         deterministicCalled = true;
         return { selectedContext: { memories: [], sessionRecall: [], structMemEntries: [], structMemConsolidations: [], openThreads: [], diagnostics: { retrievedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, injectedCounts: { interactive_memory: 0, session_chunk: 0, structmem_entry: 0, structmem_consolidation: 0, open_thread: 0 }, droppedDuplicateCount: 0, droppedLowScoreCount: 0, droppedCorrectionCount: 0, droppedBudgetCount: 0, topSources: [], averageInjectedScore: null } } as any, selectorFallbackMs: 5 };
       },

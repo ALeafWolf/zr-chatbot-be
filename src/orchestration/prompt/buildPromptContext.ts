@@ -30,11 +30,14 @@ import {
 } from "../../retrieval/query/rewriteQuery";
 import * as promptFormatters from "./promptFormatters";
 import { extractReplyDirections, serializeSegmentsForPrompt, relabelReplyDirectionsForHistory } from "./generationUserMessage";
+import { sanitizeAssistantHistory } from "./historySanitizer";
 import { formatTurnDelta, type LatestTurnDelta } from "../turn/turnDelta";
 import { buildEmotionalRenderBlock, formatBandLine, selectRenderRuleMatches } from "./renderEmotionalState";
 import type { AxisName, Band, StateTrace, HistoryEntry, CharacterStateAxes } from "../../state/emotionalEngine/types";
+import { isIntimateMode } from "../../state/emotionalEngine/intimateMode";
 import { recordEmotionalAxisRenderSnapshot } from "../../eval/evalSnapshots";
 import { getEmotionalAxisEvalConfig } from "../../eval/emotionalAxisEvalConfig";
+import { buildIntimateSensoryGuidanceBlock } from "./intimateSensoryGuidance";
 import {
   formatMemoryCorrections,
   type MemoryCorrectionContext,
@@ -352,6 +355,14 @@ export function buildPromptContext(input: {
     emotionalAxisHistory,
   });
 
+  const intimateSensoryGuidanceBlock = env.INTIMATE_SENSORY_GUIDANCE_ENABLED && isIntimateMode(
+    emotionalAxisBands ? formatBandLine(emotionalAxisBands) : undefined,
+    emotionalAxisLastTrace?.event?.type,
+    emotionalAxisBands,
+  )
+    ? buildIntimateSensoryGuidanceBlock()
+    : null;
+
   // TG2: Compute emotional director input fields when axis state is present.
   let emotionalBandLine: string | undefined;
   let emotionalRenderRuleTexts: string[] | undefined;
@@ -441,6 +452,11 @@ ${hardRules}
     // source — see design point 2). Degradation: absent axis state ⇒ skip + log.
     ...(renderEmotionalBlock
       ? [renderEmotionalBlock]
+      : []),
+
+    // Intimate sensory guidance is intentionally not included in DirectorSlimmable.
+    ...(intimateSensoryGuidanceBlock
+      ? [intimateSensoryGuidanceBlock]
       : []),
 
     // [CHARACTER INTERNAL LOGIC EVIDENCE] — selected canon-grounded evidence
@@ -628,12 +644,16 @@ ${extraction.replyDirections.map((d) => `- ${d}`).join("\n")}
     .join("\n\n");
 
   // TG4: Relabel 【】 in prior user turns for generation-facing history
+  // TG1.3: Sanitize assistant history — strip （心想：/（内心：） spans from
+  // the copy sent to the generator (DB text and memory extraction untouched).
   const conversationHistory: Array<{
     role: "user" | "assistant";
     content: string;
   }> = recentTurns.map((t) => ({
     role: t.role,
-    content: t.role === "user" ? relabelReplyDirectionsForHistory(t.content) : t.content,
+    content: t.role === "user"
+      ? relabelReplyDirectionsForHistory(t.content)
+      : sanitizeAssistantHistory(t.content),
   }));
 
   // TG6: Export exact slimmable strings for director-gated prompt slimming.

@@ -13,6 +13,7 @@ import {
   hashPlayerId,
 } from "../observability/traceMetadata";
 import { getStructMemConsolidationGraph } from "../orchestration/graphs/structMemConsolidationGraph";
+import { getAgentEvalCapture } from "../eval/evalSnapshots";
 
 async function claimStructMemConsolidationJobImpl(
   workerId: string,
@@ -77,6 +78,20 @@ class StructMemConsolidationRunner extends BackgroundRunner {
 
   constructor() {
     super("structmemConsolidationRunner", env.POST_TURN_JOB_POLL_INTERVAL_MS);
+  }
+
+  /**
+   * Eval isolation: when a turn runs inside an eval capture, the post-turn memory
+   * graph may enqueue a consolidation job and call wake(). The background loop must
+   * NOT claim that job — the pending row is cascade-deleted by cleanupEvalSession's
+   * session delete.
+   *
+   * Mirrors PostTurnRunner.wake() (postTurnRunner.ts:77-80). In production there is
+   * no eval capture, so wake() behaves normally.
+   */
+  override wake(): void {
+    if (getAgentEvalCapture()) return;
+    super.wake();
   }
 
   /** Override in tests to inject a fake graph. */

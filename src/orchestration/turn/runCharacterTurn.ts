@@ -27,7 +27,6 @@ import {
 import { models } from "../../config/models";
 import type { Thought } from "../thought/thoughtTypes";
 import {
-  generateThoughtSummary,
   generateThoughtSummaryWithUsage,
 } from "../../llm/generation/generateThoughtSummary";
 import {

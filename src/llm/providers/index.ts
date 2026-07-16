@@ -10,9 +10,7 @@ import type {
   LLMMessage,
   LLMProvider,
   LLMResponse,
-  LLMStreamEvent,
   LLMUsage,
-  OpenAIToolCall,
 } from "./providerTypes";
 
 export type {

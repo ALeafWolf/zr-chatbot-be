@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { rerankContext, type RerankContextInput } from "./rerankContext";
-import type { MemoryRerankResult, MemoryRerankSelected, MemoryRerankOutput } from "../retrieval/memoryRerank";
+import type { MemoryRerankResult, MemoryRerankSelected } from "../retrieval/memoryRerank";
 import type { PromptMemoryContextSelection } from "./promptMemoryContextSelector";
 import type { RetrievedMemory } from "../../retrieval/memory/retrieveInteractiveMemories";
 import type { RetrievedSessionMemoryChunk } from "../../retrieval/memory/retrieveSessionMemoryChunks";

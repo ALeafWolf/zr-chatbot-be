@@ -5,6 +5,7 @@ import { StructMemConsolidationGraphStateSchema } from "../orchestration/graphSt
 import { structmemConsolidationRunner } from "./structmemConsolidationRunner";
 import type { StructMemConsolidationJob } from "../db/schema/structmem";
 import { env } from "../config/env";
+import { createAgentEvalCapture, withAgentEvalCapture } from "../eval/evalSnapshots";
 
 class TestRunner extends (Object.getPrototypeOf(structmemConsolidationRunner).constructor as new () => InstanceType<any>) {
   public failCalls: Array<{ errMessage: string }> = [];
@@ -83,5 +84,34 @@ describe("structMemConsolidationRunner", () => {
     result = await claimStructMemConsolidationJob("test-worker");
     (env as any).STRUCTMEM_CONSOLIDATION_ENABLED = origConsol;
     assert.strictEqual(result, null, "disabled — null when CONSOLDATION_ENABLED false");
+  });
+
+  // ---------------------------------------------------------------------------
+  // TG0.7e — Eval isolation gate in wake()
+  // ---------------------------------------------------------------------------
+
+  it("eval isolation: wake() is a no-op while an eval capture is active", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const Ctor: any = Object.getPrototypeOf(structmemConsolidationRunner).constructor;
+    class WakeProbeRunner extends Ctor {
+      public loopRuns = 0;
+      protected async runLoop(): Promise<void> {
+        this.loopRuns += 1;
+      }
+    }
+
+    // Outside an eval capture, wake() starts the loop.
+    const outside = new WakeProbeRunner();
+    outside.wake();
+    assert.strictEqual(outside.loopRuns, 1, "wake runs the loop outside an eval capture");
+
+    // Inside an eval capture, wake() must NOT start the loop — the pending
+    // consolidation job row is cascade-deleted by cleanupEvalSession.
+    const inside = new WakeProbeRunner();
+    const capture = createAgentEvalCapture({ scenarioId: "wake-gate", evalSessionId: "s" });
+    await withAgentEvalCapture(capture, async () => {
+      inside.wake();
+    });
+    assert.strictEqual(inside.loopRuns, 0, "wake is a no-op inside an eval capture");
   });
 });

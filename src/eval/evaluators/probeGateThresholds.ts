@@ -11,7 +11,7 @@
  * a structured pass/fail result.
  */
 import type { EvaluationResult } from "langsmith/evaluation";
-import { JUDGE_DIMENSIONS, type JudgeDimension } from "./internalLogicJudge";
+import { type JudgeDimension } from "./internalLogicJudge";
 
 // ---------------------------------------------------------------------------
 // Types

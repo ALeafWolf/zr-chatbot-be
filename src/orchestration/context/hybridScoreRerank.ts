@@ -143,22 +143,6 @@ export function hybridScoreSelect(
 }
 
 // ---------------------------------------------------------------------------
-// Preserve critical context (same as rerankContext)
-// ---------------------------------------------------------------------------
-
-function preserveCriticalContext(
-  sessionSummary: SessionSummaryRecord | null,
-  latestTurnDelta: LatestTurnDelta | null,
-  memoryCorrections: MemoryCorrectionContext[],
-) {
-  return {
-    filteredSessionSummary: sessionSummary,
-    filteredLatestTurnDelta: latestTurnDelta,
-    filteredMemoryCorrections: memoryCorrections,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Main hybrid rerank function (matches RerankContextOutput shape)
 // ---------------------------------------------------------------------------
 
@@ -191,9 +175,6 @@ export async function runHybridScoreRerank(
     openThreads: input.openThreads,
     internalLogicEvidence: input.internalLogicEvidence,
   });
-
-  const appliedStartedAt = Date.now();
-  const rerankMs = appliedStartedAt - startedAt;
 
   const selectedContext: PromptMemoryContextSelection = {
     memories: applied.memories,

@@ -168,13 +168,6 @@ export interface RerankFailureDiagnostics {
   transportMode?: "non_streaming";
 }
 
-const EMPTY_RERANK: MemoryRerankOutput = {
-  selected: [],
-  rejected: [],
-  finalContextMode: "recent_only",
-  needsEvidenceFallback: false,
-};
-
 /**
  * Resolve a raw (possibly numeric) reranker ID to a known candidate.
  *

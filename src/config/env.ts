@@ -494,6 +494,12 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => parseEnabledFlag(v)),
 
+  // Intimate sensory-detail writing guidance. Defaults OFF for A/B rollout.
+  INTIMATE_SENSORY_GUIDANCE_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => parseEnabledFlag(v)),
+
   // Response Director
   // Per-turn LLM stage that produces a compact brief (scene frame, input reading,
   // mood directive, beats, avoid-list, direction execution) rendered as a

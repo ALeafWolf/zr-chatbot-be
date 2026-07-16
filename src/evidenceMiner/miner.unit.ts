@@ -31,11 +31,8 @@ import type {
   CanonChunk,
   InternalLogicNode,
   LlmProposal,
-  LlmProposalOutput,
   MappedProposal,
   ExistingEvidenceRow,
-  EvidenceRowData,
-  ContextUnit,
 } from "./types";
 
 // ---------------------------------------------------------------------------

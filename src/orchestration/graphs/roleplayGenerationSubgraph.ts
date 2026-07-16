@@ -2,7 +2,7 @@ import { StateGraph, START } from "@langchain/langgraph";
 import { RoleplayGraphStateSchema, type RoleplayGraphState } from "../graphState/roleplayGraphState";
 import type { RoleplayGraphDeps } from "./roleplayGraph";
 import type { GenerateAndValidateResult } from "../generation/generateAndValidate";
-import type { OrchestrationStreamEvent, Thought } from "../thought/thoughtTypes";
+import type { OrchestrationStreamEvent } from "../thought/thoughtTypes";
 import { filterDrafterFacingIssues } from "../generation/validationFlowHelpers";
 import { __testing as genTesting, buildValidatorContext } from "../generation/generateAndValidate";
 

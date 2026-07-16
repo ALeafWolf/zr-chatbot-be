@@ -73,7 +73,7 @@ async function runScenario(scenario: Scenario): Promise<{
 }
 
 async function main(): Promise<void> {
-  const filterArg = process.argv.find((a, i) => process.argv[i - 1] === "--scenario");
+  const filterArg = process.argv.find((_a, i) => process.argv[i - 1] === "--scenario");
   const { scenarios: all } = loadScenariosFromFile();
   const scenarios = all.filter((s) => (filterArg ? s.id === filterArg : true));
 
